@@ -121,6 +121,30 @@ def test_zulip_private_reply_posts_to_sender_email():
     assert client.requests == [result["request"]]
 
 
+def test_zulip_listener_can_request_all_public_stream_events():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def call_on_each_event(self, callback, **kwargs: object) -> None:
+            self.calls.append({"callback": callback, **kwargs})
+
+    client = FakeClient()
+
+    def callback(event: dict[str, object]) -> None:
+        return None
+
+    ZulipClientIO(client).listen(callback, all_public_streams=True)
+
+    assert client.calls == [
+        {
+            "callback": callback,
+            "event_types": ["message"],
+            "all_public_streams": True,
+        }
+    ]
+
+
 def test_agent_decision_parses_fenced_json_and_validates_memory_updates():
     payload = {
         "should_reply": True,

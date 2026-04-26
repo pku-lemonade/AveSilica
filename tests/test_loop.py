@@ -31,6 +31,7 @@ def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
         worker_count=2,
         instruction_max_bytes=96_000,
         post_replies=post_replies,
+        listen_all_public_streams=True,
     )
 
 

@@ -45,6 +45,7 @@ class BotConfig:
     worker_count: int
     instruction_max_bytes: int
     post_replies: bool
+    listen_all_public_streams: bool
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -66,4 +67,5 @@ class BotConfig:
             worker_count=_int_env("TOKENZULIP_WORKERS", 4),
             instruction_max_bytes=_int_env("TOKENZULIP_INSTRUCTION_MAX_BYTES", 96_000),
             post_replies=_bool_env("TOKENZULIP_POST_REPLIES", True),
+            listen_all_public_streams=_bool_env("TOKENZULIP_LISTEN_ALL_PUBLIC_STREAMS", True),
         )

@@ -235,5 +235,9 @@ class ZulipClientIO:
             raise RuntimeError(f"Zulip send_message failed: {response!r}")
         return ZulipPostResult(request=request, response=response).to_record()
 
-    def listen(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        self.client.call_on_each_event(callback, event_types=["message"])
+    def listen(self, callback: Callable[[dict[str, Any]], None], *, all_public_streams: bool = False) -> None:
+        self.client.call_on_each_event(
+            callback,
+            event_types=["message"],
+            all_public_streams=all_public_streams,
+        )

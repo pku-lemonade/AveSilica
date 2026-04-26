@@ -115,7 +115,11 @@ async def _run(args: argparse.Namespace) -> int:
 
     workers = asyncio.create_task(loop.run_workers())
     try:
-        await asyncio.to_thread(zulip.listen, callback)
+        await asyncio.to_thread(
+            zulip.listen,
+            callback,
+            all_public_streams=config.listen_all_public_streams,
+        )
     finally:
         workers.cancel()
     return 0
