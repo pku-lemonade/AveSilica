@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 codex = [
-    "codex-app-server-sdk>=0.2.0",
+    "codex-app-server-sdk @ git+https://github.com/openai/codex.git#subdirectory=sdk/python",
 ]
 dev = [
     "pytest>=8.0",
@@ -25,4 +25,3 @@ token-zulip = "token_zulip.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

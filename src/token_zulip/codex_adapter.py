@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -37,7 +38,7 @@ class CodexSdkAdapter:
 
     async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
         try:
-            from codex_app_server import AsyncCodex  # type: ignore[import-not-found]
+            from codex_app_server import AppServerConfig, AsyncCodex  # type: ignore[import-not-found]
         except ImportError as exc:
             raise RuntimeError(
                 "Codex Python SDK is not installed. Install the optional SDK dependency "
@@ -45,17 +46,14 @@ class CodexSdkAdapter:
             ) from exc
 
         self.cwd.mkdir(parents=True, exist_ok=True)
-        async with AsyncCodex() as codex:
+        async with AsyncCodex(config=AppServerConfig(codex_bin=self._codex_bin(), cwd=str(self.cwd))) as codex:
             thread_kwargs = self._thread_kwargs()
             if thread_id:
                 thread = await codex.thread_resume(thread_id, **thread_kwargs)
             else:
                 thread = await codex.thread_start(**thread_kwargs)
 
-            run_kwargs: dict[str, Any] = {"output_schema": DECISION_JSON_SCHEMA}
-            if self.reasoning_effort:
-                run_kwargs["effort"] = self.reasoning_effort
-            result = await thread.run(prompt, **run_kwargs)
+            result = await thread.run(prompt, **self._run_kwargs())
 
             raw_text = str(getattr(result, "final_response", "") or "")
             resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "") or None
@@ -71,3 +69,14 @@ class CodexSdkAdapter:
             kwargs["sandbox"] = self.sandbox
         return kwargs
 
+    def _run_kwargs(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"output_schema": DECISION_JSON_SCHEMA}
+        if self.reasoning_effort:
+            kwargs["effort"] = self.reasoning_effort
+        return kwargs
+
+    def _codex_bin(self) -> str:
+        codex_bin = shutil.which("codex")
+        if not codex_bin:
+            raise RuntimeError("Codex CLI is not installed or is not on PATH.")
+        return codex_bin
