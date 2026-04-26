@@ -35,6 +35,8 @@ Optional environment:
 export TOKENZULIP_ZULIPRC="$PWD/.zuliprc"
 export TOKENZULIP_WORKSPACE="$PWD/workspace"
 export TOKENZULIP_CODEX_MODEL=gpt-5.5
+export TOKENZULIP_TYPING_ENABLED=true
+export TOKENZULIP_BOT_ALIASES=Silica,Sili
 ```
 
 Run without posting:
@@ -132,3 +134,5 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 Incoming Zulip messages are normalized and persisted before any model call. Routine raw Zulip events are not stored. Work is serialized per `zulip:<realm_id>:stream:<stream_id>:topic:<topic_hash>` session, so a busy topic cannot race itself. If messages arrive for an active topic, their IDs are appended to that topic's pending queue and processed in a follow-up turn.
 
 Codex returns structured JSON with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, `scratchpad_op`, and confidence. The orchestrator validates and writes memory before posting any reply.
+
+When live posting is enabled, the bot can show Zulip typing indicators for private messages and direct mentions before the Codex turn finishes. Set `TOKENZULIP_TYPING_ENABLED=false` to disable them.

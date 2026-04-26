@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -12,6 +13,7 @@ from .memory import MemoryStore
 from .models import AgentDecision, NormalizedMessage, SessionKey
 from .prompt import PromptBuilder, PromptParts
 from .storage import WorkspaceStorage
+from .typing_status import TypingStatusManager
 from .zulip_io import normalize_zulip_event
 
 LOGGER = logging.getLogger(__name__)
@@ -41,6 +43,7 @@ class AgentLoop:
         memory: MemoryStore,
         codex: CodexAdapter,
         zulip: ZulipPoster,
+        typing: TypingStatusManager | None = None,
         prompt_builder: PromptBuilder | None = None,
     ) -> None:
         self.config = config
@@ -49,13 +52,19 @@ class AgentLoop:
         self.memory = memory
         self.codex = codex
         self.zulip = zulip
+        self.typing = typing or TypingStatusManager(enabled=False)
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.queue: asyncio.Queue[NormalizedMessage] = asyncio.Queue(maxsize=config.queue_limit)
         self._active_sessions: set[str] = set()
         self._active_guard = asyncio.Lock()
 
     async def enqueue_event(self, event: dict[str, Any]) -> EnqueueResult:
-        message = normalize_zulip_event(event, self.config.realm_id)
+        message = normalize_zulip_event(
+            event,
+            self.config.realm_id,
+            bot_user_id=self.config.bot_user_id,
+            bot_aliases=self.config.bot_aliases,
+        )
         if message is None:
             self.storage.log_ignored_event(event, "ignored unsupported message")
             return EnqueueResult(False, "ignored unsupported message")
@@ -170,30 +179,38 @@ class AgentLoop:
         )
 
         metadata = self.storage.load_metadata(key)
-        codex_result = await self.codex.run_decision(prompt, metadata.codex_thread_id)
-        if codex_result.thread_id:
-            self.storage.set_codex_thread_id(key, codex_result.thread_id)
+        async with AsyncExitStack() as stack:
+            if self.typing.should_show_typing(first, post_replies=self.config.post_replies):
+                await stack.enter_async_context(self.typing.active(first))
 
-        decision = AgentDecision.from_json_text(codex_result.raw_text)
-        memory_applied = self.memory.apply_ops(key, decision.memory_ops, [message.message_id for message in messages])
-        scratchpad_applied = self.storage.apply_scratchpad_op(key, decision.scratchpad_op)
+            codex_result = await self.codex.run_decision(prompt, metadata.codex_thread_id)
+            if codex_result.thread_id:
+                self.storage.set_codex_thread_id(key, codex_result.thread_id)
 
-        message_to_post = self._message_to_post(first, decision)
-        post: dict[str, Any] | None = None
-        if message_to_post:
-            if self.config.post_replies:
-                post = self._post_summary(await self.zulip.post_reply(first, message_to_post), dry_run=False)
-            else:
-                post = {"status": "dry_run", "dry_run": True}
+            decision = AgentDecision.from_json_text(codex_result.raw_text)
+            memory_applied = self.memory.apply_ops(
+                key,
+                decision.memory_ops,
+                [message.message_id for message in messages],
+            )
+            scratchpad_applied = self.storage.apply_scratchpad_op(key, decision.scratchpad_op)
 
-        self.storage.log_turn(
-            key=key,
-            messages=messages,
-            decision=decision,
-            post=post,
-            memory_applied=memory_applied,
-            scratchpad_applied=scratchpad_applied,
-        )
+            message_to_post = self._message_to_post(first, decision)
+            post: dict[str, Any] | None = None
+            if message_to_post:
+                if self.config.post_replies:
+                    post = self._post_summary(await self.zulip.post_reply(first, message_to_post), dry_run=False)
+                else:
+                    post = {"status": "dry_run", "dry_run": True}
+
+            self.storage.log_turn(
+                key=key,
+                messages=messages,
+                decision=decision,
+                post=post,
+                memory_applied=memory_applied,
+                scratchpad_applied=scratchpad_applied,
+            )
         self.storage.mark_processed(key, [message.message_id for message in messages])
 
     def _message_to_post(self, first: NormalizedMessage, decision: AgentDecision) -> str:

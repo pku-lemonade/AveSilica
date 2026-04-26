@@ -10,6 +10,9 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("TOKENZULIP_CODEX_CWD", raising=False)
     monkeypatch.delenv("TOKENZULIP_CODEX_REASONING_EFFORT", raising=False)
     monkeypatch.delenv("TOKENZULIP_LISTEN_ALL_PUBLIC_STREAMS", raising=False)
+    monkeypatch.delenv("TOKENZULIP_BOT_ALIASES", raising=False)
+    monkeypatch.delenv("TOKENZULIP_TYPING_ENABLED", raising=False)
+    monkeypatch.delenv("TOKENZULIP_TYPING_REFRESH_SECONDS", raising=False)
 
     config = BotConfig.from_env()
 
@@ -17,6 +20,9 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     assert config.codex_cwd == tmp_path / "workspace"
     assert config.codex_reasoning_effort == "medium"
     assert config.listen_all_public_streams is True
+    assert config.bot_aliases == ("Silica", "Sili")
+    assert config.typing_enabled is True
+    assert config.typing_refresh_seconds == 8.0
 
 
 def test_listen_all_public_streams_can_be_disabled(monkeypatch):

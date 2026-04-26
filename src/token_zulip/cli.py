@@ -15,8 +15,9 @@ from .loop import AgentLoop
 from .memory import MemoryStore
 from .prompt import PromptBuilder, PromptParts
 from .storage import WorkspaceStorage
+from .typing_status import NoOpTypingNotifier, TypingStatusManager
 from .workspace import initialize_workspace
-from .zulip_io import ZulipClientIO, normalize_zulip_event
+from .zulip_io import ZulipClientIO, ZulipTypingNotifier, normalize_zulip_event
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,11 +76,15 @@ async def _run(args: argparse.Namespace) -> int:
     initialize_workspace(config.workspace_dir)
 
     zulip = ZulipClientIO.from_config(config)
-    bot_email = config.bot_email or zulip.bot_email()
+    bot_profile = zulip.bot_profile()
+    bot_email = config.bot_email or bot_profile.email
+    bot_user_id = config.bot_user_id or bot_profile.user_id
     realm_id = config.realm_id
     if realm_id == "unknown":
-        realm_id = zulip.realm_id() or realm_id
-    config = replace(config, bot_email=bot_email, realm_id=realm_id)
+        realm_id = bot_profile.realm_id or zulip.realm_id() or realm_id
+    config = replace(config, bot_email=bot_email, bot_user_id=bot_user_id, realm_id=realm_id)
+
+    typing_notifier = ZulipTypingNotifier(zulip.client) if config.typing_enabled else NoOpTypingNotifier()
 
     storage = WorkspaceStorage(config.workspace_dir)
     memory = MemoryStore(config.workspace_dir / "memory")
@@ -96,6 +101,11 @@ async def _run(args: argparse.Namespace) -> int:
             approval_policy=config.codex_approval_policy,
         ),
         zulip=zulip,
+        typing=TypingStatusManager(
+            typing_notifier,
+            enabled=config.typing_enabled,
+            refresh_seconds=config.typing_refresh_seconds,
+        ),
     )
 
     running_loop = asyncio.get_running_loop()
@@ -129,7 +139,12 @@ def _render_prompt(args: argparse.Namespace) -> int:
     config = _config_from_args(args)
     initialize_workspace(config.workspace_dir)
     event = json.loads(args.event_file.read_text(encoding="utf-8"))
-    message = normalize_zulip_event(event, config.realm_id)
+    message = normalize_zulip_event(
+        event,
+        config.realm_id,
+        bot_user_id=config.bot_user_id,
+        bot_aliases=config.bot_aliases,
+    )
     if message is None:
         raise SystemExit("Event file does not contain a supported message event.")
 

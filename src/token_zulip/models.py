@@ -129,6 +129,7 @@ class NormalizedMessage:
     conversation_type: str = "stream"
     private_user_key: str | None = None
     reply_required: bool = False
+    directly_addressed: bool = False
 
     @property
     def session_key(self) -> SessionKey:
@@ -150,6 +151,7 @@ class NormalizedMessage:
             "content": self.content,
             "timestamp": self.timestamp,
             "received_at": self.received_at,
+            "directly_addressed": self.directly_addressed,
         }
 
 

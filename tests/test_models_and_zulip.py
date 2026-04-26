@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 
+from token_zulip.addressing import alias_is_directly_addressed
 from token_zulip.models import AgentDecision, DECISION_JSON_SCHEMA, NormalizedMessage, normalized_topic_hash
-from token_zulip.zulip_io import ZulipClientIO, normalize_zulip_event
+from token_zulip.zulip_io import ZulipClientIO, ZulipTypingNotifier, normalize_zulip_event
 
 
 def _assert_required_matches_properties(schema: object, path: str = "$") -> None:
@@ -97,6 +98,74 @@ def test_normalize_zulip_group_private_event_is_ignored():
     assert normalize_zulip_event(event, "realm") is None
 
 
+def test_alias_direct_address_detection_is_case_insensitive_and_conservative():
+    aliases = ("Silica", "Sili")
+
+    assert alias_is_directly_addressed("sili 回答一下", aliases)
+    assert alias_is_directly_addressed("SILICA: can you check this?", aliases)
+    assert alias_is_directly_addressed("@**Silica** please check", aliases)
+    assert not alias_is_directly_addressed("silicon substrate", aliases)
+    assert not alias_is_directly_addressed("basili is not the bot", aliases)
+
+
+def test_normalize_stream_event_detects_direct_bot_addressing():
+    base_message = {
+        "id": 45,
+        "type": "stream",
+        "stream_id": 7,
+        "display_recipient": "Engineering",
+        "subject": "Launch",
+        "sender_email": "alice@example.com",
+        "sender_full_name": "Alice",
+        "sender_id": 3,
+        "content": "<p>hello</p>",
+    }
+
+    mentioned = normalize_zulip_event(
+        {"type": "message", "message": {**base_message, "flags": ["mentioned"]}},
+        "realm",
+        bot_user_id=99,
+        bot_aliases=("Silica", "Sili"),
+    )
+    html_mention = normalize_zulip_event(
+        {
+            "type": "message",
+            "message": {
+                **base_message,
+                "id": 46,
+                "content": '<p><span class="user-mention" data-user-id="99">@Silica</span> help</p>',
+            },
+        },
+        "realm",
+        bot_user_id=99,
+        bot_aliases=("Silica", "Sili"),
+    )
+    alias = normalize_zulip_event(
+        {"type": "message", "message": {**base_message, "id": 47, "content": "<p>sili 回答一下</p>"}},
+        "realm",
+        bot_user_id=99,
+        bot_aliases=("Silica", "Sili"),
+    )
+    wildcard = normalize_zulip_event(
+        {"type": "message", "message": {**base_message, "id": 48, "flags": ["wildcard_mentioned"]}},
+        "realm",
+        bot_user_id=99,
+        bot_aliases=("Silica", "Sili"),
+    )
+    ordinary = normalize_zulip_event(
+        {"type": "message", "message": {**base_message, "id": 49}},
+        "realm",
+        bot_user_id=99,
+        bot_aliases=("Silica", "Sili"),
+    )
+
+    assert mentioned is not None and mentioned.directly_addressed is True
+    assert html_mention is not None and html_mention.directly_addressed is True
+    assert alias is not None and alias.directly_addressed is True
+    assert wildcard is not None and wildcard.directly_addressed is False
+    assert ordinary is not None and ordinary.directly_addressed is False
+
+
 def test_zulip_private_reply_posts_to_sender_email():
     class FakeClient:
         def __init__(self) -> None:
@@ -135,6 +204,101 @@ def test_zulip_private_reply_posts_to_sender_email():
         "content": "Hello.",
     }
     assert client.requests == [result["request"]]
+
+
+def test_zulip_typing_notifier_sends_stream_and_private_requests():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, object]] = []
+
+        def set_typing_status(self, request: dict[str, object]) -> dict[str, str]:
+            self.requests.append(request)
+            return {"result": "success"}
+
+    stream_message = NormalizedMessage(
+        realm_id="realm",
+        message_id=43,
+        stream_id=7,
+        stream="Engineering",
+        stream_slug="engineering",
+        topic="Launch",
+        topic_hash="topic",
+        sender_email="alice@example.com",
+        sender_full_name="Alice",
+        sender_id=3,
+        content="hi",
+        timestamp=None,
+        received_at="now",
+        raw={},
+    )
+    private_message = NormalizedMessage(
+        realm_id="realm",
+        message_id=44,
+        stream_id=None,
+        stream="private",
+        stream_slug="private",
+        topic="private",
+        topic_hash="3",
+        conversation_type="private",
+        private_user_key="3",
+        reply_required=True,
+        sender_email="alice@example.com",
+        sender_full_name="Alice",
+        sender_id=3,
+        content="hi",
+        timestamp=None,
+        received_at="now",
+        raw={},
+    )
+    client = FakeClient()
+    notifier = ZulipTypingNotifier(client)
+
+    asyncio.run(notifier.start(stream_message))
+    asyncio.run(notifier.stop(stream_message))
+    asyncio.run(notifier.start(private_message))
+    asyncio.run(notifier.stop(private_message))
+
+    assert client.requests == [
+        {"type": "stream", "op": "start", "stream_id": 7, "topic": "Launch"},
+        {"type": "stream", "op": "stop", "stream_id": 7, "topic": "Launch"},
+        {"type": "private", "op": "start", "to": [3]},
+        {"type": "private", "op": "stop", "to": [3]},
+    ]
+
+
+def test_zulip_typing_notifier_skips_private_message_without_sender_id():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, object]] = []
+
+        def set_typing_status(self, request: dict[str, object]) -> dict[str, str]:
+            self.requests.append(request)
+            return {"result": "success"}
+
+    message = NormalizedMessage(
+        realm_id="realm",
+        message_id=44,
+        stream_id=None,
+        stream="private",
+        stream_slug="private",
+        topic="private",
+        topic_hash="email",
+        conversation_type="private",
+        private_user_key="email",
+        reply_required=True,
+        sender_email="alice@example.com",
+        sender_full_name="Alice",
+        sender_id=None,
+        content="hi",
+        timestamp=None,
+        received_at="now",
+        raw={},
+    )
+    client = FakeClient()
+
+    asyncio.run(ZulipTypingNotifier(client).start(message))
+
+    assert client.requests == []
 
 
 def test_zulip_listener_can_request_all_public_stream_events():

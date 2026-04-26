@@ -300,6 +300,7 @@ class WorkspaceStorage:
             conversation_type=metadata.conversation_type,
             private_user_key=metadata.private_user_key,
             reply_required=bool(record.get("reply_required") or metadata.conversation_type == "private"),
+            directly_addressed=bool(record.get("directly_addressed")),
         )
 
     def _message_ids(self, path: Path) -> set[int]:

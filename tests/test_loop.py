@@ -11,6 +11,7 @@ from token_zulip.loop import PRIVATE_REPLY_FALLBACK, AgentLoop
 from token_zulip.memory import MemoryStore
 from token_zulip.models import NormalizedMessage
 from token_zulip.storage import WorkspaceStorage
+from token_zulip.typing_status import TypingStatusManager
 from token_zulip.workspace import initialize_workspace
 
 
@@ -20,6 +21,8 @@ def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
         zulip_config_file=None,
         realm_id="realm",
         bot_email="bot@example.com",
+        bot_user_id=99,
+        bot_aliases=("Silica", "Sili"),
         role="default",
         codex_model="gpt-5.4",
         codex_reasoning_effort=None,
@@ -32,10 +35,12 @@ def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
         instruction_max_bytes=96_000,
         post_replies=post_replies,
         listen_all_public_streams=True,
+        typing_enabled=True,
+        typing_refresh_seconds=8.0,
     )
 
 
-def _message(message_id: int, content: str = "hello") -> NormalizedMessage:
+def _message(message_id: int, content: str = "hello", *, directly_addressed: bool = False) -> NormalizedMessage:
     return NormalizedMessage(
         realm_id="realm",
         message_id=message_id,
@@ -51,6 +56,7 @@ def _message(message_id: int, content: str = "hello") -> NormalizedMessage:
         timestamp=None,
         received_at="now",
         raw={},
+        directly_addressed=directly_addressed,
     )
 
 
@@ -97,6 +103,11 @@ class BlockingCodex:
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
+
+
+class FailingCodex:
+    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+        raise RuntimeError("codex failed")
 
 
 class MemoryCheckingCodex:
@@ -173,6 +184,26 @@ class FakePoster:
         return {"result": "success"}
 
 
+class FailingPoster(FakePoster):
+    async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, str]:
+        raise RuntimeError("post failed")
+
+
+class FakeTypingNotifier:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, int]] = []
+
+    async def start(self, message: NormalizedMessage) -> None:
+        self.events.append(("start", message.message_id))
+
+    async def stop(self, message: NormalizedMessage) -> None:
+        self.events.append(("stop", message.message_id))
+
+
+def _typing(notifier: FakeTypingNotifier, *, enabled: bool = True) -> TypingStatusManager:
+    return TypingStatusManager(notifier, enabled=enabled, refresh_seconds=60)
+
+
 def test_messages_for_active_topic_are_persisted_and_run_as_followup(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
@@ -200,6 +231,124 @@ def test_messages_for_active_topic_are_persisted_and_run_as_followup(tmp_path):
         assert metadata.codex_thread_id == "thread-2"
 
     asyncio.run(scenario())
+
+
+def test_private_message_starts_typing_before_blocked_codex_and_stops(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = BlockingCodex()
+        typing = FakeTypingNotifier()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+            typing=_typing(typing),
+        )
+
+        task = asyncio.create_task(bot._handle_message(_private_message(1)))
+        await codex.started.wait()
+        assert typing.events == [("start", 1)]
+        codex.release.set()
+        await task
+
+        assert typing.events[-1] == ("stop", 1)
+
+    asyncio.run(scenario())
+
+
+def test_directly_addressed_stream_message_types_but_ordinary_stream_does_not(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        typing = FakeTypingNotifier()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=ThreadingCodex(),
+            zulip=FakePoster(),
+            typing=_typing(typing),
+        )
+
+        await bot._handle_message(_message(1, directly_addressed=True))
+        await bot._handle_message(_message(2))
+
+        assert typing.events == [("start", 1), ("stop", 1)]
+
+    asyncio.run(scenario())
+
+
+def test_dry_run_does_not_show_typing(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        typing = FakeTypingNotifier()
+        bot = AgentLoop(
+            config=_config(tmp_path, post_replies=False),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=ThreadingCodex(),
+            zulip=FakePoster(),
+            typing=_typing(typing),
+        )
+
+        await bot._handle_message(_private_message(1))
+
+        assert typing.events == []
+
+    asyncio.run(scenario())
+
+
+def test_typing_stops_when_codex_or_posting_fails(tmp_path):
+    async def codex_failure() -> list[tuple[str, int]]:
+        workspace = tmp_path / "codex"
+        initialize_workspace(workspace)
+        typing = FakeTypingNotifier()
+        bot = AgentLoop(
+            config=_config(workspace),
+            storage=WorkspaceStorage(workspace),
+            instructions=InstructionLoader(workspace),
+            memory=MemoryStore(workspace / "memory"),
+            codex=FailingCodex(),
+            zulip=FakePoster(),
+            typing=_typing(typing),
+        )
+
+        await bot._handle_message(_private_message(1))
+        return typing.events
+
+    async def post_failure() -> list[tuple[str, int]]:
+        workspace = tmp_path / "post"
+        initialize_workspace(workspace)
+        typing = FakeTypingNotifier()
+        bot = AgentLoop(
+            config=_config(workspace),
+            storage=WorkspaceStorage(workspace),
+            instructions=InstructionLoader(workspace),
+            memory=MemoryStore(workspace / "memory"),
+            codex=ThreadingCodex(),
+            zulip=FailingPoster(),
+            typing=_typing(typing),
+        )
+
+        await bot._handle_message(_private_message(1))
+        return typing.events
+
+    assert asyncio.run(codex_failure()) == [("start", 1), ("stop", 1)]
+    assert asyncio.run(post_failure()) == [("start", 1), ("stop", 1)]
+
+
+def test_pending_messages_preserve_direct_addressed(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    message = _message(1, directly_addressed=True)
+
+    storage.append_pending_messages(message.session_key, [message])
+
+    assert storage.pop_pending_messages(message.session_key)[0].directly_addressed is True
 
 
 def test_memory_ops_are_applied_before_posting(tmp_path):

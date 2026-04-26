@@ -6,8 +6,9 @@ import logging
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
+from .addressing import is_directly_addressed
 from .config import BotConfig
 from .models import NormalizedMessage, normalized_topic_hash, private_user_key, safe_slug, utc_now_iso
 
@@ -43,7 +44,13 @@ def html_to_text(value: str) -> str:
     return parser.text()
 
 
-def normalize_zulip_event(event: dict[str, Any], realm_id: str) -> NormalizedMessage | None:
+def normalize_zulip_event(
+    event: dict[str, Any],
+    realm_id: str,
+    *,
+    bot_user_id: int | None = None,
+    bot_aliases: Sequence[str] = (),
+) -> NormalizedMessage | None:
     if event.get("type") != "message":
         return None
 
@@ -53,7 +60,13 @@ def normalize_zulip_event(event: dict[str, Any], realm_id: str) -> NormalizedMes
 
     message_type = str(message.get("type") or "")
     if message_type in {"stream", "channel"}:
-        return _normalize_stream_message(event, message, realm_id)
+        return _normalize_stream_message(
+            event,
+            message,
+            realm_id,
+            bot_user_id=bot_user_id,
+            bot_aliases=bot_aliases,
+        )
     if message_type == "private":
         return _normalize_private_message(event, message, realm_id)
     return None
@@ -63,6 +76,9 @@ def _normalize_stream_message(
     event: dict[str, Any],
     message: dict[str, Any],
     realm_id: str,
+    *,
+    bot_user_id: int | None,
+    bot_aliases: Sequence[str],
 ) -> NormalizedMessage | None:
     stream_id = message.get("stream_id")
     if stream_id is None:
@@ -90,6 +106,13 @@ def _normalize_stream_message(
         timestamp=message.get("timestamp"),
         received_at=utc_now_iso(),
         raw=event,
+        directly_addressed=is_directly_addressed(
+            event,
+            message,
+            content,
+            bot_user_id=bot_user_id,
+            bot_aliases=bot_aliases,
+        ),
     )
 
 
@@ -173,6 +196,14 @@ class ZulipPostResult:
         return {"request": self.request, "response": self.response}
 
 
+@dataclass(frozen=True)
+class ZulipBotProfile:
+    email: str | None = None
+    user_id: int | None = None
+    full_name: str | None = None
+    realm_id: str | None = None
+
+
 class ZulipClientIO:
     def __init__(self, client: Any) -> None:
         self.client = client
@@ -189,15 +220,24 @@ class ZulipClientIO:
             kwargs["config_file"] = str(config.zulip_config_file)
         return cls(zulip.Client(**kwargs))
 
-    def bot_email(self) -> str | None:
+    def bot_profile(self) -> ZulipBotProfile:
         try:
             profile = self.client.get_profile()
         except Exception:
             LOGGER.exception("Unable to fetch Zulip profile")
-            return None
+            return ZulipBotProfile()
         if isinstance(profile, dict):
-            return profile.get("email")
-        return None
+            user_id = _optional_int(profile.get("user_id") or profile.get("id"))
+            return ZulipBotProfile(
+                email=profile.get("email"),
+                user_id=user_id,
+                full_name=profile.get("full_name"),
+                realm_id=str(profile["realm_id"]) if profile.get("realm_id") is not None else None,
+            )
+        return ZulipBotProfile()
+
+    def bot_email(self) -> str | None:
+        return self.bot_profile().email
 
     def realm_id(self) -> str | None:
         for method_name in ["get_server_settings", "get_profile"]:
@@ -241,3 +281,42 @@ class ZulipClientIO:
             event_types=["message"],
             all_public_streams=all_public_streams,
         )
+
+
+class ZulipTypingNotifier:
+    def __init__(self, client: Any) -> None:
+        self.client = client
+
+    async def start(self, message: NormalizedMessage) -> None:
+        await self._set_typing(message, "start")
+
+    async def stop(self, message: NormalizedMessage) -> None:
+        await self._set_typing(message, "stop")
+
+    async def _set_typing(self, message: NormalizedMessage, op: str) -> None:
+        request = self._request(message, op)
+        if request is None:
+            return
+        response = await asyncio.to_thread(self.client.set_typing_status, request)
+        if not isinstance(response, dict):
+            response = {"result": "unknown", "raw": response}
+        if response.get("result") not in {None, "success"}:
+            raise RuntimeError(f"Zulip set_typing_status failed: {response!r}")
+
+    def _request(self, message: NormalizedMessage, op: str) -> dict[str, Any] | None:
+        if message.conversation_type == "private":
+            if message.sender_id is None:
+                return None
+            return {
+                "type": "private",
+                "op": op,
+                "to": [message.sender_id],
+            }
+        if message.stream_id is None:
+            return None
+        return {
+            "type": "stream",
+            "op": op,
+            "stream_id": message.stream_id,
+            "topic": message.topic,
+        }
