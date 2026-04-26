@@ -2,8 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    TOKENZULIP_WORKSPACE=/app/workspace \
-    TOKENZULIP_ZULIPRC=/run/secrets/zuliprc
+    TOKENZULIP_WORKSPACE=/runtime/workspace \
+    TOKENZULIP_ZULIPRC=/runtime/.zuliprc
 
 WORKDIR /app
 
@@ -17,4 +17,3 @@ COPY workspace ./workspace
 
 ENTRYPOINT ["token-zulip"]
 CMD ["run"]
-

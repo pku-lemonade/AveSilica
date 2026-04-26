@@ -61,37 +61,37 @@ When the outbound decisions look right, remove `--dry-run` or set `TOKENZULIP_PO
 
 ## Container On Debian With Podman
 
-Clone the repo on the Debian host, then build the image:
+Clone the repo on the Debian host. Keep runtime files in the clone:
 
 ```bash
-podman build -t token-zulip .
+cp examples/.env.example .env
+cp examples/.zuliprc.example .zuliprc
+$EDITOR .env .zuliprc
+sudo podman build -t token-zulip .
 ```
 
-Create runtime files:
+The service below uses root's Podman storage. For manual rootless runs, use the same commands without `sudo`.
+
+If you want to initialize or refresh the editable workspace from the container:
 
 ```bash
-sudo install -d -m 0750 /etc/token-zulip /srv/token-zulip
-sudo cp examples/.env.example /etc/token-zulip/token-zulip.env
-sudo cp examples/.zuliprc.example /etc/token-zulip/zuliprc
-sudo cp -a workspace /srv/token-zulip/workspace
-sudo $EDITOR /etc/token-zulip/token-zulip.env
-sudo $EDITOR /etc/token-zulip/zuliprc
+sudo podman run --rm --env-file .env --volume "$PWD:/runtime" localhost/token-zulip:latest init
 ```
 
 Dry-run the container:
 
 ```bash
-podman run --rm \
-  --env-file /etc/token-zulip/token-zulip.env \
-  --volume /srv/token-zulip/workspace:/app/workspace \
-  --volume /etc/token-zulip/zuliprc:/run/secrets/zuliprc:ro \
-  localhost/token-zulip:latest run --dry-run
+sudo podman run --rm --env-file .env --volume "$PWD:/runtime" localhost/token-zulip:latest run --dry-run
 ```
+
+Run live by removing `--dry-run`.
 
 Install the systemd service:
 
 ```bash
-sudo cp examples/systemd/token-zulip.service /etc/systemd/system/token-zulip.service
+sudo mkdir -p /opt
+sudo ln -sfn "$PWD" /opt/token-zulip
+sudo systemctl link /opt/token-zulip/examples/systemd/token-zulip.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now token-zulip.service
 ```
@@ -104,7 +104,7 @@ sudo journalctl -u token-zulip.service -f
 sudo systemctl restart token-zulip.service
 ```
 
-To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `/etc/token-zulip/token-zulip.env`, then restart the service.
+To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.env`, then restart the service.
 
 ## Workspace Layout
 
@@ -123,4 +123,3 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `/et
 Incoming Zulip events are persisted before any model call. Work is serialized per `zulip:<realm_id>:stream:<stream_id>:topic:<topic_hash>` session, so a busy topic cannot race itself. If messages arrive for an active topic, they are appended to that topic's pending queue and processed in a follow-up turn.
 
 Codex returns structured JSON with `should_reply`, `reply_kind`, `message_to_post`, memory updates, scratchpad updates, and confidence. The orchestrator validates and writes memory before posting any reply.
-

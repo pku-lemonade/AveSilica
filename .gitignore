@@ -1,0 +1,7 @@
+.env
+.zuliprc
+.venv/
+__pycache__/
+.pytest_cache/
+workspace/state/
+
