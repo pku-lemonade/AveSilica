@@ -10,10 +10,10 @@ RestartSec=10
 TimeoutStopSec=30
 WorkingDirectory=/opt/token-zulip
 ExecStartPre=-/usr/bin/podman rm -f token-zulip
-ExecStart=/usr/bin/podman run --name token-zulip --pull=never --env-file /opt/token-zulip/.env --volume /opt/token-zulip:/runtime localhost/token-zulip:latest run
+ExecStart=/usr/bin/podman run --name token-zulip --pull=never --network host --env-file /opt/token-zulip/.env --volume /opt/token-zulip:/runtime --volume %h/.codex:/root/.codex localhost/token-zulip:latest run
 ExecStop=/usr/bin/podman stop -t 20 token-zulip
 ExecStopPost=-/usr/bin/podman rm -f token-zulip
 KillMode=none
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
