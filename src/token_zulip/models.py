@@ -11,6 +11,7 @@ from typing import Any
 REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
 UPDATE_MODES = {"append", "replace"}
 MEMORY_FILES = {"durable.md", "open_questions.md", "tasks.md", "people.md"}
+CONVERSATION_TYPES = {"stream", "private"}
 
 
 DECISION_JSON_SCHEMA: dict[str, Any] = {
@@ -71,6 +72,15 @@ def normalized_topic_hash(topic: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+def private_user_key(sender_id: int | None, sender_email: str) -> str:
+    if sender_id is not None:
+        return str(sender_id)
+    normalized_email = sender_email.strip().casefold()
+    if normalized_email:
+        return "email-" + hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:16]
+    return "unknown"
+
+
 def safe_slug(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip().lower())
     slug = re.sub(r"-+", "-", slug).strip("-")
@@ -80,11 +90,16 @@ def safe_slug(value: str) -> str:
 @dataclass(frozen=True)
 class SessionKey:
     realm_id: str
-    stream_id: int
+    stream_id: int | None
     topic_hash: str
+    conversation_type: str = "stream"
+    private_user_key: str | None = None
 
     @property
     def value(self) -> str:
+        if self.conversation_type == "private":
+            user_key = self.private_user_key or self.topic_hash or "unknown"
+            return f"zulip:{self.realm_id}:private:user:{user_key}"
         return f"zulip:{self.realm_id}:stream:{self.stream_id}:topic:{self.topic_hash}"
 
     @property
@@ -96,7 +111,7 @@ class SessionKey:
 class NormalizedMessage:
     realm_id: str
     message_id: int
-    stream_id: int
+    stream_id: int | None
     stream: str
     stream_slug: str
     topic: str
@@ -108,6 +123,9 @@ class NormalizedMessage:
     timestamp: int | None
     received_at: str
     raw: dict[str, Any]
+    conversation_type: str = "stream"
+    private_user_key: str | None = None
+    reply_required: bool = False
 
     @property
     def session_key(self) -> SessionKey:
@@ -115,6 +133,8 @@ class NormalizedMessage:
             realm_id=self.realm_id,
             stream_id=self.stream_id,
             topic_hash=self.topic_hash,
+            conversation_type=self.conversation_type,
+            private_user_key=self.private_user_key,
         )
 
     def to_record(self) -> dict[str, Any]:
@@ -126,6 +146,9 @@ class NormalizedMessage:
             "stream_slug": self.stream_slug,
             "topic": self.topic,
             "topic_hash": self.topic_hash,
+            "conversation_type": self.conversation_type,
+            "private_user_key": self.private_user_key,
+            "reply_required": self.reply_required,
             "sender_email": self.sender_email,
             "sender_full_name": self.sender_full_name,
             "sender_id": self.sender_id,
@@ -136,17 +159,24 @@ class NormalizedMessage:
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "NormalizedMessage":
+        stream_id = record.get("stream_id")
+        sender_id = record.get("sender_id")
+        conversation_type = str(record.get("conversation_type") or "stream")
+        private_key = record.get("private_user_key")
         return cls(
             realm_id=str(record["realm_id"]),
             message_id=int(record["message_id"]),
-            stream_id=int(record["stream_id"]),
+            stream_id=int(stream_id) if stream_id is not None else None,
             stream=str(record["stream"]),
             stream_slug=str(record.get("stream_slug") or safe_slug(str(record["stream"]))),
             topic=str(record["topic"]),
             topic_hash=str(record["topic_hash"]),
+            conversation_type=conversation_type,
+            private_user_key=str(private_key) if private_key is not None else None,
+            reply_required=bool(record.get("reply_required") or conversation_type == "private"),
             sender_email=str(record.get("sender_email") or ""),
             sender_full_name=str(record.get("sender_full_name") or ""),
-            sender_id=record.get("sender_id"),
+            sender_id=int(sender_id) if sender_id is not None else None,
             content=str(record.get("content") or ""),
             timestamp=record.get("timestamp"),
             received_at=str(record.get("received_at") or utc_now_iso()),
@@ -300,4 +330,3 @@ def _extract_json_object(text: str) -> str:
                 return stripped[start : idx + 1]
 
     raise ValueError("unterminated JSON object in model response")
-

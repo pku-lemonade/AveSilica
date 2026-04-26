@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from typing import Any, Callable
 
 from .config import BotConfig
-from .models import NormalizedMessage, normalized_topic_hash, safe_slug, utc_now_iso
+from .models import NormalizedMessage, normalized_topic_hash, private_user_key, safe_slug, utc_now_iso
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,26 +52,32 @@ def normalize_zulip_event(event: dict[str, Any], realm_id: str) -> NormalizedMes
         return None
 
     message_type = str(message.get("type") or "")
-    if message_type not in {"stream", "channel"}:
-        return None
+    if message_type in {"stream", "channel"}:
+        return _normalize_stream_message(event, message, realm_id)
+    if message_type == "private":
+        return _normalize_private_message(event, message, realm_id)
+    return None
 
+
+def _normalize_stream_message(
+    event: dict[str, Any],
+    message: dict[str, Any],
+    realm_id: str,
+) -> NormalizedMessage | None:
     stream_id = message.get("stream_id")
     if stream_id is None:
         return None
 
     stream = _stream_name(message)
     topic = str(message.get("subject") or message.get("topic") or "")
-    message_id = message.get("id")
-    if message_id is None:
+    common = _common_message_fields(event, message, realm_id)
+    if common is None:
         return None
-
-    content_html = str(message.get("content") or "")
-    content = html_to_text(content_html) or content_html
-    resolved_realm_id = str(event.get("realm_id") or message.get("realm_id") or realm_id or "unknown")
+    content, message_id, resolved_realm_id = common
 
     return NormalizedMessage(
         realm_id=resolved_realm_id,
-        message_id=int(message_id),
+        message_id=message_id,
         stream_id=int(stream_id),
         stream=stream,
         stream_slug=safe_slug(stream),
@@ -79,12 +85,76 @@ def normalize_zulip_event(event: dict[str, Any], realm_id: str) -> NormalizedMes
         topic_hash=normalized_topic_hash(topic),
         sender_email=str(message.get("sender_email") or ""),
         sender_full_name=str(message.get("sender_full_name") or ""),
-        sender_id=message.get("sender_id"),
+        sender_id=_optional_int(message.get("sender_id")),
         content=content,
         timestamp=message.get("timestamp"),
         received_at=utc_now_iso(),
         raw=event,
     )
+
+
+def _normalize_private_message(
+    event: dict[str, Any],
+    message: dict[str, Any],
+    realm_id: str,
+) -> NormalizedMessage | None:
+    recipient = message.get("display_recipient")
+    if not isinstance(recipient, list) or len(recipient) != 2:
+        return None
+
+    common = _common_message_fields(event, message, realm_id)
+    if common is None:
+        return None
+    content, message_id, resolved_realm_id = common
+
+    sender_email = str(message.get("sender_email") or "")
+    sender_id = _optional_int(message.get("sender_id"))
+    user_key = private_user_key(sender_id, sender_email)
+    topic = str(message.get("subject") or message.get("topic") or "private")
+
+    return NormalizedMessage(
+        realm_id=resolved_realm_id,
+        message_id=message_id,
+        stream_id=None,
+        stream="private",
+        stream_slug="private",
+        topic=topic,
+        topic_hash=user_key,
+        conversation_type="private",
+        private_user_key=user_key,
+        reply_required=True,
+        sender_email=sender_email,
+        sender_full_name=str(message.get("sender_full_name") or ""),
+        sender_id=sender_id,
+        content=content,
+        timestamp=message.get("timestamp"),
+        received_at=utc_now_iso(),
+        raw=event,
+    )
+
+
+def _common_message_fields(
+    event: dict[str, Any],
+    message: dict[str, Any],
+    realm_id: str,
+) -> tuple[str, int, str] | None:
+    message_id = message.get("id")
+    if message_id is None:
+        return None
+
+    content_html = str(message.get("content") or "")
+    content = html_to_text(content_html) or content_html
+    resolved_realm_id = str(event.get("realm_id") or message.get("realm_id") or realm_id or "unknown")
+    return content, int(message_id), resolved_realm_id
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _stream_name(message: dict[str, Any]) -> str:
@@ -143,12 +213,21 @@ class ZulipClientIO:
         return None
 
     async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
-        request = {
-            "type": "stream",
-            "to": message.stream,
-            "topic": message.topic,
-            "content": content,
-        }
+        if message.conversation_type == "private":
+            if not message.sender_email:
+                raise RuntimeError("Cannot reply to private Zulip message without sender_email")
+            request = {
+                "type": "private",
+                "to": [message.sender_email],
+                "content": content,
+            }
+        else:
+            request = {
+                "type": "stream",
+                "to": message.stream,
+                "topic": message.topic,
+                "content": content,
+            }
         response = await asyncio.to_thread(self.client.send_message, request)
         if not isinstance(response, dict):
             response = {"result": "unknown", "raw": response}
@@ -158,4 +237,3 @@ class ZulipClientIO:
 
     def listen(self, callback: Callable[[dict[str, Any]], None]) -> None:
         self.client.call_on_each_event(callback, event_types=["message"])
-

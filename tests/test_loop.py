@@ -7,7 +7,7 @@ from pathlib import Path
 from token_zulip.codex_adapter import CodexRunResult
 from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
-from token_zulip.loop import AgentLoop
+from token_zulip.loop import PRIVATE_REPLY_FALLBACK, AgentLoop
 from token_zulip.memory import MemoryStore
 from token_zulip.models import NormalizedMessage
 from token_zulip.storage import WorkspaceStorage
@@ -53,6 +53,29 @@ def _message(message_id: int, content: str = "hello") -> NormalizedMessage:
     )
 
 
+def _private_message(message_id: int, sender_id: int = 1, sender_email: str = "alice@example.com") -> NormalizedMessage:
+    private_user_key = str(sender_id)
+    return NormalizedMessage(
+        realm_id="realm",
+        message_id=message_id,
+        stream_id=None,
+        stream="private",
+        stream_slug="private",
+        topic="private",
+        topic_hash=private_user_key,
+        conversation_type="private",
+        private_user_key=private_user_key,
+        reply_required=True,
+        sender_email=sender_email,
+        sender_full_name=f"User {sender_id}",
+        sender_id=sender_id,
+        content="hi",
+        timestamp=None,
+        received_at="now",
+        raw={},
+    )
+
+
 class BlockingCodex:
     def __init__(self) -> None:
         self.calls = 0
@@ -88,6 +111,36 @@ class MemoryCheckingCodex:
             "confidence": 0.8,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
+
+
+class SilentCodex:
+    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+        payload = {
+            "should_reply": False,
+            "reply_kind": "silent",
+            "message_to_post": "",
+            "memory_updates": [],
+            "scratchpad_updates": [],
+            "confidence": 0.9,
+        }
+        return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
+
+
+class ThreadingCodex:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+        self.calls += 1
+        payload = {
+            "should_reply": True,
+            "reply_kind": "chat",
+            "message_to_post": f"Reply {self.calls}",
+            "memory_updates": [],
+            "scratchpad_updates": [],
+            "confidence": 0.9,
+        }
+        return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
 
 
 class FakePoster:
@@ -184,5 +237,55 @@ def test_bot_authored_events_are_ignored_but_raw_event_is_stored(tmp_path):
         assert result.accepted is False
         assert bot.queue.empty()
         assert list((tmp_path / "state" / "raw").glob("*.jsonl"))
+
+    asyncio.run(scenario())
+
+
+def test_private_message_posts_fallback_when_codex_is_silent(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=SilentCodex(),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_private_message(1))
+
+        assert poster.posts == [{"topic": "private", "content": PRIVATE_REPLY_FALLBACK}]
+        assert bot.storage.load_metadata(_private_message(1).session_key).last_processed_message_id == 1
+
+    asyncio.run(scenario())
+
+
+def test_private_messages_from_different_senders_use_different_sessions(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = ThreadingCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+        first = _private_message(1, sender_id=1, sender_email="alice@example.com")
+        second = _private_message(2, sender_id=2, sender_email="bob@example.com")
+
+        await bot._handle_message(first)
+        await bot._handle_message(second)
+
+        assert first.session_key.value == "zulip:realm:private:user:1"
+        assert second.session_key.value == "zulip:realm:private:user:2"
+        assert first.session_key.storage_id != second.session_key.storage_id
+        assert bot.storage.load_metadata(first.session_key).codex_thread_id == "thread-1"
+        assert bot.storage.load_metadata(second.session_key).codex_thread_id == "thread-2"
+        assert [post["content"] for post in poster.posts] == ["Reply 1", "Reply 2"]
 
     asyncio.run(scenario())

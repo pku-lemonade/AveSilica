@@ -60,3 +60,24 @@ def test_memory_updates_are_validated_and_indexed(tmp_path):
     assert key.value in (tmp_path / "memory" / "index.json").read_text(encoding="utf-8")
     assert "durable.md" in store.render_selected(key)
 
+
+def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
+    initialize_workspace(tmp_path)
+    store = MemoryStore(tmp_path / "memory")
+    private_key = SessionKey(
+        "realm",
+        None,
+        "3",
+        conversation_type="private",
+        private_user_key="3",
+    )
+    stream_key = SessionKey("realm", 10, "topic123")
+
+    store.apply_updates(
+        private_key,
+        [MemoryUpdate(file="durable.md", mode="append", content="- Alice likes brief DM replies")],
+    )
+
+    assert "Alice likes brief DM replies" in store.render_selected(private_key)
+    assert "Alice likes brief DM replies" not in store.render_selected(stream_key)
+    assert "Alice likes brief DM replies" not in (tmp_path / "memory" / "durable.md").read_text(encoding="utf-8")

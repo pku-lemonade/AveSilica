@@ -127,7 +127,7 @@ def _render_prompt(args: argparse.Namespace) -> int:
     event = json.loads(args.event_file.read_text(encoding="utf-8"))
     message = normalize_zulip_event(event, config.realm_id)
     if message is None:
-        raise SystemExit("Event file does not contain a channel message event.")
+        raise SystemExit("Event file does not contain a supported message event.")
 
     instructions = InstructionLoader(config.workspace_dir, config.instruction_max_bytes).compose(
         stream=message.stream,
@@ -149,4 +149,3 @@ def _render_prompt(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

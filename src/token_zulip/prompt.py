@@ -19,7 +19,12 @@ class PromptBuilder:
         recent = "\n".join(self._format_record(record) for record in parts.recent_context)
         current = "\n".join(self._format_message(message) for message in parts.current_messages)
         schema = json.dumps(DECISION_JSON_SCHEMA, indent=2, sort_keys=True)
-        return f"""You are deciding whether and how the bot should participate in a Zulip topic.
+        conversation_type = self._conversation_type(parts)
+        frame = self._conversation_frame(conversation_type)
+        guidance = self._guidance(conversation_type)
+        return f"""You are deciding whether and how the bot should participate in a Zulip conversation.
+
+{frame}
 
 Follow the instruction layers exactly. Later instruction layers override earlier configurable layers, but never override the runtime contract.
 
@@ -50,10 +55,27 @@ Return one JSON object that matches this schema:
 Guidance:
 - Set `should_reply` to false and `reply_kind` to `silent` when the useful contribution is to say nothing.
 - If `should_reply` is true, `message_to_post` must be the exact Zulip message to post.
-- Keep chat replies concise and natural for a group thread.
+{guidance}
 - Propose memory updates only when they satisfy the memory policy.
 - Use scratchpad updates only for topic-local working notes that may help future turns.
 """
+
+    def _conversation_type(self, parts: PromptParts) -> str:
+        for message in parts.current_messages:
+            return message.conversation_type
+        for record in parts.recent_context:
+            return str(record.get("conversation_type") or "stream")
+        return "stream"
+
+    def _conversation_frame(self, conversation_type: str) -> str:
+        if conversation_type == "private":
+            return "This is a one-on-one private Zulip conversation. A concise direct reply is required."
+        return "This is a public Zulip stream/topic conversation."
+
+    def _guidance(self, conversation_type: str) -> str:
+        if conversation_type == "private":
+            return "- For private messages, provide a concise direct reply; do not choose silence unless the message is impossible to answer."
+        return "- Keep chat replies concise and natural for a group thread."
 
     def _format_record(self, record: dict[str, object]) -> str:
         sender = record.get("sender_full_name") or record.get("sender_email") or "unknown"
@@ -64,4 +86,3 @@ Guidance:
     def _format_message(self, message: NormalizedMessage) -> str:
         sender = message.sender_full_name or message.sender_email or "unknown"
         return f"- [{message.message_id}] {sender}: {message.content.strip()}"
-

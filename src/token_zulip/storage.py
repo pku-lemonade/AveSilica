@@ -13,8 +13,10 @@ from .models import AgentDecision, NormalizedMessage, ScratchpadUpdate, SessionK
 class SessionMetadata:
     session_key: str
     realm_id: str
-    stream_id: int
+    stream_id: int | None
     topic_hash: str
+    conversation_type: str = "stream"
+    private_user_key: str | None = None
     codex_thread_id: str | None = None
     last_processed_message_id: int | None = None
     updated_at: str = field(default_factory=utc_now_iso)
@@ -26,15 +28,21 @@ class SessionMetadata:
             realm_id=key.realm_id,
             stream_id=key.stream_id,
             topic_hash=key.topic_hash,
+            conversation_type=key.conversation_type,
+            private_user_key=key.private_user_key,
         )
 
     @classmethod
     def from_record(cls, record: dict[str, Any], key: SessionKey) -> "SessionMetadata":
+        stream_id = record.get("stream_id", key.stream_id)
+        private_key = record.get("private_user_key", key.private_user_key)
         return cls(
             session_key=str(record.get("session_key") or key.value),
             realm_id=str(record.get("realm_id") or key.realm_id),
-            stream_id=int(record.get("stream_id") or key.stream_id),
+            stream_id=int(stream_id) if stream_id is not None else None,
             topic_hash=str(record.get("topic_hash") or key.topic_hash),
+            conversation_type=str(record.get("conversation_type") or key.conversation_type),
+            private_user_key=str(private_key) if private_key is not None else None,
             codex_thread_id=record.get("codex_thread_id"),
             last_processed_message_id=record.get("last_processed_message_id"),
             updated_at=str(record.get("updated_at") or utc_now_iso()),
@@ -46,6 +54,8 @@ class SessionMetadata:
             "realm_id": self.realm_id,
             "stream_id": self.stream_id,
             "topic_hash": self.topic_hash,
+            "conversation_type": self.conversation_type,
+            "private_user_key": self.private_user_key,
             "codex_thread_id": self.codex_thread_id,
             "last_processed_message_id": self.last_processed_message_id,
             "updated_at": self.updated_at,
@@ -126,7 +136,13 @@ class WorkspaceStorage:
 
     def save_metadata(self, metadata: SessionMetadata) -> None:
         metadata.updated_at = utc_now_iso()
-        key = SessionKey(metadata.realm_id, metadata.stream_id, metadata.topic_hash)
+        key = SessionKey(
+            metadata.realm_id,
+            metadata.stream_id,
+            metadata.topic_hash,
+            conversation_type=metadata.conversation_type,
+            private_user_key=metadata.private_user_key,
+        )
         self._write_json(self.session_path(key, "metadata.json"), metadata.to_record())
 
     def set_codex_thread_id(self, key: SessionKey, thread_id: str | None) -> None:
@@ -199,4 +215,3 @@ class WorkspaceStorage:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         tmp.replace(path)
-

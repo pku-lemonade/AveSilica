@@ -15,6 +15,7 @@ from .storage import WorkspaceStorage
 from .zulip_io import normalize_zulip_event
 
 LOGGER = logging.getLogger(__name__)
+PRIVATE_REPLY_FALLBACK = "I saw this, but couldn't produce a useful reply. Please try again."
 
 
 class ZulipPoster(Protocol):
@@ -57,7 +58,7 @@ class AgentLoop:
         self.storage.append_raw_event(event)
         message = normalize_zulip_event(event, self.config.realm_id)
         if message is None:
-            return EnqueueResult(False, "ignored non-channel message")
+            return EnqueueResult(False, "ignored unsupported message")
 
         if self.config.bot_email and message.sender_email.casefold() == self.config.bot_email.casefold():
             return EnqueueResult(False, "ignored bot-authored message", message.session_key.value, message.message_id)
@@ -171,12 +172,13 @@ class AgentLoop:
         memory_applied = self.memory.apply_updates(key, decision.memory_updates)
         self.storage.apply_scratchpad_updates(key, decision.scratchpad_updates)
 
+        message_to_post = self._message_to_post(first, decision)
         post_result: dict[str, Any] | None = None
-        if decision.should_reply and decision.message_to_post.strip():
+        if message_to_post:
             if self.config.post_replies:
-                post_result = await self.zulip.post_reply(first, decision.message_to_post.strip())
+                post_result = await self.zulip.post_reply(first, message_to_post)
             else:
-                post_result = {"dry_run": True, "content": decision.message_to_post.strip()}
+                post_result = {"dry_run": True, "content": message_to_post}
 
         self.storage.log_outbound(
             key=key,
@@ -188,3 +190,10 @@ class AgentLoop:
         )
         self.storage.mark_processed(key, [message.message_id for message in messages])
 
+    def _message_to_post(self, first: NormalizedMessage, decision: AgentDecision) -> str:
+        content = decision.message_to_post.strip()
+        if decision.should_reply and content:
+            return content
+        if first.reply_required:
+            return content or PRIVATE_REPLY_FALLBACK
+        return ""

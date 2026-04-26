@@ -16,33 +16,39 @@ class MemoryStore:
     def index_path(self) -> Path:
         return self.memory_dir / "index.json"
 
-    def ensure_files(self) -> None:
+    def ensure_files(self, memory_dir: Path | None = None) -> None:
+        memory_dir = memory_dir or self.memory_dir
+        memory_dir.mkdir(parents=True, exist_ok=True)
         for file_name in MEMORY_FILES:
-            path = self.memory_dir / file_name
+            path = memory_dir / file_name
             if not path.exists():
                 title = file_name.removesuffix(".md").replace("_", " ").title()
                 path.write_text(f"# {title}\n\n", encoding="utf-8")
-        if not self.index_path.exists():
-            self._write_index({"global": sorted(MEMORY_FILES), "sessions": {}})
+        index_path = self._index_path(memory_dir)
+        if not index_path.exists():
+            self._write_index(memory_dir, {"global": sorted(MEMORY_FILES), "sessions": {}})
 
     def render_selected(self, session_key: SessionKey) -> str:
-        self.ensure_files()
-        file_names = self._files_for_session(session_key)
+        memory_dir = self._memory_dir_for_session(session_key)
+        self.ensure_files(memory_dir)
+        file_names = self._files_for_session(session_key, memory_dir)
         parts: list[str] = []
         for file_name in file_names:
-            path = self._validated_path(file_name)
+            path = self._validated_path(memory_dir, file_name)
             content = path.read_text(encoding="utf-8").strip()
-            parts.append(f"## memory/{file_name}\n\n{content or '(empty)'}")
+            label = self._memory_label(session_key, file_name)
+            parts.append(f"## {label}\n\n{content or '(empty)'}")
         return "\n\n".join(parts)
 
     def apply_updates(self, session_key: SessionKey, updates: list[MemoryUpdate]) -> list[dict[str, Any]]:
-        self.ensure_files()
+        memory_dir = self._memory_dir_for_session(session_key)
+        self.ensure_files(memory_dir)
         applied: list[dict[str, Any]] = []
         for update in updates:
             content = update.content.strip()
             if not content:
                 continue
-            path = self._validated_path(update.file)
+            path = self._validated_path(memory_dir, update.file)
             if update.mode == "replace":
                 path.write_text(content + "\n", encoding="utf-8")
             else:
@@ -52,11 +58,21 @@ class MemoryStore:
             applied.append(update.to_record())
 
         if applied:
-            self._touch_session_index(session_key, sorted({item["file"] for item in applied}))
+            self._touch_session_index(memory_dir, session_key, sorted({item["file"] for item in applied}))
         return applied
 
-    def _files_for_session(self, session_key: SessionKey) -> list[str]:
-        index = self._read_index()
+    def _memory_dir_for_session(self, session_key: SessionKey) -> Path:
+        if session_key.conversation_type == "private":
+            return self.memory_dir / "private" / session_key.storage_id
+        return self.memory_dir
+
+    def _memory_label(self, session_key: SessionKey, file_name: str) -> str:
+        if session_key.conversation_type == "private":
+            return f"private-memory/{file_name}"
+        return f"memory/{file_name}"
+
+    def _files_for_session(self, session_key: SessionKey, memory_dir: Path) -> list[str]:
+        index = self._read_index(memory_dir)
         selected: list[str] = []
         for file_name in index.get("global", []):
             if file_name in MEMORY_FILES and file_name not in selected:
@@ -70,18 +86,22 @@ class MemoryStore:
 
         return selected or sorted(MEMORY_FILES)
 
-    def _validated_path(self, file_name: str) -> Path:
+    def _validated_path(self, memory_dir: Path, file_name: str) -> Path:
         if file_name not in MEMORY_FILES:
             raise ValueError(f"invalid memory file: {file_name!r}")
-        path = (self.memory_dir / file_name).resolve()
-        path.relative_to(self.memory_dir)
+        path = (memory_dir / file_name).resolve()
+        path.relative_to(memory_dir)
         return path
 
-    def _read_index(self) -> dict[str, Any]:
-        if not self.index_path.exists():
+    def _index_path(self, memory_dir: Path) -> Path:
+        return memory_dir / "index.json"
+
+    def _read_index(self, memory_dir: Path) -> dict[str, Any]:
+        index_path = self._index_path(memory_dir)
+        if not index_path.exists():
             return {"global": sorted(MEMORY_FILES), "sessions": {}}
         try:
-            data = json.loads(self.index_path.read_text(encoding="utf-8"))
+            data = json.loads(index_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return {"global": sorted(MEMORY_FILES), "sessions": {}}
         if not isinstance(data, dict):
@@ -90,11 +110,11 @@ class MemoryStore:
         data.setdefault("sessions", {})
         return data
 
-    def _write_index(self, index: dict[str, Any]) -> None:
-        self.index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    def _write_index(self, memory_dir: Path, index: dict[str, Any]) -> None:
+        self._index_path(memory_dir).write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    def _touch_session_index(self, session_key: SessionKey, files: list[str]) -> None:
-        index = self._read_index()
+    def _touch_session_index(self, memory_dir: Path, session_key: SessionKey, files: list[str]) -> None:
+        index = self._read_index(memory_dir)
         sessions = index.setdefault("sessions", {})
         existing = sessions.get(session_key.value, {})
         existing_files = existing.get("files", []) if isinstance(existing, dict) else []
@@ -103,5 +123,4 @@ class MemoryStore:
             "files": merged,
             "updated_at": utc_now_iso(),
         }
-        self._write_index(index)
-
+        self._write_index(memory_dir, index)
