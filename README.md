@@ -119,7 +119,6 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 ## Workspace Layout
 
 - `workspace/AGENTS.md`: global bot control instructions.
-- `workspace/AGENTS.override.md`: temporary global override, ignored while it only contains comments.
 - `workspace/roles/default.md`: default role and personality.
 - `workspace/loop/participation.md`: rules for speaking, staying silent, drafting plans, and asking questions.
 - `workspace/loop/memory.md`: rules for durable memory proposals.

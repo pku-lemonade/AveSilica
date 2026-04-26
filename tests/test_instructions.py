@@ -5,7 +5,7 @@ from token_zulip.models import normalized_topic_hash
 from token_zulip.workspace import initialize_workspace
 
 
-def test_instruction_layers_are_ordered_and_comment_only_override_is_ignored(tmp_path):
+def test_instruction_layers_are_ordered(tmp_path):
     initialize_workspace(tmp_path)
     stream_dir = tmp_path / "channels" / "engineering"
     topic_hash = normalized_topic_hash("Launch Plan")
@@ -17,7 +17,6 @@ def test_instruction_layers_are_ordered_and_comment_only_override_is_ignored(tmp
     text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, role="default")
 
     assert "hardcoded safety contract" in text
-    assert "AGENTS.override.md" not in text
     assert text.index("AGENTS.md") < text.index("roles/default.md")
     assert text.index("loop/memory.md") < text.index("channels/engineering/AGENTS.md")
     assert text.index("channels/engineering/AGENTS.md") < text.index(f"channels/engineering/{topic_hash}/AGENTS.md")

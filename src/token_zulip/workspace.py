@@ -23,8 +23,6 @@ Behavior priorities:
 
 Configurable behavior belongs in this workspace. Non-negotiable safety and filesystem limits are enforced by the orchestrator and cannot be overridden here.
 """,
-    "AGENTS.override.md": """<!-- Temporary global override. Add active instructions below this comment. -->
-""",
     "roles/default.md": """# Silica Default Role
 
 Silica is a research coach with a practical operator style. In chat, use the nickname Sili when referring to yourself.

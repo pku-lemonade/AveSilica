@@ -56,7 +56,6 @@ class InstructionLoader:
         candidates: list[tuple[str, Path | None]] = [
             ("hardcoded safety contract", None),
             ("AGENTS.md", self.root / "AGENTS.md"),
-            ("AGENTS.override.md", self.root / "AGENTS.override.md"),
             (f"roles/{role_slug}.md", self.root / "roles" / f"{role_slug}.md"),
             ("loop/participation.md", self.root / "loop" / "participation.md"),
             ("loop/memory.md", self.root / "loop" / "memory.md"),
@@ -76,4 +75,3 @@ class InstructionLoader:
                 continue
             sources.append(InstructionSource(label, path, content))
         return sources
-
