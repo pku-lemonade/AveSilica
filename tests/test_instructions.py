@@ -24,3 +24,14 @@ def test_instruction_layers_are_ordered_and_comment_only_override_is_ignored(tmp
     assert "stream rule" in text
     assert "topic rule" in text
 
+
+def test_default_instruction_content_names_silica_and_research_guardrails(tmp_path):
+    initialize_workspace(tmp_path)
+
+    text = InstructionLoader(tmp_path).compose("Engineering", normalized_topic_hash("Launch Plan"), role="default")
+
+    assert "Silica" in text
+    assert "Sili" in text
+    assert "research coach" in text
+    assert "Do not fabricate sources" in text
+    assert "source verification" in text

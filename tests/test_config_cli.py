@@ -23,4 +23,6 @@ def test_cli_init_creates_workspace_layout(tmp_path):
     assert (workspace / "AGENTS.md").exists()
     assert (workspace / "roles" / "default.md").exists()
     assert (workspace / "memory" / "index.json").exists()
-
+    assert "Silica" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Sili" in (workspace / "roles" / "default.md").read_text(encoding="utf-8")
+    assert "unsupported claims" in (workspace / "loop" / "memory.md").read_text(encoding="utf-8")
