@@ -90,7 +90,7 @@ podman run --rm --network host --env-file .env --volume "$PWD:/runtime" --volume
 
 Run live by removing `--dry-run`.
 
-By default, the example `.env` sets `TOKENZULIP_CODEX_SANDBOX=danger-full-access` and `TOKENZULIP_CODEX_APPROVAL_POLICY=never`. That is the low-friction Codex mode; the container and mounted paths are the boundary. `TOKENZULIP_CODEX_REASONING_EFFORT` is blank by default, so the adapter does not pass an effort value and the SDK/model default is used.
+By default, the example `.env` sets `TOKENZULIP_CODEX_SANDBOX=danger-full-access`, `TOKENZULIP_CODEX_APPROVAL_POLICY=never`, and `TOKENZULIP_CODEX_REASONING_EFFORT=medium`. That is the low-friction Codex mode; the container and mounted paths are the boundary.
 
 The example `.env` also sets HTTP proxy variables to `http://127.0.0.1:50834`. The `--network host` flag lets the container reach that host-local proxy.
 

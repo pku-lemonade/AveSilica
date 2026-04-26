@@ -14,11 +14,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
-COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
-
-RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
-
 COPY pyproject.toml README.md ./
 COPY src ./src
 
@@ -29,7 +24,12 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove git \
     && rm -rf /var/lib/apt/lists/*
 
+
 COPY workspace ./workspace
+
+COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
+RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
 
 ENTRYPOINT ["token-zulip"]
 CMD ["run"]

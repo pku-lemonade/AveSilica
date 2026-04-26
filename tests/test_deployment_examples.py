@@ -11,7 +11,7 @@ def test_env_example_has_codex_yolo_proxy_and_mount_settings():
 
     assert "TOKENZULIP_CODEX_SANDBOX=danger-full-access" in text
     assert "TOKENZULIP_CODEX_APPROVAL_POLICY=never" in text
-    assert "TOKENZULIP_CODEX_REASONING_EFFORT=" in text
+    assert "TOKENZULIP_CODEX_REASONING_EFFORT=medium" in text
     assert "YOUR_USER" not in text
     assert "HOST_CODEX_HOME" not in text
     assert "HTTP_PROXY=http://127.0.0.1:50834" in text

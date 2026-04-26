@@ -8,12 +8,14 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("TOKENZULIP_WORKSPACE", raising=False)
     monkeypatch.delenv("TOKENZULIP_CODEX_CWD", raising=False)
+    monkeypatch.delenv("TOKENZULIP_CODEX_REASONING_EFFORT", raising=False)
     monkeypatch.delenv("TOKENZULIP_LISTEN_ALL_PUBLIC_STREAMS", raising=False)
 
     config = BotConfig.from_env()
 
     assert config.workspace_dir == tmp_path / "workspace"
     assert config.codex_cwd == tmp_path / "workspace"
+    assert config.codex_reasoning_effort == "medium"
     assert config.listen_all_public_streams is True
 
 

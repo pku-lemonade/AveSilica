@@ -58,7 +58,7 @@ class BotConfig:
             bot_email=os.getenv("TOKENZULIP_BOT_EMAIL") or None,
             role=os.getenv("TOKENZULIP_ROLE", "default"),
             codex_model=os.getenv("TOKENZULIP_CODEX_MODEL", "gpt-5.4"),
-            codex_reasoning_effort=os.getenv("TOKENZULIP_CODEX_REASONING_EFFORT") or None,
+            codex_reasoning_effort=os.getenv("TOKENZULIP_CODEX_REASONING_EFFORT") or "medium",
             codex_cwd=codex_cwd,
             codex_sandbox=os.getenv("TOKENZULIP_CODEX_SANDBOX", "read-only") or None,
             codex_approval_policy=os.getenv("TOKENZULIP_CODEX_APPROVAL_POLICY", "never"),
