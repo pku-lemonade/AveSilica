@@ -37,10 +37,10 @@ DECISION_JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["op"],
+                "required": ["op", "id", "scope", "kind", "status", "content"],
                 "properties": {
                     "op": {"type": "string", "enum": sorted(MEMORY_OPS)},
-                    "id": {"type": "string"},
+                    "id": {"type": ["string", "null"]},
                     "scope": {"type": "string", "enum": sorted(MEMORY_SCOPES)},
                     "kind": {"type": "string", "enum": sorted(MEMORY_KINDS)},
                     "status": {"type": "string", "enum": sorted(MEMORY_STATUSES)},

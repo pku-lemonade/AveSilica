@@ -3,8 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 
-from token_zulip.models import AgentDecision, NormalizedMessage, normalized_topic_hash
+from token_zulip.models import AgentDecision, DECISION_JSON_SCHEMA, NormalizedMessage, normalized_topic_hash
 from token_zulip.zulip_io import ZulipClientIO, normalize_zulip_event
+
+
+def _assert_required_matches_properties(schema: object, path: str = "$") -> None:
+    if isinstance(schema, dict):
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            assert sorted(schema.get("required", [])) == sorted(properties), path
+        for key, value in schema.items():
+            _assert_required_matches_properties(value, f"{path}.{key}")
+    elif isinstance(schema, list):
+        for index, item in enumerate(schema):
+            _assert_required_matches_properties(item, f"{path}[{index}]")
+
+
+def test_decision_json_schema_requires_all_declared_object_properties():
+    _assert_required_matches_properties(DECISION_JSON_SCHEMA)
 
 
 def test_normalize_zulip_stream_event_strips_html_and_hashes_topic():
@@ -150,7 +166,16 @@ def test_agent_decision_parses_fenced_json_and_validates_memory_ops():
         "should_reply": True,
         "reply_kind": "chat",
         "message_to_post": "Done.",
-        "memory_ops": [{"op": "upsert", "scope": "conversation", "kind": "task", "content": "Follow up"}],
+        "memory_ops": [
+            {
+                "op": "upsert",
+                "id": None,
+                "scope": "conversation",
+                "kind": "task",
+                "status": "active",
+                "content": "Follow up",
+            }
+        ],
         "scratchpad_op": {"op": "replace", "content": "notes"},
         "confidence": 2,
     }
@@ -159,5 +184,6 @@ def test_agent_decision_parses_fenced_json_and_validates_memory_ops():
 
     assert decision.should_reply is True
     assert decision.confidence == 1.0
+    assert decision.memory_ops[0].id is None
     assert decision.memory_ops[0].kind == "task"
     assert decision.scratchpad_op.op == "replace"
