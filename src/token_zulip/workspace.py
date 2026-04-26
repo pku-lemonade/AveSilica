@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -66,7 +65,7 @@ Use `chat` for ordinary help, concise synthesis, draft text, and lightweight rec
 """,
     "loop/memory.md": """# Memory Policy
 
-Propose durable memory updates only for information that will improve future help and is safe to retain.
+Propose durable memory operations only for information that will improve future help and is safe to retain.
 
 Good memory candidates:
 
@@ -77,20 +76,11 @@ Good memory candidates:
 
 Do not store secrets, credentials, private personal data, health information, grades, sensitive institutional details, transient moods, unsupported claims, or guesses.
 
-Keep memory updates terse, auditable, and attributable to the current thread context. Do not use memory as a scratchpad for reasoning.
+Keep memory operations terse, auditable, and attributable to the current thread context. Do not use memory as a scratchpad for reasoning.
 
-Memory is written by the orchestrator after validation. Use append mode for new facts and replace mode only when correcting or consolidating stale content.
+Memory is written by the orchestrator after validation. Use `upsert` for new or corrected records and `archive` when an existing memory ID is stale. Prefer updating or archiving existing IDs over creating duplicate memories.
 """,
-    "memory/durable.md": "# Durable Memory\n\n",
-    "memory/open_questions.md": "# Open Questions\n\n",
-    "memory/tasks.md": "# Tasks\n\n",
-    "memory/people.md": "# People\n\n",
-}
-
-
-DEFAULT_INDEX = {
-    "global": ["durable.md", "open_questions.md", "tasks.md", "people.md"],
-    "sessions": {},
+    "memory/items.json": "[]\n",
 }
 
 
@@ -103,7 +93,6 @@ def initialize_workspace(root: Path, overwrite: bool = False) -> list[Path]:
         "loop",
         "channels",
         "memory",
-        "state/raw",
         "state/sessions",
         "state/errors",
     ]:
@@ -117,11 +106,6 @@ def initialize_workspace(root: Path, overwrite: bool = False) -> list[Path]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         created.append(path)
-
-    index_path = root / "memory" / "index.json"
-    if overwrite or not index_path.exists():
-        index_path.write_text(json.dumps(DEFAULT_INDEX, indent=2) + "\n", encoding="utf-8")
-        created.append(index_path)
 
     gitkeep = root / "channels" / ".gitkeep"
     if not gitkeep.exists():

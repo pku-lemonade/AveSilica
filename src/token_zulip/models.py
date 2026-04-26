@@ -9,8 +9,11 @@ from typing import Any
 
 
 REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
-UPDATE_MODES = {"append", "replace"}
-MEMORY_FILES = {"durable.md", "open_questions.md", "tasks.md", "people.md"}
+MEMORY_OPS = {"archive", "upsert"}
+MEMORY_KINDS = {"decision", "fact", "person", "preference", "question", "task"}
+MEMORY_SCOPES = {"conversation", "global"}
+MEMORY_STATUSES = {"active", "answered", "archived", "done"}
+SCRATCHPAD_OPS = {"clear", "none", "replace"}
 CONVERSATION_TYPES = {"stream", "private"}
 
 
@@ -21,37 +24,37 @@ DECISION_JSON_SCHEMA: dict[str, Any] = {
         "should_reply",
         "reply_kind",
         "message_to_post",
-        "memory_updates",
-        "scratchpad_updates",
+        "memory_ops",
+        "scratchpad_op",
         "confidence",
     ],
     "properties": {
         "should_reply": {"type": "boolean"},
         "reply_kind": {"type": "string", "enum": sorted(REPLY_KINDS)},
         "message_to_post": {"type": "string"},
-        "memory_updates": {
+        "memory_ops": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["file", "mode", "content"],
+                "required": ["op"],
                 "properties": {
-                    "file": {"type": "string", "enum": sorted(MEMORY_FILES)},
-                    "mode": {"type": "string", "enum": sorted(UPDATE_MODES)},
+                    "op": {"type": "string", "enum": sorted(MEMORY_OPS)},
+                    "id": {"type": "string"},
+                    "scope": {"type": "string", "enum": sorted(MEMORY_SCOPES)},
+                    "kind": {"type": "string", "enum": sorted(MEMORY_KINDS)},
+                    "status": {"type": "string", "enum": sorted(MEMORY_STATUSES)},
                     "content": {"type": "string"},
                 },
             },
         },
-        "scratchpad_updates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["mode", "content"],
-                "properties": {
-                    "mode": {"type": "string", "enum": sorted(UPDATE_MODES)},
-                    "content": {"type": "string"},
-                },
+        "scratchpad_op": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["op", "content"],
+            "properties": {
+                "op": {"type": "string", "enum": sorted(SCRATCHPAD_OPS)},
+                "content": {"type": "string"},
             },
         },
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -139,15 +142,7 @@ class NormalizedMessage:
 
     def to_record(self) -> dict[str, Any]:
         return {
-            "realm_id": self.realm_id,
             "message_id": self.message_id,
-            "stream_id": self.stream_id,
-            "stream": self.stream,
-            "stream_slug": self.stream_slug,
-            "topic": self.topic,
-            "topic_hash": self.topic_hash,
-            "conversation_type": self.conversation_type,
-            "private_user_key": self.private_user_key,
             "reply_required": self.reply_required,
             "sender_email": self.sender_email,
             "sender_full_name": self.sender_full_name,
@@ -157,69 +152,124 @@ class NormalizedMessage:
             "received_at": self.received_at,
         }
 
+
+def normalize_memory_content(content: str) -> str:
+    return re.sub(r"\s+", " ", content.strip()).casefold()
+
+
+@dataclass(frozen=True)
+class MemoryOperation:
+    op: str
+    scope: str = "conversation"
+    kind: str = "fact"
+    content: str = ""
+    id: str | None = None
+    status: str = "active"
+
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> "NormalizedMessage":
-        stream_id = record.get("stream_id")
-        sender_id = record.get("sender_id")
-        conversation_type = str(record.get("conversation_type") or "stream")
-        private_key = record.get("private_user_key")
+    def from_mapping(cls, value: dict[str, Any]) -> "MemoryOperation":
+        op = str(value.get("op") or "")
+        scope = str(value.get("scope") or "conversation")
+        kind = str(value.get("kind") or "fact")
+        status = str(value.get("status") or "active")
+        content = str(value.get("content") or "")
+        item_id = value.get("id")
+        if op not in MEMORY_OPS:
+            raise ValueError(f"invalid memory op: {op!r}")
+        if scope not in MEMORY_SCOPES:
+            raise ValueError(f"invalid memory scope: {scope!r}")
+        if kind not in MEMORY_KINDS:
+            raise ValueError(f"invalid memory kind: {kind!r}")
+        if status not in MEMORY_STATUSES:
+            raise ValueError(f"invalid memory status: {status!r}")
+        if op == "archive" and not str(item_id or "").strip():
+            raise ValueError("archive memory op requires id")
+        if op == "upsert" and not content.strip():
+            raise ValueError("upsert memory op requires content")
         return cls(
-            realm_id=str(record["realm_id"]),
-            message_id=int(record["message_id"]),
-            stream_id=int(stream_id) if stream_id is not None else None,
-            stream=str(record["stream"]),
-            stream_slug=str(record.get("stream_slug") or safe_slug(str(record["stream"]))),
-            topic=str(record["topic"]),
-            topic_hash=str(record["topic_hash"]),
-            conversation_type=conversation_type,
-            private_user_key=str(private_key) if private_key is not None else None,
-            reply_required=bool(record.get("reply_required") or conversation_type == "private"),
-            sender_email=str(record.get("sender_email") or ""),
-            sender_full_name=str(record.get("sender_full_name") or ""),
-            sender_id=int(sender_id) if sender_id is not None else None,
-            content=str(record.get("content") or ""),
-            timestamp=record.get("timestamp"),
-            received_at=str(record.get("received_at") or utc_now_iso()),
-            raw=dict(record.get("raw") or {}),
+            op=op,
+            scope=scope,
+            kind=kind,
+            content=content,
+            id=str(item_id).strip() if item_id is not None else None,
+            status=status,
         )
 
-
-@dataclass(frozen=True)
-class MemoryUpdate:
-    file: str
-    mode: str
-    content: str
-
-    @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "MemoryUpdate":
-        file_name = str(value.get("file") or "")
-        mode = str(value.get("mode") or "")
-        content = str(value.get("content") or "")
-        if file_name not in MEMORY_FILES:
-            raise ValueError(f"invalid memory file: {file_name!r}")
-        if mode not in UPDATE_MODES:
-            raise ValueError(f"invalid memory update mode: {mode!r}")
-        return cls(file=file_name, mode=mode, content=content)
-
     def to_record(self) -> dict[str, str]:
-        return {"file": self.file, "mode": self.mode, "content": self.content}
+        record = {
+            "op": self.op,
+            "scope": self.scope,
+            "kind": self.kind,
+            "status": self.status,
+            "content": self.content,
+        }
+        if self.id:
+            record["id"] = self.id
+        return record
 
 
 @dataclass(frozen=True)
-class ScratchpadUpdate:
-    mode: str
-    content: str
+class ScratchpadOperation:
+    op: str = "none"
+    content: str = ""
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "ScratchpadUpdate":
-        mode = str(value.get("mode") or "")
+    def from_mapping(cls, value: dict[str, Any] | None) -> "ScratchpadOperation":
+        if value is None:
+            return cls()
+        op = str(value.get("op") or "none")
         content = str(value.get("content") or "")
-        if mode not in UPDATE_MODES:
-            raise ValueError(f"invalid scratchpad update mode: {mode!r}")
-        return cls(mode=mode, content=content)
+        if op not in SCRATCHPAD_OPS:
+            raise ValueError(f"invalid scratchpad op: {op!r}")
+        return cls(op=op, content=content)
 
     def to_record(self) -> dict[str, str]:
-        return {"mode": self.mode, "content": self.content}
+        return {"op": self.op, "content": self.content}
+
+
+@dataclass(frozen=True)
+class MemoryItem:
+    id: str
+    scope: str
+    kind: str
+    status: str
+    content: str
+    source_session_id: str
+    source_message_ids: list[int]
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "MemoryItem":
+        source_message_ids = [
+            int(value)
+            for value in record.get("source_message_ids", [])
+            if isinstance(value, int | str) and str(value).strip()
+        ]
+        return cls(
+            id=str(record["id"]),
+            scope=str(record["scope"]),
+            kind=str(record["kind"]),
+            status=str(record["status"]),
+            content=str(record["content"]),
+            source_session_id=str(record.get("source_session_id") or ""),
+            source_message_ids=source_message_ids,
+            created_at=str(record.get("created_at") or utc_now_iso()),
+            updated_at=str(record.get("updated_at") or utc_now_iso()),
+        )
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "scope": self.scope,
+            "kind": self.kind,
+            "status": self.status,
+            "content": self.content,
+            "source_session_id": self.source_session_id,
+            "source_message_ids": self.source_message_ids,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
 
 
 @dataclass(frozen=True)
@@ -227,8 +277,8 @@ class AgentDecision:
     should_reply: bool
     reply_kind: str
     message_to_post: str
-    memory_updates: list[MemoryUpdate] = field(default_factory=list)
-    scratchpad_updates: list[ScratchpadUpdate] = field(default_factory=list)
+    memory_ops: list[MemoryOperation] = field(default_factory=list)
+    scratchpad_op: ScratchpadOperation = field(default_factory=ScratchpadOperation)
     confidence: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -256,16 +306,12 @@ class AgentDecision:
         confidence = float(data.get("confidence") or 0.0)
         confidence = max(0.0, min(1.0, confidence))
 
-        memory_updates = [
-            MemoryUpdate.from_mapping(item)
-            for item in data.get("memory_updates", [])
+        memory_ops = [
+            MemoryOperation.from_mapping(item)
+            for item in data.get("memory_ops", [])
             if isinstance(item, dict)
         ]
-        scratchpad_updates = [
-            ScratchpadUpdate.from_mapping(item)
-            for item in data.get("scratchpad_updates", [])
-            if isinstance(item, dict)
-        ]
+        scratchpad_op = ScratchpadOperation.from_mapping(data.get("scratchpad_op"))
 
         should_reply = bool(data.get("should_reply"))
         message_to_post = str(data.get("message_to_post") or "")
@@ -277,8 +323,8 @@ class AgentDecision:
             should_reply=should_reply,
             reply_kind=reply_kind,
             message_to_post=message_to_post,
-            memory_updates=memory_updates,
-            scratchpad_updates=scratchpad_updates,
+            memory_ops=memory_ops,
+            scratchpad_op=scratchpad_op,
             confidence=confidence,
             raw=data,
         )
@@ -288,8 +334,8 @@ class AgentDecision:
             "should_reply": self.should_reply,
             "reply_kind": self.reply_kind,
             "message_to_post": self.message_to_post,
-            "memory_updates": [item.to_record() for item in self.memory_updates],
-            "scratchpad_updates": [item.to_record() for item in self.scratchpad_updates],
+            "memory_ops": [item.to_record() for item in self.memory_ops],
+            "scratchpad_op": self.scratchpad_op.to_record(),
             "confidence": self.confidence,
         }
 

@@ -56,8 +56,8 @@ Guidance:
 - Set `should_reply` to false and `reply_kind` to `silent` when the useful contribution is to say nothing.
 - If `should_reply` is true, `message_to_post` must be the exact Zulip message to post.
 {guidance}
-- Propose memory updates only when they satisfy the memory policy.
-- Use scratchpad updates only for topic-local working notes that may help future turns.
+- Use `memory_ops` only when they satisfy the memory policy; archive or update existing memory IDs instead of repeating content.
+- Use `scratchpad_op` only for topic-local working notes that may help future turns.
 """
 
     def _conversation_type(self, parts: PromptParts) -> str:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from token_zulip.memory import MemoryStore
-from token_zulip.models import MemoryUpdate, NormalizedMessage, SessionKey
+from token_zulip.models import AgentDecision, MemoryOperation, NormalizedMessage, ScratchpadOperation, SessionKey
 from token_zulip.storage import WorkspaceStorage
 from token_zulip.workspace import initialize_workspace
 
@@ -25,40 +27,76 @@ def _message(message_id: int = 1) -> NormalizedMessage:
     )
 
 
-def test_storage_tracks_transcript_pending_metadata_and_outbound(tmp_path):
+def test_storage_uses_compact_session_messages_pending_and_turns(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)
     first = _message(1)
     second = _message(2)
     key = first.session_key
 
-    storage.append_raw_event({"type": "message"})
-    storage.append_transcript(first)
+    storage.append_message(first)
     storage.append_pending_messages(key, [second])
     storage.set_codex_thread_id(key, "thread-1")
     storage.mark_processed(key, [1])
+    storage.log_turn(
+        key,
+        [first],
+        AgentDecision(False, "silent", ""),
+        post=None,
+        memory_applied=[],
+        scratchpad_applied=None,
+    )
 
-    assert storage.read_recent_transcript(key, 10)[0]["message_id"] == 1
+    assert storage.read_recent_messages(key, 10)[0]["message_id"] == 1
     assert storage.pop_pending_messages(key)[0].message_id == 2
     assert storage.load_metadata(key).codex_thread_id == "thread-1"
     assert storage.load_metadata(key).last_processed_message_id == 1
-    assert list((tmp_path / "state" / "raw").glob("*.jsonl"))
+
+    message_record = json.loads(storage.session_path(key, "messages.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert "stream" not in message_record
+    assert "topic_hash" not in message_record
+    assert storage.session_path(key, "session.json").exists()
+    assert storage.session_path(key, "turns.jsonl").exists()
+    assert not (tmp_path / "state" / "raw").exists()
 
 
-def test_memory_updates_are_validated_and_indexed(tmp_path):
+def test_read_recent_messages_excludes_current_message_ids(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    first = _message(1)
+    second = _message(2)
+    key = first.session_key
+
+    storage.append_message(first)
+    storage.append_message(second)
+
+    assert [record["message_id"] for record in storage.read_recent_messages(key, 10, exclude_message_ids={2})] == [1]
+
+
+def test_memory_ops_are_deduplicated_archived_and_rendered_by_scope(tmp_path):
     initialize_workspace(tmp_path)
     store = MemoryStore(tmp_path / "memory")
     key = SessionKey("realm", 10, "topic123")
 
-    applied = store.apply_updates(
+    first = store.apply_ops(
         key,
-        [MemoryUpdate(file="durable.md", mode="append", content="- Team prefers short replies")],
+        [MemoryOperation(op="upsert", scope="conversation", kind="fact", content="Team prefers short replies")],
+        [1],
+    )
+    second = store.apply_ops(
+        key,
+        [MemoryOperation(op="upsert", scope="conversation", kind="fact", content="  Team prefers short replies  ")],
+        [2],
     )
 
-    assert applied
-    assert "Team prefers short replies" in (tmp_path / "memory" / "durable.md").read_text(encoding="utf-8")
-    assert key.value in (tmp_path / "memory" / "index.json").read_text(encoding="utf-8")
-    assert "durable.md" in store.render_selected(key)
+    assert first[0]["id"] == second[0]["id"]
+    assert "Team prefers short replies" in store.render_selected(key)
+    assert "conversation memory" in store.render_selected(key)
+    assert len(json.loads((tmp_path / "memory" / "items.json").read_text(encoding="utf-8"))) == 1
+
+    store.apply_ops(key, [MemoryOperation(op="archive", id=first[0]["id"])], [3])
+
+    assert "Team prefers short replies" not in store.render_selected(key)
 
 
 def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
@@ -73,11 +111,22 @@ def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
     )
     stream_key = SessionKey("realm", 10, "topic123")
 
-    store.apply_updates(
+    store.apply_ops(
         private_key,
-        [MemoryUpdate(file="durable.md", mode="append", content="- Alice likes brief DM replies")],
+        [MemoryOperation(op="upsert", scope="conversation", kind="preference", content="Alice likes brief DM replies")],
     )
 
     assert "Alice likes brief DM replies" in store.render_selected(private_key)
     assert "Alice likes brief DM replies" not in store.render_selected(stream_key)
-    assert "Alice likes brief DM replies" not in (tmp_path / "memory" / "durable.md").read_text(encoding="utf-8")
+
+
+def test_scratchpad_operation_replaces_or_clears_snapshot(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    key = _message(1).session_key
+
+    storage.apply_scratchpad_op(key, ScratchpadOperation(op="replace", content="notes"))
+    assert storage.session_path(key, "scratchpad.md").read_text(encoding="utf-8") == "notes\n"
+
+    storage.apply_scratchpad_op(key, ScratchpadOperation(op="clear", content=""))
+    assert not storage.session_path(key, "scratchpad.md").exists()

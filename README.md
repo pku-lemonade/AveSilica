@@ -4,7 +4,7 @@
 
 Zulip is an organized team chat app designed for efficient communication. We thank the Zulip team for generously offering free standard plan for our team.
 
-TokenZulip is a Python Zulip listener that maps each visible channel/topic to a persistent Codex thread. It stores prompts, transcripts, memory, pending messages, and outbound decisions in files under `workspace/`.
+TokenZulip is a Python Zulip listener that maps each visible channel/topic to a persistent Codex thread. It stores compact normalized messages, memory, pending message IDs, scratchpads, and agent turns in files under `workspace/`.
 
 ## Zulip Setup
 
@@ -51,15 +51,15 @@ token-zulip run
 
 ## Dry Run
 
-`--dry-run` still connects to Zulip, reads visible channel messages, builds prompts, calls Codex, applies validated memory updates, and writes state files. It does not post Zulip replies.
+`--dry-run` still connects to Zulip, reads visible channel messages, builds prompts, calls Codex, applies validated memory operations, and writes compact state files. It does not post Zulip replies.
 
 After sending a test message in a visible public channel, inspect:
 
-- `workspace/state/raw/*.jsonl`: raw Zulip events.
-- `workspace/state/sessions/*/transcript.jsonl`: normalized topic transcript.
-- `workspace/state/sessions/*/metadata.json`: Codex thread ID and last processed message ID.
-- `workspace/state/sessions/*/outbound.jsonl`: model decision and the message that would have been posted.
-- `workspace/memory/*.md`: validated durable memory updates.
+- `workspace/state/sessions/*/session.json`: session identity, Codex thread ID, and last processed message ID.
+- `workspace/state/sessions/*/messages.jsonl`: compact normalized messages for the session.
+- `workspace/state/sessions/*/turns.jsonl`: parsed model decisions, memory operations, scratchpad operation, and post status.
+- `workspace/state/sessions/*/pending.json`: pending message IDs for an active session.
+- `workspace/memory/items.json`: validated durable memory records.
 
 When the outbound decisions look right, remove `--dry-run` or set `TOKENZULIP_POST_REPLIES=true`.
 
@@ -125,11 +125,11 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 - `workspace/loop/memory.md`: rules for durable memory proposals.
 - `workspace/channels/<stream>/AGENTS.md`: optional stream-specific instructions.
 - `workspace/channels/<stream>/<topic-hash>/AGENTS.md`: optional topic-specific instructions.
-- `workspace/memory/*.md`: orchestrator-owned durable memory.
-- `workspace/state/`: raw Zulip events, transcripts, session metadata, pending queues, scratchpads, and outbound logs.
+- `workspace/memory/items.json`: orchestrator-owned durable memory records.
+- `workspace/state/`: compact session messages, session metadata, pending queues, scratchpads, turns, and error/ignored-event summaries.
 
 ## Behavior
 
-Incoming Zulip events are persisted before any model call. Work is serialized per `zulip:<realm_id>:stream:<stream_id>:topic:<topic_hash>` session, so a busy topic cannot race itself. If messages arrive for an active topic, they are appended to that topic's pending queue and processed in a follow-up turn.
+Incoming Zulip messages are normalized and persisted before any model call. Routine raw Zulip events are not stored. Work is serialized per `zulip:<realm_id>:stream:<stream_id>:topic:<topic_hash>` session, so a busy topic cannot race itself. If messages arrive for an active topic, their IDs are appended to that topic's pending queue and processed in a follow-up turn.
 
-Codex returns structured JSON with `should_reply`, `reply_kind`, `message_to_post`, memory updates, scratchpad updates, and confidence. The orchestrator validates and writes memory before posting any reply.
+Codex returns structured JSON with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, `scratchpad_op`, and confidence. The orchestrator validates and writes memory before posting any reply.

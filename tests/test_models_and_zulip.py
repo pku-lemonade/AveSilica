@@ -145,13 +145,13 @@ def test_zulip_listener_can_request_all_public_stream_events():
     ]
 
 
-def test_agent_decision_parses_fenced_json_and_validates_memory_updates():
+def test_agent_decision_parses_fenced_json_and_validates_memory_ops():
     payload = {
         "should_reply": True,
         "reply_kind": "chat",
         "message_to_post": "Done.",
-        "memory_updates": [{"file": "tasks.md", "mode": "append", "content": "- Follow up"}],
-        "scratchpad_updates": [{"mode": "replace", "content": "notes"}],
+        "memory_ops": [{"op": "upsert", "scope": "conversation", "kind": "task", "content": "Follow up"}],
+        "scratchpad_op": {"op": "replace", "content": "notes"},
         "confidence": 2,
     }
 
@@ -159,5 +159,5 @@ def test_agent_decision_parses_fenced_json_and_validates_memory_updates():
 
     assert decision.should_reply is True
     assert decision.confidence == 1.0
-    assert decision.memory_updates[0].file == "tasks.md"
-    assert decision.scratchpad_updates[0].mode == "replace"
+    assert decision.memory_ops[0].kind == "task"
+    assert decision.scratchpad_op.op == "replace"

@@ -92,8 +92,8 @@ class BlockingCodex:
             "should_reply": False,
             "reply_kind": "silent",
             "message_to_post": "",
-            "memory_updates": [],
-            "scratchpad_updates": [],
+            "memory_ops": [],
+            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
@@ -105,10 +105,10 @@ class MemoryCheckingCodex:
             "should_reply": True,
             "reply_kind": "chat",
             "message_to_post": "Recorded.",
-            "memory_updates": [
-                {"file": "durable.md", "mode": "append", "content": "- Launch date is Friday"}
+            "memory_ops": [
+                {"op": "upsert", "scope": "conversation", "kind": "fact", "content": "Launch date is Friday"}
             ],
-            "scratchpad_updates": [],
+            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.8,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -120,8 +120,25 @@ class SilentCodex:
             "should_reply": False,
             "reply_kind": "silent",
             "message_to_post": "",
-            "memory_updates": [],
-            "scratchpad_updates": [],
+            "memory_ops": [],
+            "scratchpad_op": {"op": "none", "content": ""},
+            "confidence": 0.9,
+        }
+        return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
+
+
+class PromptCapturingCodex:
+    def __init__(self) -> None:
+        self.prompt = ""
+
+    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+        self.prompt = prompt
+        payload = {
+            "should_reply": False,
+            "reply_kind": "silent",
+            "message_to_post": "",
+            "memory_ops": [],
+            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -137,8 +154,8 @@ class ThreadingCodex:
             "should_reply": True,
             "reply_kind": "chat",
             "message_to_post": f"Reply {self.calls}",
-            "memory_updates": [],
-            "scratchpad_updates": [],
+            "memory_ops": [],
+            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
@@ -172,7 +189,7 @@ def test_messages_for_active_topic_are_persisted_and_run_as_followup(tmp_path):
         first = asyncio.create_task(bot._handle_message(_message(1)))
         await codex.started.wait()
         await bot._handle_message(_message(2))
-        pending_path = bot.storage.session_path(_message(1).session_key, "pending.jsonl")
+        pending_path = bot.storage.session_path(_message(1).session_key, "pending.json")
         assert pending_path.exists()
         codex.release.set()
         await first
@@ -185,10 +202,10 @@ def test_messages_for_active_topic_are_persisted_and_run_as_followup(tmp_path):
     asyncio.run(scenario())
 
 
-def test_memory_updates_are_applied_before_posting(tmp_path):
+def test_memory_ops_are_applied_before_posting(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
-        memory_file = tmp_path / "memory" / "durable.md"
+        memory_file = tmp_path / "memory" / "items.json"
         poster = FakePoster(memory_file)
         bot = AgentLoop(
             config=_config(tmp_path),
@@ -207,7 +224,32 @@ def test_memory_updates_are_applied_before_posting(tmp_path):
     asyncio.run(scenario())
 
 
-def test_bot_authored_events_are_ignored_but_raw_event_is_stored(tmp_path):
+def test_current_message_is_not_duplicated_in_rendered_prompt(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        storage = WorkspaceStorage(tmp_path)
+        previous = _message(1, "previous context")
+        current = _message(2, "current request")
+        storage.append_message(previous)
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(current)
+
+        assert codex.prompt.count("current request") == 1
+        assert "previous context" in codex.prompt
+
+    asyncio.run(scenario())
+
+
+def test_bot_authored_events_are_ignored_without_raw_event_storage(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         config = _config(tmp_path)
@@ -237,7 +279,10 @@ def test_bot_authored_events_are_ignored_but_raw_event_is_stored(tmp_path):
 
         assert result.accepted is False
         assert bot.queue.empty()
-        assert list((tmp_path / "state" / "raw").glob("*.jsonl"))
+        assert not (tmp_path / "state" / "raw").exists()
+        assert "ignored bot-authored message" in next((tmp_path / "state" / "errors").glob("*.jsonl")).read_text(
+            encoding="utf-8"
+        )
 
     asyncio.run(scenario())
 

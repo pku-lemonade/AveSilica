@@ -55,15 +55,16 @@ class AgentLoop:
         self._active_guard = asyncio.Lock()
 
     async def enqueue_event(self, event: dict[str, Any]) -> EnqueueResult:
-        self.storage.append_raw_event(event)
         message = normalize_zulip_event(event, self.config.realm_id)
         if message is None:
+            self.storage.log_ignored_event(event, "ignored unsupported message")
             return EnqueueResult(False, "ignored unsupported message")
 
         if self.config.bot_email and message.sender_email.casefold() == self.config.bot_email.casefold():
+            self.storage.log_ignored_event(event, "ignored bot-authored message", message.session_key)
             return EnqueueResult(False, "ignored bot-authored message", message.session_key.value, message.message_id)
 
-        self.storage.append_transcript(message)
+        self.storage.append_message(message)
         await self.queue.put(message)
         return EnqueueResult(True, "accepted", message.session_key.value, message.message_id)
 
@@ -101,6 +102,7 @@ class AgentLoop:
 
     async def _handle_message(self, message: NormalizedMessage) -> None:
         key = message.session_key
+        self.storage.append_message(message)
         metadata = self.storage.load_metadata(key)
         if (
             metadata.last_processed_message_id is not None
@@ -153,7 +155,11 @@ class AgentLoop:
             role=self.config.role,
         )
         memory_text = self.memory.render_selected(key)
-        recent_context = self.storage.read_recent_transcript(key, self.config.max_recent_messages)
+        recent_context = self.storage.read_recent_messages(
+            key,
+            self.config.max_recent_messages,
+            exclude_message_ids={message.message_id for message in messages},
+        )
         prompt = self.prompt_builder.build(
             PromptParts(
                 instructions=instructions,
@@ -169,24 +175,24 @@ class AgentLoop:
             self.storage.set_codex_thread_id(key, codex_result.thread_id)
 
         decision = AgentDecision.from_json_text(codex_result.raw_text)
-        memory_applied = self.memory.apply_updates(key, decision.memory_updates)
-        self.storage.apply_scratchpad_updates(key, decision.scratchpad_updates)
+        memory_applied = self.memory.apply_ops(key, decision.memory_ops, [message.message_id for message in messages])
+        scratchpad_applied = self.storage.apply_scratchpad_op(key, decision.scratchpad_op)
 
         message_to_post = self._message_to_post(first, decision)
-        post_result: dict[str, Any] | None = None
+        post: dict[str, Any] | None = None
         if message_to_post:
             if self.config.post_replies:
-                post_result = await self.zulip.post_reply(first, message_to_post)
+                post = self._post_summary(await self.zulip.post_reply(first, message_to_post), dry_run=False)
             else:
-                post_result = {"dry_run": True, "content": message_to_post}
+                post = {"status": "dry_run", "dry_run": True}
 
-        self.storage.log_outbound(
+        self.storage.log_turn(
             key=key,
             messages=messages,
             decision=decision,
-            codex_raw_text=codex_result.raw_text,
-            post_result=post_result,
+            post=post,
             memory_applied=memory_applied,
+            scratchpad_applied=scratchpad_applied,
         )
         self.storage.mark_processed(key, [message.message_id for message in messages])
 
@@ -197,3 +203,12 @@ class AgentLoop:
         if first.reply_required:
             return content or PRIVATE_REPLY_FALLBACK
         return ""
+
+    def _post_summary(self, post_result: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+        response = post_result.get("response") if isinstance(post_result.get("response"), dict) else post_result
+        return {
+            "status": str(response.get("result") or "unknown"),
+            "dry_run": dry_run,
+            "zulip_message_id": response.get("id"),
+            "message": response.get("msg"),
+        }
