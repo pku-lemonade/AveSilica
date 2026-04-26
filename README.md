@@ -1,10 +1,12 @@
-# TokenZulip
+# Silica + TokenZulip
 
 [![project chat](https://img.shields.io/badge/zulip-join_chat-brightgreen.svg)](https://pku-lemonade.zulipchat.com)
 
-Zulip is an organized team chat app designed for efficient communication. We thank the Zulip team for generously offering free standard plan for our team.
+Silica is a context-aware Zulip agent for team conversation, memory, and replies.
 
-TokenZulip is a Python Zulip listener that maps each visible channel/topic to a persistent Codex thread. It stores compact normalized messages, memory, pending message IDs, scratchpads, and agent turns in files under `workspace/`.
+TokenZulip is the Python runtime behind Silica. It listens to Zulip, maps each visible channel/topic to a persistent Codex thread, and stores compact normalized messages, memory, pending message IDs, scratchpads, and agent turns under `workspace/`.
+
+Zulip is an organized team chat app designed for efficient communication. We thank the Zulip team for generously offering a free standard plan for our team.
 
 ## Zulip Setup
 
