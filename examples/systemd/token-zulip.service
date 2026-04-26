@@ -1,0 +1,20 @@
+[Unit]
+Description=TokenZulip Zulip bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+EnvironmentFile=/etc/token-zulip/token-zulip.env
+ExecStartPre=-/usr/bin/podman rm -f token-zulip
+ExecStart=/usr/bin/podman run --name token-zulip --pull=never --env-file /etc/token-zulip/token-zulip.env --volume /srv/token-zulip/workspace:/app/workspace --volume /etc/token-zulip/zuliprc:/run/secrets/zuliprc:ro localhost/token-zulip:latest run
+ExecStop=/usr/bin/podman stop -t 20 token-zulip
+ExecStopPost=-/usr/bin/podman rm -f token-zulip
+KillMode=none
+
+[Install]
+WantedBy=multi-user.target
+

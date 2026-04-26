@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "token-zulip"
+version = "0.1.0"
+description = "File-backed Zulip listener and Codex SDK agent loop"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "zulip>=0.9.0",
+]
+
+[project.optional-dependencies]
+codex = [
+    "codex-app-server-sdk>=0.2.0",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+token-zulip = "token_zulip.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

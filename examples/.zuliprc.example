@@ -1,0 +1,5 @@
+[api]
+email=token-zulip-bot@example.zulipchat.com
+key=replace-with-the-bot-api-key
+site=https://example.zulipchat.com
+
