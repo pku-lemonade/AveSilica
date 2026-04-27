@@ -8,8 +8,8 @@ from pathlib import Path
 WORKSPACE_DIRS: tuple[str, ...] = (
     "references",
     "memory",
-    "state/sessions",
-    "state/errors",
+    "records/sessions",
+    "records/errors",
 )
 
 WORKSPACE_TEMPLATE_FILES: tuple[str, ...] = (
@@ -18,7 +18,6 @@ WORKSPACE_TEMPLATE_FILES: tuple[str, ...] = (
     "references/memory-policy.md",
     "memory/AGENTS.md",
     "memory/MEMORY.md",
-    "memory/seeds.jsonl",
 )
 
 

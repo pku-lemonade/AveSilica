@@ -64,6 +64,9 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     assert "instead of suggesting search terms" in participation_text
     assert "unsupported claims" in memory_policy_text
     assert "MEMORY.md" in memory_policy_text
+    assert "add" in memory_policy_text
+    assert "replace" in memory_policy_text
+    assert "remove" in memory_policy_text
 
 
 def test_private_instruction_loads_memory_scoped_agents(tmp_path):

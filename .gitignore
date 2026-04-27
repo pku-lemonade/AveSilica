@@ -4,7 +4,7 @@
 __pycache__/
 .pytest_cache/
 third_party/
-workspace/state/
+workspace/records/
 workspace/memory/private/
 workspace/memory/private-*/
 workspace/memory/stream-*/

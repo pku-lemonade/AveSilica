@@ -332,15 +332,12 @@ def test_agent_decision_parses_fenced_json_and_validates_memory_ops():
         "message_to_post": "Done.",
         "memory_ops": [
             {
-                "op": "upsert",
-                "id": None,
+                "op": "replace",
                 "scope": "conversation",
-                "kind": "task",
-                "status": "active",
                 "content": "Follow up",
+                "old_text": "Previous follow up",
             }
         ],
-        "scratchpad_op": {"op": "replace", "content": "notes"},
         "confidence": 2,
     }
 
@@ -348,6 +345,5 @@ def test_agent_decision_parses_fenced_json_and_validates_memory_ops():
 
     assert decision.should_reply is True
     assert decision.confidence == 1.0
-    assert decision.memory_ops[0].id is None
-    assert decision.memory_ops[0].kind == "task"
-    assert decision.scratchpad_op.op == "replace"
+    assert decision.memory_ops[0].op == "replace"
+    assert decision.memory_ops[0].old_text == "Previous follow up"

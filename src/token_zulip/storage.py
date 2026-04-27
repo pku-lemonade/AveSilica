@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import AgentDecision, NormalizedMessage, ScratchpadOperation, SessionKey, utc_now_iso
+from .models import AgentDecision, NormalizedMessage, SessionKey, utc_now_iso
 
 
 @dataclass
@@ -101,13 +101,13 @@ class SessionMetadata:
 class WorkspaceStorage:
     def __init__(self, workspace_dir: Path) -> None:
         self.workspace_dir = workspace_dir.expanduser().resolve()
-        self.state_dir = self.workspace_dir / "state"
-        self.sessions_dir = self.state_dir / "sessions"
-        self.errors_dir = self.state_dir / "errors"
+        self.records_dir = self.workspace_dir / "records"
+        self.sessions_dir = self.records_dir / "sessions"
+        self.errors_dir = self.records_dir / "errors"
         self.ensure_dirs()
 
     def ensure_dirs(self) -> None:
-        for path in [self.state_dir, self.sessions_dir, self.errors_dir]:
+        for path in [self.records_dir, self.sessions_dir, self.errors_dir]:
             path.mkdir(parents=True, exist_ok=True)
 
     def log_ignored_event(self, event: dict[str, Any], reason: str, key: SessionKey | None = None) -> None:
@@ -239,7 +239,6 @@ class WorkspaceStorage:
         decision: AgentDecision,
         post: dict[str, Any] | None,
         memory_applied: list[dict[str, Any]],
-        scratchpad_applied: dict[str, str] | None,
     ) -> None:
         self._append_jsonl(
             self.session_path(key, "turns.jsonl"),
@@ -249,7 +248,6 @@ class WorkspaceStorage:
                 "decision": decision.to_record(),
                 "post": post,
                 "memory_applied": memory_applied,
-                "scratchpad_applied": scratchpad_applied,
             },
         )
 
@@ -260,18 +258,6 @@ class WorkspaceStorage:
             **event,
         }
         self._append_jsonl(self._error_path(), record)
-
-    def apply_scratchpad_op(self, key: SessionKey, op: ScratchpadOperation) -> dict[str, str] | None:
-        if op.op == "none":
-            return None
-        path = self.session_path(key, "scratchpad.md")
-        if op.op == "clear":
-            if path.exists():
-                path.unlink()
-            return op.to_record()
-        content = op.content.strip()
-        path.write_text(content + ("\n" if content else ""), encoding="utf-8")
-        return op.to_record()
 
     def session_path(self, key: SessionKey, filename: str) -> Path:
         directory = self.sessions_dir / key.storage_id

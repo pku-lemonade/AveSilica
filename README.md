@@ -4,7 +4,7 @@
 
 Silica is a context-aware Zulip agent for team conversation, memory, and replies.
 
-TokenZulip is the Python runtime behind Silica. It listens to Zulip, maps each visible channel/topic to a persistent Codex thread, and stores compact normalized messages, memory, pending message IDs, scratchpads, and agent turns under `workspace/`.
+TokenZulip is the Python runtime behind Silica. It listens to Zulip, maps each visible channel/topic to a persistent Codex thread, stores curated memory under `workspace/memory/`, and stores generated conversation records under `workspace/records/`.
 
 Zulip is an organized team chat app designed for efficient communication. We thank the Zulip team for generously offering a free standard plan for our team.
 
@@ -55,16 +55,15 @@ token-zulip run
 
 ## Dry Run
 
-`--dry-run` still connects to Zulip, reads visible channel messages, builds prompts, calls Codex, applies validated memory operations, and writes compact state files. It does not post Zulip replies.
+`--dry-run` still connects to Zulip, reads visible channel messages, builds prompts, calls Codex, applies validated memory operations, and writes compact record files. It does not post Zulip replies.
 
 After sending a test message in a visible public channel, inspect:
 
-- `workspace/state/sessions/*/session.json`: session identity, Codex thread ID, and last processed message ID.
-- `workspace/state/sessions/*/messages.jsonl`: compact normalized messages for the session.
-- `workspace/state/sessions/*/turns.jsonl`: parsed model decisions, memory operations, scratchpad operation, and post status.
-- `workspace/state/sessions/*/pending.json`: pending message IDs for an active session.
+- `workspace/records/sessions/*/session.json`: session identity, Codex thread ID, and last processed message ID.
+- `workspace/records/sessions/*/messages.jsonl`: compact normalized messages for the session.
+- `workspace/records/sessions/*/turns.jsonl`: parsed model decisions, memory operations, and post status.
+- `workspace/records/sessions/*/pending.json`: pending message IDs for an active session.
 - `workspace/memory/MEMORY.md`: compact global memory injected into prompts.
-- `workspace/memory/seeds.jsonl`: structured global memory seeds and provenance.
 - `workspace/memory/stream-*/MEMORY.md`: compact channel memory.
 - `workspace/memory/stream-*/topic-*/MEMORY.md`: compact topic memory.
 
@@ -127,22 +126,19 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 
 - `workspace/AGENTS.md`: global identity, voice, style, and high-level behavior.
 - `workspace/references/participation.md`: rules for when to speak, stay silent, draft plans, or ask questions.
-- `workspace/references/memory-policy.md`: memory seed proposal and scope policy.
+- `workspace/references/memory-policy.md`: memory operation and scope policy.
 - `workspace/memory/AGENTS.md`: optional global deployment/team instructions.
 - `workspace/memory/MEMORY.md`: compact global memory injected into every prompt.
-- `workspace/memory/seeds.jsonl`: structured global memory seeds and provenance.
 - `workspace/memory/stream-<id>-<slug>/AGENTS.md`: optional channel-specific instructions.
 - `workspace/memory/stream-<id>-<slug>/MEMORY.md`: compact channel memory.
-- `workspace/memory/stream-<id>-<slug>/seeds.jsonl`: structured channel memory seeds.
 - `workspace/memory/stream-<id>-<slug>/topic-<hash>/AGENTS.md`: optional topic-specific instructions.
 - `workspace/memory/stream-<id>-<slug>/topic-<hash>/MEMORY.md`: compact topic memory.
-- `workspace/memory/stream-<id>-<slug>/topic-<hash>/seeds.jsonl`: structured topic memory seeds.
 - `workspace/memory/private-<user>/MEMORY.md`: compact private-chat memory.
-- `workspace/state/`: compact session messages, session metadata, pending queues, scratchpads, turns, and error/ignored-event summaries.
+- `workspace/records/`: generated session messages, session metadata, pending queues, turns, and error/ignored-event summaries.
 
 ## Instruction Architecture
 
-Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing seed files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/prompt.py` wraps the loaded instructions with the native Codex output schema and runtime contract.
+Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing template files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/prompt.py` wraps the loaded instructions with the native Codex output schema and runtime contract.
 
 Instruction layers are loaded in this order: hardcoded safety contract, `workspace/AGENTS.md`, `workspace/references/participation.md`, `workspace/references/memory-policy.md`, optional `workspace/memory/AGENTS.md`, optional channel `AGENTS.md`, then optional topic/private `AGENTS.md` under `workspace/memory/`. Later configurable layers can specialize earlier workspace guidance, but they cannot override the hardcoded runtime contract.
 
@@ -150,13 +146,12 @@ Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 
 - `workspace/AGENTS.md`: global identity, voice, style, and high-level behavior.
 - `workspace/references/participation.md`: when to reply and which `reply_kind` to choose.
-- `workspace/references/memory-policy.md`: memory seed proposal and scope policy.
+- `workspace/references/memory-policy.md`: memory operation and scope policy.
 - `workspace/memory/AGENTS.md`: human-authored global deployment/team preferences.
 - `workspace/memory/.../AGENTS.md`: human-authored channel/topic/private exceptions or preferences.
-- `workspace/memory/.../MEMORY.md`: compact remembered context. This is read into prompts.
-- `workspace/memory/.../seeds.jsonl`: structured memory seeds used for IDs, status, source attribution, and regeneration of `MEMORY.md`.
+- `workspace/memory/.../MEMORY.md`: compact remembered context. This is read into prompts and is the memory source of truth.
 
-Memory follows a Hermes-style split. `MEMORY.md` is the compact always-injected memory surface. `seeds.jsonl` is not raw chat history and is not injected directly; it is the structured backing layer for memory candidates, updates, archives, and provenance. Raw/session history remains in `workspace/state/sessions/*/messages.jsonl` and turn logs remain in `workspace/state/sessions/*/turns.jsonl`.
+Memory follows a Hermes-style markdown model. `MEMORY.md` is the compact always-injected memory surface and source of truth. Entries are separated by `§`; the orchestrator applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/sessions/*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions and applied or rejected operations.
 
 For Zulip terminology, the code uses `stream` for what Zulip's UI calls a channel. A topic is the thread-like subject inside a channel.
 
@@ -164,6 +159,6 @@ For Zulip terminology, the code uses `stream` for what Zulip's UI calls a channe
 
 Incoming Zulip messages are normalized and persisted before any model call. Routine raw Zulip events are not stored. Work is serialized per `zulip:<realm_id>:stream:<stream_id>:topic:<topic_hash>` session, so a busy topic cannot race itself. If messages arrive for an active topic, their IDs are appended to that topic's pending queue and processed in a follow-up turn.
 
-Codex returns structured output with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, `scratchpad_op`, and confidence via the native `output_schema`. The orchestrator validates memory operations, writes scoped seeds, regenerates compact `MEMORY.md`, and then posts any reply.
+Codex returns structured output with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, and confidence via the native `output_schema`. The orchestrator validates memory operations, edits scoped `MEMORY.md`, and then posts any reply.
 
 When live posting is enabled, the bot can show Zulip typing indicators for every processed message. Silent channel decisions stop typing after Codex decides not to reply. Set `TOKENZULIP_TYPING_ENABLED=false` to disable typing indicators.

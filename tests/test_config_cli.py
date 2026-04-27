@@ -49,7 +49,10 @@ def test_cli_init_creates_workspace_layout(tmp_path):
     assert (workspace / "references" / "memory-policy.md").exists()
     assert (workspace / "memory" / "AGENTS.md").exists()
     assert (workspace / "memory" / "MEMORY.md").exists()
-    assert (workspace / "memory" / "seeds.jsonl").exists()
+    assert (workspace / "records" / "sessions").exists()
+    assert (workspace / "records" / "errors").exists()
+    assert not (workspace / "memory" / "seeds.jsonl").exists()
+    assert not (workspace / "state").exists()
     assert not (workspace / "roles").exists()
     assert not (workspace / "loop").exists()
     for relative in WORKSPACE_TEMPLATE_FILES:

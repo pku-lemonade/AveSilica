@@ -9,11 +9,8 @@ from typing import Any
 
 
 REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
-MEMORY_OPS = {"archive", "upsert"}
-MEMORY_KINDS = {"decision", "fact", "person", "preference", "question", "task"}
+MEMORY_OPS = {"add", "remove", "replace"}
 MEMORY_SCOPES = {"channel", "conversation", "global"}
-MEMORY_STATUSES = {"active", "answered", "archived", "done"}
-SCRATCHPAD_OPS = {"clear", "none", "replace"}
 CONVERSATION_TYPES = {"stream", "private"}
 
 
@@ -25,7 +22,6 @@ DECISION_JSON_SCHEMA: dict[str, Any] = {
         "reply_kind",
         "message_to_post",
         "memory_ops",
-        "scratchpad_op",
         "confidence",
     ],
     "properties": {
@@ -37,24 +33,13 @@ DECISION_JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["op", "id", "scope", "kind", "status", "content"],
+                "required": ["op", "scope", "content", "old_text"],
                 "properties": {
                     "op": {"type": "string", "enum": sorted(MEMORY_OPS)},
-                    "id": {"type": ["string", "null"]},
                     "scope": {"type": "string", "enum": sorted(MEMORY_SCOPES)},
-                    "kind": {"type": "string", "enum": sorted(MEMORY_KINDS)},
-                    "status": {"type": "string", "enum": sorted(MEMORY_STATUSES)},
                     "content": {"type": "string"},
+                    "old_text": {"type": "string"},
                 },
-            },
-        },
-        "scratchpad_op": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["op", "content"],
-            "properties": {
-                "op": {"type": "string", "enum": sorted(SCRATCHPAD_OPS)},
-                "content": {"type": "string"},
             },
         },
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -174,122 +159,40 @@ class NormalizedMessage:
         }
 
 
-def normalize_memory_content(content: str) -> str:
-    return re.sub(r"\s+", " ", content.strip()).casefold()
-
-
 @dataclass(frozen=True)
 class MemoryOperation:
     op: str
     scope: str = "conversation"
-    kind: str = "fact"
     content: str = ""
-    id: str | None = None
-    status: str = "active"
+    old_text: str = ""
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "MemoryOperation":
         op = str(value.get("op") or "")
         scope = str(value.get("scope") or "conversation")
-        kind = str(value.get("kind") or "fact")
-        status = str(value.get("status") or "active")
         content = str(value.get("content") or "")
-        item_id = value.get("id")
+        old_text = str(value.get("old_text") or "")
         if op not in MEMORY_OPS:
             raise ValueError(f"invalid memory op: {op!r}")
         if scope not in MEMORY_SCOPES:
             raise ValueError(f"invalid memory scope: {scope!r}")
-        if kind not in MEMORY_KINDS:
-            raise ValueError(f"invalid memory kind: {kind!r}")
-        if status not in MEMORY_STATUSES:
-            raise ValueError(f"invalid memory status: {status!r}")
-        if op == "archive" and not str(item_id or "").strip():
-            raise ValueError("archive memory op requires id")
-        if op == "upsert" and not content.strip():
-            raise ValueError("upsert memory op requires content")
+        if op in {"add", "replace"} and not content.strip():
+            raise ValueError(f"{op} memory op requires content")
+        if op in {"replace", "remove"} and not old_text.strip():
+            raise ValueError(f"{op} memory op requires old_text")
         return cls(
             op=op,
             scope=scope,
-            kind=kind,
             content=content,
-            id=str(item_id).strip() if item_id is not None else None,
-            status=status,
+            old_text=old_text,
         )
 
     def to_record(self) -> dict[str, str]:
-        record = {
+        return {
             "op": self.op,
             "scope": self.scope,
-            "kind": self.kind,
-            "status": self.status,
             "content": self.content,
-        }
-        if self.id:
-            record["id"] = self.id
-        return record
-
-
-@dataclass(frozen=True)
-class ScratchpadOperation:
-    op: str = "none"
-    content: str = ""
-
-    @classmethod
-    def from_mapping(cls, value: dict[str, Any] | None) -> "ScratchpadOperation":
-        if value is None:
-            return cls()
-        op = str(value.get("op") or "none")
-        content = str(value.get("content") or "")
-        if op not in SCRATCHPAD_OPS:
-            raise ValueError(f"invalid scratchpad op: {op!r}")
-        return cls(op=op, content=content)
-
-    def to_record(self) -> dict[str, str]:
-        return {"op": self.op, "content": self.content}
-
-
-@dataclass(frozen=True)
-class MemoryItem:
-    id: str
-    scope: str
-    kind: str
-    status: str
-    content: str
-    source_session_id: str
-    source_message_ids: list[int]
-    created_at: str
-    updated_at: str
-
-    @classmethod
-    def from_record(cls, record: dict[str, Any]) -> "MemoryItem":
-        source_message_ids = [
-            int(value)
-            for value in record.get("source_message_ids", [])
-            if isinstance(value, int | str) and str(value).strip()
-        ]
-        return cls(
-            id=str(record["id"]),
-            scope=str(record["scope"]),
-            kind=str(record["kind"]),
-            status=str(record["status"]),
-            content=str(record["content"]),
-            source_session_id=str(record.get("source_session_id") or ""),
-            source_message_ids=source_message_ids,
-            created_at=str(record.get("created_at") or utc_now_iso()),
-            updated_at=str(record.get("updated_at") or utc_now_iso()),
-        )
-
-    def to_record(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "scope": self.scope,
-            "kind": self.kind,
-            "status": self.status,
-            "content": self.content,
-            "source_session_id": self.source_session_id,
-            "source_message_ids": self.source_message_ids,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
+            "old_text": self.old_text,
         }
 
 
@@ -299,7 +202,6 @@ class AgentDecision:
     reply_kind: str
     message_to_post: str
     memory_ops: list[MemoryOperation] = field(default_factory=list)
-    scratchpad_op: ScratchpadOperation = field(default_factory=ScratchpadOperation)
     confidence: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -332,7 +234,6 @@ class AgentDecision:
             for item in data.get("memory_ops", [])
             if isinstance(item, dict)
         ]
-        scratchpad_op = ScratchpadOperation.from_mapping(data.get("scratchpad_op"))
 
         should_reply = bool(data.get("should_reply"))
         message_to_post = str(data.get("message_to_post") or "")
@@ -345,7 +246,6 @@ class AgentDecision:
             reply_kind=reply_kind,
             message_to_post=message_to_post,
             memory_ops=memory_ops,
-            scratchpad_op=scratchpad_op,
             confidence=confidence,
             raw=data,
         )
@@ -356,7 +256,6 @@ class AgentDecision:
             "reply_kind": self.reply_kind,
             "message_to_post": self.message_to_post,
             "memory_ops": [item.to_record() for item in self.memory_ops],
-            "scratchpad_op": self.scratchpad_op.to_record(),
             "confidence": self.confidence,
         }
 

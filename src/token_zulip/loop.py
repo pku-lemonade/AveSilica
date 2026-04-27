@@ -202,7 +202,6 @@ class AgentLoop:
                 decision.memory_ops,
                 [message.message_id for message in messages],
             )
-            scratchpad_applied = self.storage.apply_scratchpad_op(key, decision.scratchpad_op)
 
             post: dict[str, Any] | None = None
             if message_to_post:
@@ -217,7 +216,6 @@ class AgentLoop:
                 decision=decision,
                 post=post,
                 memory_applied=memory_applied,
-                scratchpad_applied=scratchpad_applied,
             )
         self.storage.mark_processed(key, [message.message_id for message in messages])
 

@@ -98,7 +98,6 @@ class BlockingCodex:
             "reply_kind": "silent",
             "message_to_post": "",
             "memory_ops": [],
-            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
@@ -116,9 +115,8 @@ class MemoryCheckingCodex:
             "reply_kind": "chat",
             "message_to_post": "Recorded.",
             "memory_ops": [
-                {"op": "upsert", "scope": "conversation", "kind": "fact", "content": "Launch date is Friday"}
+                {"op": "add", "scope": "conversation", "content": "Launch date is Friday", "old_text": ""}
             ],
-            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.8,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -131,7 +129,6 @@ class SilentCodex:
             "reply_kind": "silent",
             "message_to_post": "",
             "memory_ops": [],
-            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -148,7 +145,6 @@ class PromptCapturingCodex:
             "reply_kind": "silent",
             "message_to_post": "",
             "memory_ops": [],
-            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -165,7 +161,6 @@ class ThreadingCodex:
             "reply_kind": "chat",
             "message_to_post": f"Reply {self.calls}",
             "memory_ops": [],
-            "scratchpad_op": {"op": "none", "content": ""},
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
@@ -490,8 +485,8 @@ def test_bot_authored_events_are_ignored_without_raw_event_storage(tmp_path):
 
         assert result.accepted is False
         assert bot.queue.empty()
-        assert not (tmp_path / "state" / "raw").exists()
-        assert "ignored bot-authored message" in next((tmp_path / "state" / "errors").glob("*.jsonl")).read_text(
+        assert not (tmp_path / "state").exists()
+        assert "ignored bot-authored message" in next((tmp_path / "records" / "errors").glob("*.jsonl")).read_text(
             encoding="utf-8"
         )
 

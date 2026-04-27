@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from token_zulip.memory import MemoryStore
-from token_zulip.models import AgentDecision, MemoryOperation, NormalizedMessage, ScratchpadOperation, SessionKey
+from token_zulip.models import AgentDecision, MemoryOperation, NormalizedMessage, SessionKey
 from token_zulip.storage import WorkspaceStorage
 from token_zulip.workspace import initialize_workspace
 
@@ -44,7 +44,6 @@ def test_storage_uses_compact_session_messages_pending_and_turns(tmp_path):
         AgentDecision(False, "silent", ""),
         post=None,
         memory_applied=[],
-        scratchpad_applied=None,
     )
 
     assert storage.read_recent_messages(key, 10)[0]["message_id"] == 1
@@ -57,7 +56,8 @@ def test_storage_uses_compact_session_messages_pending_and_turns(tmp_path):
     assert "topic_hash" not in message_record
     assert storage.session_path(key, "session.json").exists()
     assert storage.session_path(key, "turns.jsonl").exists()
-    assert not (tmp_path / "state" / "raw").exists()
+    assert storage.session_path(key, "messages.jsonl").is_relative_to(tmp_path / "records" / "sessions")
+    assert not (tmp_path / "state").exists()
 
 
 def test_read_recent_messages_excludes_current_message_ids(tmp_path):
@@ -73,31 +73,45 @@ def test_read_recent_messages_excludes_current_message_ids(tmp_path):
     assert [record["message_id"] for record in storage.read_recent_messages(key, 10, exclude_message_ids={2})] == [1]
 
 
-def test_memory_ops_are_deduplicated_archived_and_rendered_by_scope(tmp_path):
+def test_memory_ops_add_replace_remove_and_render_by_scope(tmp_path):
     initialize_workspace(tmp_path)
     store = MemoryStore(tmp_path / "memory")
     key = SessionKey("realm", 10, "topic123", stream_slug="engineering")
 
     first = store.apply_ops(
         key,
-        [MemoryOperation(op="upsert", scope="conversation", kind="fact", content="Team prefers short replies")],
+        [MemoryOperation(op="add", scope="conversation", content="Team prefers short replies")],
         [1],
     )
     second = store.apply_ops(
         key,
-        [MemoryOperation(op="upsert", scope="conversation", kind="fact", content="  Team prefers short replies  ")],
+        [MemoryOperation(op="add", scope="conversation", content="Team prefers short replies")],
         [2],
     )
 
-    assert first[0]["id"] == second[0]["id"]
+    assert first[0]["status"] == "applied"
+    assert second[0]["status"] == "skipped"
     assert "Team prefers short replies" in store.render_selected(key)
     assert "conversation memory" in store.render_selected(key)
-    seed_path = tmp_path / "memory" / "stream-10-engineering" / "topic-topic123" / "seeds.jsonl"
-    assert len([line for line in seed_path.read_text(encoding="utf-8").splitlines() if line.strip()]) == 1
+    memory_path = tmp_path / "memory" / "stream-10-engineering" / "topic-topic123" / "MEMORY.md"
+    assert memory_path.read_text(encoding="utf-8").count("Team prefers short replies") == 1
 
-    store.apply_ops(key, [MemoryOperation(op="archive", id=first[0]["id"])], [3])
-
+    replaced = store.apply_ops(
+        key,
+        [MemoryOperation(op="replace", scope="conversation", old_text="short replies", content="Team prefers concise replies")],
+        [3],
+    )
+    assert replaced[0]["status"] == "applied"
+    assert "Team prefers concise replies" in store.render_selected(key)
     assert "Team prefers short replies" not in store.render_selected(key)
+
+    removed = store.apply_ops(
+        key,
+        [MemoryOperation(op="remove", scope="conversation", old_text="concise replies")],
+        [4],
+    )
+    assert removed[0]["status"] == "applied"
+    assert "Team prefers concise replies" not in store.render_selected(key)
 
 
 def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
@@ -114,7 +128,7 @@ def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
 
     store.apply_ops(
         private_key,
-        [MemoryOperation(op="upsert", scope="conversation", kind="preference", content="Alice likes brief DM replies")],
+        [MemoryOperation(op="add", scope="conversation", content="Alice likes brief DM replies")],
     )
 
     assert "Alice likes brief DM replies" in store.render_selected(private_key)
@@ -130,26 +144,31 @@ def test_channel_memory_renders_for_sibling_topics_in_same_stream(tmp_path):
 
     store.apply_ops(
         first_topic,
-        [MemoryOperation(op="upsert", scope="channel", kind="preference", content="Use concise architecture summaries")],
+        [MemoryOperation(op="add", scope="channel", content="Use concise architecture summaries")],
     )
     store.apply_ops(
         first_topic,
-        [MemoryOperation(op="upsert", scope="conversation", kind="fact", content="Launch topic local fact")],
+        [MemoryOperation(op="add", scope="conversation", content="Launch topic local fact")],
     )
 
     assert "Use concise architecture summaries" in store.render_selected(second_topic)
     assert "Launch topic local fact" not in store.render_selected(second_topic)
     assert "Use concise architecture summaries" not in store.render_selected(other_stream)
-    assert (tmp_path / "memory" / "stream-10-engineering" / "seeds.jsonl").exists()
+    assert (tmp_path / "memory" / "stream-10-engineering" / "MEMORY.md").exists()
 
 
-def test_scratchpad_operation_replaces_or_clears_snapshot(tmp_path):
+def test_memory_ops_reject_oversized_entries_without_blocking(tmp_path):
     initialize_workspace(tmp_path)
-    storage = WorkspaceStorage(tmp_path)
-    key = _message(1).session_key
+    store = MemoryStore(tmp_path / "memory", char_limit=12)
+    key = SessionKey("realm", 10, "topic123", stream_slug="engineering")
 
-    storage.apply_scratchpad_op(key, ScratchpadOperation(op="replace", content="notes"))
-    assert storage.session_path(key, "scratchpad.md").read_text(encoding="utf-8") == "notes\n"
+    result = store.apply_ops(
+        key,
+        [MemoryOperation(op="add", scope="conversation", content="too long for this file")],
+        [1],
+    )
 
-    storage.apply_scratchpad_op(key, ScratchpadOperation(op="clear", content=""))
-    assert not storage.session_path(key, "scratchpad.md").exists()
+    assert result[0]["status"] == "rejected"
+    assert "exceed" in result[0]["reason"]
+    assert "too long" not in store.render_selected(key)
+
