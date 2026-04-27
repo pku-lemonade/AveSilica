@@ -122,14 +122,28 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 
 ## Workspace Layout
 
-- `workspace/AGENTS.md`: global bot control instructions.
-- `workspace/roles/default.md`: default role and personality.
-- `workspace/loop/participation.md`: rules for speaking, staying silent, drafting plans, and asking questions.
-- `workspace/loop/memory.md`: rules for durable memory proposals.
+- `workspace/AGENTS.md`: global identity and high-level behavior.
+- `workspace/roles/default.md`: default role, voice, style, and response formatting.
+- `workspace/loop/participation.md`: rules for when to speak, stay silent, draft plans, or ask questions.
+- `workspace/loop/memory.md`: durable memory proposal policy.
 - `workspace/channels/<stream>/AGENTS.md`: optional stream-specific instructions.
 - `workspace/channels/<stream>/<topic-hash>/AGENTS.md`: optional topic-specific instructions.
 - `workspace/memory/items.json`: orchestrator-owned durable memory records.
 - `workspace/state/`: compact session messages, session metadata, pending queues, scratchpads, turns, and error/ignored-event summaries.
+
+## Instruction Architecture
+
+Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` only seeds missing files during `token-zulip init`; it does not update an existing workspace unless initialization is explicitly run with overwrite behavior. `src/token_zulip/prompt.py` wraps the loaded instructions with the JSON decision schema and runtime contract.
+
+Instruction layers are loaded in this order: hardcoded safety contract, `workspace/AGENTS.md`, `workspace/roles/<role>.md`, `workspace/loop/participation.md`, `workspace/loop/memory.md`, channel `AGENTS.md`, then topic `AGENTS.md`. Later configurable layers can specialize earlier workspace guidance, but they cannot override the hardcoded runtime contract.
+
+Use these ownership boundaries to avoid duplicated or conflicting prompt text:
+
+- `workspace/AGENTS.md`: global identity and high-level behavior.
+- `workspace/roles/default.md`: voice, style, and response formatting.
+- `workspace/loop/participation.md`: when to reply and which `reply_kind` to choose.
+- `workspace/loop/memory.md`: durable memory proposal policy.
+- `workspace/channels/.../AGENTS.md`: stream/topic-specific exceptions or preferences.
 
 ## Behavior
 

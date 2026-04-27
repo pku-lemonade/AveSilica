@@ -34,3 +34,18 @@ def test_default_instruction_content_names_silica_and_research_guardrails(tmp_pa
     assert "research coach" in text
     assert "Do not fabricate sources" in text
     assert "source verification" in text
+
+
+def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_path):
+    initialize_workspace(tmp_path)
+
+    global_text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    role_text = (tmp_path / "roles" / "default.md").read_text(encoding="utf-8")
+    participation_text = (tmp_path / "loop" / "participation.md").read_text(encoding="utf-8")
+
+    assert "```spoiler Details" in role_text
+    assert "Keep replies chat-sized" in role_text
+    assert "```spoiler Details" not in global_text
+    assert "Keep replies chat-sized" not in global_text
+    assert "```spoiler Details" not in participation_text
+    assert "when Silica can materially improve" in participation_text

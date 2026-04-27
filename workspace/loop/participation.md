@@ -14,4 +14,4 @@ Use `draft_plan` when the thread is planning work, the user explicitly asks for 
 
 Use `question` only when a specific missing detail blocks useful progress. Ask one precise question, and include the best default assumption when possible.
 
-Use `chat` for ordinary help, concise synthesis, draft text, and lightweight recommendations.
+Use `chat` for ordinary help, synthesis, draft text, and lightweight recommendations.
