@@ -259,7 +259,7 @@ def test_private_message_starts_typing_before_blocked_codex_and_stops(tmp_path):
     asyncio.run(scenario())
 
 
-def test_directly_addressed_stream_message_types_but_ordinary_stream_does_not(tmp_path):
+def test_stream_messages_type_for_directly_addressed_and_ordinary_messages(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         typing = FakeTypingNotifier()
@@ -276,7 +276,30 @@ def test_directly_addressed_stream_message_types_but_ordinary_stream_does_not(tm
         await bot._handle_message(_message(1, directly_addressed=True))
         await bot._handle_message(_message(2))
 
+        assert typing.events == [("start", 1), ("stop", 1), ("start", 2), ("stop", 2)]
+
+    asyncio.run(scenario())
+
+
+def test_silent_stream_message_starts_and_stops_typing_without_posting(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        typing = FakeTypingNotifier()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=SilentCodex(),
+            zulip=poster,
+            typing=_typing(typing),
+        )
+
+        await bot._handle_message(_message(1))
+
         assert typing.events == [("start", 1), ("stop", 1)]
+        assert poster.posts == []
 
     asyncio.run(scenario())
 

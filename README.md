@@ -137,4 +137,4 @@ Incoming Zulip messages are normalized and persisted before any model call. Rout
 
 Codex returns structured JSON with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, `scratchpad_op`, and confidence. The orchestrator validates and writes memory before posting any reply.
 
-When live posting is enabled, the bot can show Zulip typing indicators for private messages and direct mentions before the Codex turn finishes. Set `TOKENZULIP_TYPING_ENABLED=false` to disable them.
+When live posting is enabled, the bot can show Zulip typing indicators for every processed message. Silent channel decisions stop typing after Codex decides not to reply. Set `TOKENZULIP_TYPING_ENABLED=false` to disable typing indicators.

@@ -38,10 +38,10 @@ class TypingStatusManager:
         self.enabled = enabled
         self.refresh_seconds = max(0.1, refresh_seconds)
 
-    def should_show_typing(self, message: NormalizedMessage, *, post_replies: bool) -> bool:
+    def should_show_typing(self, _message: NormalizedMessage, *, post_replies: bool) -> bool:
         if not self.enabled or not post_replies:
             return False
-        return message.conversation_type == "private" or message.directly_addressed
+        return True
 
     @asynccontextmanager
     async def active(self, message: NormalizedMessage) -> AsyncIterator[None]:

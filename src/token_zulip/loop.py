@@ -180,14 +180,21 @@ class AgentLoop:
 
         metadata = self.storage.load_metadata(key)
         async with AsyncExitStack() as stack:
+            typing_started = False
             if self.typing.should_show_typing(first, post_replies=self.config.post_replies):
                 await stack.enter_async_context(self.typing.active(first))
+                typing_started = True
 
             codex_result = await self.codex.run_decision(prompt, metadata.codex_thread_id)
             if codex_result.thread_id:
                 self.storage.set_codex_thread_id(key, codex_result.thread_id)
 
             decision = AgentDecision.from_json_text(codex_result.raw_text)
+            message_to_post = self._message_to_post(first, decision)
+            if typing_started and first.conversation_type == "stream" and not message_to_post:
+                await stack.aclose()
+                typing_started = False
+
             memory_applied = self.memory.apply_ops(
                 key,
                 decision.memory_ops,
@@ -195,7 +202,6 @@ class AgentLoop:
             )
             scratchpad_applied = self.storage.apply_scratchpad_op(key, decision.scratchpad_op)
 
-            message_to_post = self._message_to_post(first, decision)
             post: dict[str, Any] | None = None
             if message_to_post:
                 if self.config.post_replies:
