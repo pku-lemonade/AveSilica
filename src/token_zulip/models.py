@@ -11,7 +11,7 @@ from typing import Any
 REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
 MEMORY_OPS = {"archive", "upsert"}
 MEMORY_KINDS = {"decision", "fact", "person", "preference", "question", "task"}
-MEMORY_SCOPES = {"conversation", "global"}
+MEMORY_SCOPES = {"channel", "conversation", "global"}
 MEMORY_STATUSES = {"active", "answered", "archived", "done"}
 SCRATCHPAD_OPS = {"clear", "none", "replace"}
 CONVERSATION_TYPES = {"stream", "private"}
@@ -90,6 +90,23 @@ def safe_slug(value: str) -> str:
     return slug or "unnamed"
 
 
+def stream_memory_dir_name(stream_id: int | None, stream_slug: str | None = None) -> str:
+    if stream_id is None:
+        raise ValueError("stream memory paths require stream_id")
+    slug = safe_slug(stream_slug or "")
+    if slug == "unnamed":
+        raise ValueError("stream memory paths require stream_slug")
+    return f"stream-{stream_id}-{slug}"
+
+
+def topic_memory_dir_name(topic_hash: str) -> str:
+    return f"topic-{safe_slug(topic_hash)}"
+
+
+def private_memory_dir_name(user_key: str | None) -> str:
+    return f"private-{safe_slug(user_key or 'unknown')}"
+
+
 @dataclass(frozen=True)
 class SessionKey:
     realm_id: str
@@ -97,6 +114,7 @@ class SessionKey:
     topic_hash: str
     conversation_type: str = "stream"
     private_user_key: str | None = None
+    stream_slug: str | None = None
 
     @property
     def value(self) -> str:
@@ -139,6 +157,7 @@ class NormalizedMessage:
             topic_hash=self.topic_hash,
             conversation_type=self.conversation_type,
             private_user_key=self.private_user_key,
+            stream_slug=self.stream_slug,
         )
 
     def to_record(self) -> dict[str, Any]:

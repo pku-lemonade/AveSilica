@@ -152,6 +152,9 @@ def _render_prompt(args: argparse.Namespace) -> int:
         stream=message.stream,
         topic_hash=message.topic_hash,
         role=config.role,
+        stream_id=message.stream_id,
+        conversation_type=message.conversation_type,
+        private_user_key=message.private_user_key,
     )
     memory = MemoryStore(config.workspace_dir / "memory").render_selected(message.session_key)
     prompt = PromptBuilder().build(

@@ -69,7 +69,7 @@ Use `chat` for ordinary help, synthesis, draft text, and lightweight recommendat
 """,
     "loop/memory.md": """# Memory Policy
 
-Propose durable memory operations only for information that will improve future help and is safe to retain.
+Propose memory operations only for information that should become a scoped memory seed: concise, source-attributed context that can improve future help after consolidation into `memory.md`.
 
 Good memory candidates:
 
@@ -80,11 +80,18 @@ Good memory candidates:
 
 Do not store secrets, credentials, private personal data, health information, grades, sensitive institutional details, transient moods, unsupported claims, or guesses.
 
-Keep memory operations terse, auditable, and attributable to the current thread context. Do not use memory as a scratchpad for reasoning.
+Scope policy:
 
-Memory is written by the orchestrator after validation. Use `upsert` for new or corrected records and `archive` when an existing memory ID is stale. Prefer updating or archiving existing IDs over creating duplicate memories.
+- Use `conversation` for topic/private-chat facts. This is the default.
+- Use `channel` only for facts or preferences that clearly apply across the whole Zulip channel/stream.
+- Use `global` only for stable cross-channel context.
+
+Keep memory operations terse, auditable, and attributable to the current thread context. Do not use memory as a scratchpad for reasoning, raw chat summaries, temporary analysis, or procedural instructions.
+
+Memory is written by the orchestrator after validation. The model proposes seeds; the orchestrator writes scoped `seeds.jsonl` and consolidates active seeds into scoped `memory.md`. Use `upsert` for new or corrected records and `archive` when an existing memory ID is stale. Prefer updating or archiving existing IDs over creating duplicate memories.
 """,
-    "memory/items.json": "[]\n",
+    "memory/memory.md": "",
+    "memory/seeds.jsonl": "",
 }
 
 
@@ -95,7 +102,6 @@ def initialize_workspace(root: Path, overwrite: bool = False) -> list[Path]:
     for relative in [
         "roles",
         "loop",
-        "channels",
         "memory",
         "state/sessions",
         "state/errors",
@@ -110,11 +116,6 @@ def initialize_workspace(root: Path, overwrite: bool = False) -> list[Path]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         created.append(path)
-
-    gitkeep = root / "channels" / ".gitkeep"
-    if not gitkeep.exists():
-        gitkeep.write_text("", encoding="utf-8")
-        created.append(gitkeep)
 
     return created
 

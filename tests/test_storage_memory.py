@@ -76,7 +76,7 @@ def test_read_recent_messages_excludes_current_message_ids(tmp_path):
 def test_memory_ops_are_deduplicated_archived_and_rendered_by_scope(tmp_path):
     initialize_workspace(tmp_path)
     store = MemoryStore(tmp_path / "memory")
-    key = SessionKey("realm", 10, "topic123")
+    key = SessionKey("realm", 10, "topic123", stream_slug="engineering")
 
     first = store.apply_ops(
         key,
@@ -92,7 +92,8 @@ def test_memory_ops_are_deduplicated_archived_and_rendered_by_scope(tmp_path):
     assert first[0]["id"] == second[0]["id"]
     assert "Team prefers short replies" in store.render_selected(key)
     assert "conversation memory" in store.render_selected(key)
-    assert len(json.loads((tmp_path / "memory" / "items.json").read_text(encoding="utf-8"))) == 1
+    seed_path = tmp_path / "memory" / "stream-10-engineering" / "topic-topic123" / "seeds.jsonl"
+    assert len([line for line in seed_path.read_text(encoding="utf-8").splitlines() if line.strip()]) == 1
 
     store.apply_ops(key, [MemoryOperation(op="archive", id=first[0]["id"])], [3])
 
@@ -109,7 +110,7 @@ def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
         conversation_type="private",
         private_user_key="3",
     )
-    stream_key = SessionKey("realm", 10, "topic123")
+    stream_key = SessionKey("realm", 10, "topic123", stream_slug="engineering")
 
     store.apply_ops(
         private_key,
@@ -118,6 +119,28 @@ def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
 
     assert "Alice likes brief DM replies" in store.render_selected(private_key)
     assert "Alice likes brief DM replies" not in store.render_selected(stream_key)
+
+
+def test_channel_memory_renders_for_sibling_topics_in_same_stream(tmp_path):
+    initialize_workspace(tmp_path)
+    store = MemoryStore(tmp_path / "memory")
+    first_topic = SessionKey("realm", 10, "topic123", stream_slug="engineering")
+    second_topic = SessionKey("realm", 10, "topic456", stream_slug="engineering")
+    other_stream = SessionKey("realm", 20, "topic123", stream_slug="research")
+
+    store.apply_ops(
+        first_topic,
+        [MemoryOperation(op="upsert", scope="channel", kind="preference", content="Use concise architecture summaries")],
+    )
+    store.apply_ops(
+        first_topic,
+        [MemoryOperation(op="upsert", scope="conversation", kind="fact", content="Launch topic local fact")],
+    )
+
+    assert "Use concise architecture summaries" in store.render_selected(second_topic)
+    assert "Launch topic local fact" not in store.render_selected(second_topic)
+    assert "Use concise architecture summaries" not in store.render_selected(other_stream)
+    assert (tmp_path / "memory" / "stream-10-engineering" / "seeds.jsonl").exists()
 
 
 def test_scratchpad_operation_replaces_or_clears_snapshot(tmp_path):

@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 from token_zulip.instructions import InstructionLoader
-from token_zulip.models import normalized_topic_hash
+from token_zulip.models import normalized_topic_hash, stream_memory_dir_name, topic_memory_dir_name
 from token_zulip.workspace import initialize_workspace
 
 
 def test_instruction_layers_are_ordered(tmp_path):
     initialize_workspace(tmp_path)
-    stream_dir = tmp_path / "channels" / "engineering"
+    stream_dir = tmp_path / "memory" / stream_memory_dir_name(10, "engineering")
     topic_hash = normalized_topic_hash("Launch Plan")
-    topic_dir = stream_dir / topic_hash
+    topic_dir = stream_dir / topic_memory_dir_name(topic_hash)
     topic_dir.mkdir(parents=True)
     (stream_dir / "AGENTS.md").write_text("stream rule", encoding="utf-8")
     (topic_dir / "AGENTS.md").write_text("topic rule", encoding="utf-8")
 
-    text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, role="default")
+    text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, role="default", stream_id=10)
 
     assert "hardcoded safety contract" in text
     assert text.index("AGENTS.md") < text.index("roles/default.md")
-    assert text.index("loop/memory.md") < text.index("channels/engineering/AGENTS.md")
-    assert text.index("channels/engineering/AGENTS.md") < text.index(f"channels/engineering/{topic_hash}/AGENTS.md")
+    stream_label = "memory/stream-10-engineering/AGENTS.md"
+    topic_label = f"memory/stream-10-engineering/topic-{topic_hash}/AGENTS.md"
+    assert text.index("loop/memory.md") < text.index(stream_label)
+    assert text.index(stream_label) < text.index(topic_label)
     assert "stream rule" in text
     assert "topic rule" in text
 
@@ -27,7 +29,12 @@ def test_instruction_layers_are_ordered(tmp_path):
 def test_default_instruction_content_names_silica_and_research_guardrails(tmp_path):
     initialize_workspace(tmp_path)
 
-    text = InstructionLoader(tmp_path).compose("Engineering", normalized_topic_hash("Launch Plan"), role="default")
+    text = InstructionLoader(tmp_path).compose(
+        "Engineering",
+        normalized_topic_hash("Launch Plan"),
+        role="default",
+        stream_id=10,
+    )
 
     assert "Silica" in text
     assert "Sili" in text

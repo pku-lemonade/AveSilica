@@ -417,7 +417,7 @@ def test_pending_messages_preserve_direct_addressed(tmp_path):
 def test_memory_ops_are_applied_before_posting(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
-        memory_file = tmp_path / "memory" / "items.json"
+        memory_file = tmp_path / "memory" / "stream-10-engineering" / "topic-topic123" / "memory.md"
         poster = FakePoster(memory_file)
         bot = AgentLoop(
             config=_config(tmp_path),

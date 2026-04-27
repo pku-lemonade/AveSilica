@@ -214,6 +214,7 @@ class WorkspaceStorage:
             metadata.topic_hash,
             conversation_type=metadata.conversation_type,
             private_user_key=metadata.private_user_key,
+            stream_slug=metadata.stream_slug,
         )
         self._write_json(self.session_path(key, "session.json"), metadata.to_record())
 
