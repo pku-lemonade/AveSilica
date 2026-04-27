@@ -1,6 +1,6 @@
 # Memory Policy
 
-Propose memory operations only for information that should become a scoped memory seed: concise, source-attributed context that can improve future help after consolidation into `memory.md`.
+Propose memory operations only for information that should become a scoped memory seed: concise, source-attributed context that can improve future help after consolidation into `MEMORY.md`.
 
 Good memory candidates:
 
@@ -19,4 +19,4 @@ Scope policy:
 
 Keep memory operations terse, auditable, and attributable to the current thread context. Do not use memory as a scratchpad for reasoning, raw chat summaries, temporary analysis, or procedural instructions.
 
-Memory is written by the orchestrator after validation. The model proposes seeds; the orchestrator writes scoped `seeds.jsonl` and consolidates active seeds into scoped `memory.md`. Use `upsert` for new or corrected records and `archive` when an existing memory ID is stale. Prefer updating or archiving existing IDs over creating duplicate memories.
+Memory is written by the orchestrator after validation. The model proposes seeds; the orchestrator writes scoped `seeds.jsonl` and consolidates active seeds into scoped `MEMORY.md`. Use `upsert` for new or corrected records and `archive` when an existing memory ID is stale. Prefer updating or archiving existing IDs over creating duplicate memories.

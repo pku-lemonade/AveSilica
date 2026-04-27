@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import private_memory_dir_name, safe_slug, stream_memory_dir_name, topic_memory_dir_name
+from .models import private_memory_dir_name, stream_memory_dir_name, topic_memory_dir_name
 from .workspace import strip_markdown_comments
 
 
@@ -76,13 +76,12 @@ class InstructionLoader:
         conversation_type: str = "stream",
         private_user_key: str | None = None,
     ) -> list[InstructionSource]:
-        role_slug = safe_slug(role)
         candidates: list[tuple[str, Path | None]] = [
             ("hardcoded safety contract", None),
             ("AGENTS.md", self.root / "AGENTS.md"),
-            (f"roles/{role_slug}.md", self.root / "roles" / f"{role_slug}.md"),
-            ("loop/participation.md", self.root / "loop" / "participation.md"),
-            ("loop/memory.md", self.root / "loop" / "memory.md"),
+            ("references/participation.md", self.root / "references" / "participation.md"),
+            ("references/memory-policy.md", self.root / "references" / "memory-policy.md"),
+            ("memory/AGENTS.md", self.root / "memory" / "AGENTS.md"),
         ]
         candidates.extend(self._local_candidates(stream, topic_hash, stream_id, conversation_type, private_user_key))
 

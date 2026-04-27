@@ -39,9 +39,13 @@ def test_cli_init_creates_workspace_layout(tmp_path):
     assert main(["--workspace", str(workspace), "init"]) == 0
 
     assert (workspace / "AGENTS.md").exists()
-    assert (workspace / "roles" / "default.md").exists()
-    assert (workspace / "memory" / "memory.md").exists()
+    assert (workspace / "references" / "participation.md").exists()
+    assert (workspace / "references" / "memory-policy.md").exists()
+    assert (workspace / "memory" / "AGENTS.md").exists()
+    assert (workspace / "memory" / "MEMORY.md").exists()
     assert (workspace / "memory" / "seeds.jsonl").exists()
+    assert not (workspace / "roles").exists()
+    assert not (workspace / "loop").exists()
     assert "Silica" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
-    assert "Sili" in (workspace / "roles" / "default.md").read_text(encoding="utf-8")
-    assert "unsupported claims" in (workspace / "loop" / "memory.md").read_text(encoding="utf-8")
+    assert "Sili" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert "unsupported claims" in (workspace / "references" / "memory-policy.md").read_text(encoding="utf-8")

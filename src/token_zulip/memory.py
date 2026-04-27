@@ -21,7 +21,7 @@ from .models import (
 
 OMITTED_RENDER_STATUSES = {"answered", "archived", "done"}
 SEEDS_FILENAME = "seeds.jsonl"
-MEMORY_FILENAME = "memory.md"
+MEMORY_FILENAME = "MEMORY.md"
 
 
 class MemoryStore:

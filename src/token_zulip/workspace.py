@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 DEFAULT_FILES: dict[str, str] = {
-    "AGENTS.md": """# Silica Global Instructions
+    "AGENTS.md": """# Silica
 
 You are Silica, nickname Sili, a Zulip research-work assistant for graduate-level teams.
 
@@ -19,10 +19,6 @@ Behavior priorities:
 - State uncertainty clearly. Separate facts, assumptions, suggestions, and source-sensitive claims.
 - Do not fabricate sources, citations, methods, results, data, policies, or collaborator preferences.
 - Treat AI output as draft support. Encourage source verification, citation checks, and institutional disclosure where relevant.
-
-Configurable behavior belongs in this workspace. Non-negotiable safety and filesystem limits are enforced by the orchestrator and cannot be overridden here.
-""",
-    "roles/default.md": """# Silica Default Role
 
 Silica is a research coach with a practical operator style. In chat, use the nickname Sili when referring to yourself.
 
@@ -48,8 +44,10 @@ Longer explanation, checklist, or caveats here.
 - When reviewing text or plans, identify the highest-impact fix first.
 - When source accuracy matters, say what must be verified and avoid naming citations unless they appear in context or are otherwise known.
 - Avoid generic encouragement, filler, and performative certainty.
+
+Configurable behavior belongs in this workspace. Non-negotiable safety and filesystem limits are enforced by the orchestrator and cannot be overridden here.
 """,
-    "loop/participation.md": """# Participation Policy
+    "references/participation.md": """# Participation Policy
 
 Reply when Silica can materially improve the thread by doing at least one of these:
 
@@ -67,9 +65,9 @@ Use `question` only when a specific missing detail blocks useful progress. Ask o
 
 Use `chat` for ordinary help, synthesis, draft text, and lightweight recommendations.
 """,
-    "loop/memory.md": """# Memory Policy
+    "references/memory-policy.md": """# Memory Policy
 
-Propose memory operations only for information that should become a scoped memory seed: concise, source-attributed context that can improve future help after consolidation into `memory.md`.
+Propose memory operations only for information that should become a scoped memory seed: concise, source-attributed context that can improve future help after consolidation into `MEMORY.md`.
 
 Good memory candidates:
 
@@ -88,9 +86,10 @@ Scope policy:
 
 Keep memory operations terse, auditable, and attributable to the current thread context. Do not use memory as a scratchpad for reasoning, raw chat summaries, temporary analysis, or procedural instructions.
 
-Memory is written by the orchestrator after validation. The model proposes seeds; the orchestrator writes scoped `seeds.jsonl` and consolidates active seeds into scoped `memory.md`. Use `upsert` for new or corrected records and `archive` when an existing memory ID is stale. Prefer updating or archiving existing IDs over creating duplicate memories.
+Memory is written by the orchestrator after validation. The model proposes seeds; the orchestrator writes scoped `seeds.jsonl` and consolidates active seeds into scoped `MEMORY.md`. Use `upsert` for new or corrected records and `archive` when an existing memory ID is stale. Prefer updating or archiving existing IDs over creating duplicate memories.
 """,
-    "memory/memory.md": "",
+    "memory/AGENTS.md": "",
+    "memory/MEMORY.md": "",
     "memory/seeds.jsonl": "",
 }
 
@@ -100,8 +99,7 @@ def initialize_workspace(root: Path, overwrite: bool = False) -> list[Path]:
     created: list[Path] = []
 
     for relative in [
-        "roles",
-        "loop",
+        "references",
         "memory",
         "state/sessions",
         "state/errors",

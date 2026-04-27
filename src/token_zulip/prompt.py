@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
-from .models import DECISION_JSON_SCHEMA, NormalizedMessage
+from .models import NormalizedMessage
 
 
 @dataclass(frozen=True)
@@ -18,7 +17,6 @@ class PromptBuilder:
     def build(self, parts: PromptParts) -> str:
         recent = "\n".join(self._format_record(record) for record in parts.recent_context)
         current = "\n".join(self._format_message(message) for message in parts.current_messages)
-        schema = json.dumps(DECISION_JSON_SCHEMA, indent=2, sort_keys=True)
         conversation_type = self._conversation_type(parts)
         frame = self._conversation_frame(conversation_type)
         guidance = self._guidance(conversation_type)
@@ -46,11 +44,7 @@ Follow the instruction layers exactly. Later instruction layers override earlier
 
 # Required Output
 
-Return one JSON object that matches this schema:
-
-```json
-{schema}
-```
+Return one object matching the native structured output schema supplied with this run.
 
 Guidance:
 - Set `should_reply` to false and `reply_kind` to `silent` when the useful contribution is to say nothing.

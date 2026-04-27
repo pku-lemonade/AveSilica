@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from token_zulip.instructions import InstructionLoader
-from token_zulip.models import normalized_topic_hash, stream_memory_dir_name, topic_memory_dir_name
+from token_zulip.models import normalized_topic_hash, private_memory_dir_name, stream_memory_dir_name, topic_memory_dir_name
 from token_zulip.workspace import initialize_workspace
 
 
 def test_instruction_layers_are_ordered(tmp_path):
     initialize_workspace(tmp_path)
+    (tmp_path / "memory" / "AGENTS.md").write_text("workspace memory rule", encoding="utf-8")
     stream_dir = tmp_path / "memory" / stream_memory_dir_name(10, "engineering")
     topic_hash = normalized_topic_hash("Launch Plan")
     topic_dir = stream_dir / topic_memory_dir_name(topic_hash)
@@ -17,10 +18,13 @@ def test_instruction_layers_are_ordered(tmp_path):
     text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, role="default", stream_id=10)
 
     assert "hardcoded safety contract" in text
-    assert text.index("AGENTS.md") < text.index("roles/default.md")
+    assert text.index("## Source: AGENTS.md") < text.index("## Source: references/participation.md")
+    assert text.index("## Source: references/participation.md") < text.index("## Source: references/memory-policy.md")
+    assert text.index("## Source: references/memory-policy.md") < text.index("## Source: memory/AGENTS.md")
+    assert "workspace memory rule" in text
     stream_label = "memory/stream-10-engineering/AGENTS.md"
     topic_label = f"memory/stream-10-engineering/topic-{topic_hash}/AGENTS.md"
-    assert text.index("loop/memory.md") < text.index(stream_label)
+    assert text.index("## Source: memory/AGENTS.md") < text.index(stream_label)
     assert text.index(stream_label) < text.index(topic_label)
     assert "stream rule" in text
     assert "topic rule" in text
@@ -47,12 +51,30 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     initialize_workspace(tmp_path)
 
     global_text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
-    role_text = (tmp_path / "roles" / "default.md").read_text(encoding="utf-8")
-    participation_text = (tmp_path / "loop" / "participation.md").read_text(encoding="utf-8")
+    participation_text = (tmp_path / "references" / "participation.md").read_text(encoding="utf-8")
+    memory_policy_text = (tmp_path / "references" / "memory-policy.md").read_text(encoding="utf-8")
 
-    assert "```spoiler Details" in role_text
-    assert "Keep replies chat-sized" in role_text
-    assert "```spoiler Details" not in global_text
-    assert "Keep replies chat-sized" not in global_text
+    assert "```spoiler Details" in global_text
+    assert "Keep replies chat-sized" in global_text
+    assert "when Silica can materially improve" not in global_text
     assert "```spoiler Details" not in participation_text
     assert "when Silica can materially improve" in participation_text
+    assert "unsupported claims" in memory_policy_text
+    assert "MEMORY.md" in memory_policy_text
+
+
+def test_private_instruction_loads_memory_scoped_agents(tmp_path):
+    initialize_workspace(tmp_path)
+    private_dir = tmp_path / "memory" / private_memory_dir_name("42")
+    private_dir.mkdir(parents=True)
+    (private_dir / "AGENTS.md").write_text("private rule", encoding="utf-8")
+
+    text = InstructionLoader(tmp_path).compose(
+        "",
+        normalized_topic_hash("private"),
+        conversation_type="private",
+        private_user_key="42",
+    )
+
+    assert f"memory/{private_memory_dir_name('42')}/AGENTS.md" in text
+    assert "private rule" in text
