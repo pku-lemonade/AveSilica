@@ -204,6 +204,46 @@ def _typing(notifier: FakeTypingNotifier, *, enabled: bool = True) -> TypingStat
     return TypingStatusManager(notifier, enabled=enabled, refresh_seconds=60)
 
 
+def test_typing_stop_waits_for_in_flight_refresh_start(tmp_path):
+    class BlockingRefreshTypingNotifier:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, int]] = []
+            self.start_calls = 0
+            self.refresh_started = asyncio.Event()
+            self.release_refresh = asyncio.Event()
+
+        async def start(self, message: NormalizedMessage) -> None:
+            self.start_calls += 1
+            self.events.append(("start", message.message_id))
+            if self.start_calls == 2:
+                self.refresh_started.set()
+                await self.release_refresh.wait()
+
+        async def stop(self, message: NormalizedMessage) -> None:
+            self.events.append(("stop", message.message_id))
+
+    async def scenario() -> None:
+        notifier = BlockingRefreshTypingNotifier()
+        typing = TypingStatusManager(notifier, refresh_seconds=0.01)
+
+        async def use_typing() -> None:
+            async with typing.active(_message(1)):
+                await notifier.refresh_started.wait()
+
+        task = asyncio.create_task(use_typing())
+        await notifier.refresh_started.wait()
+        await asyncio.sleep(0)
+
+        assert notifier.events == [("start", 1), ("start", 1)]
+
+        notifier.release_refresh.set()
+        await task
+
+        assert notifier.events == [("start", 1), ("start", 1), ("stop", 1)]
+
+    asyncio.run(scenario())
+
+
 def test_messages_for_active_topic_are_persisted_and_run_as_followup(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)

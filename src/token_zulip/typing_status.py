@@ -46,22 +46,24 @@ class TypingStatusManager:
     @asynccontextmanager
     async def active(self, message: NormalizedMessage) -> AsyncIterator[None]:
         refresh_task: asyncio.Task[None] | None = None
+        stop_event = asyncio.Event()
         await self._safe_start(message)
-        refresh_task = asyncio.create_task(self._refresh(message))
+        refresh_task = asyncio.create_task(self._refresh(message, stop_event))
         try:
             yield
         finally:
+            stop_event.set()
             if refresh_task is not None:
-                refresh_task.cancel()
-                try:
-                    await refresh_task
-                except asyncio.CancelledError:
-                    pass
+                await refresh_task
             await self._safe_stop(message)
 
-    async def _refresh(self, message: NormalizedMessage) -> None:
+    async def _refresh(self, message: NormalizedMessage, stop_event: asyncio.Event) -> None:
         while True:
-            await asyncio.sleep(self.refresh_seconds)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=self.refresh_seconds)
+                return
+            except asyncio.TimeoutError:
+                pass
             await self._safe_start(message)
 
     async def _safe_start(self, message: NormalizedMessage) -> None:
