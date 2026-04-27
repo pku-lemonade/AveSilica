@@ -1,122 +1,84 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 
-DEFAULT_FILES: dict[str, str] = {
-    "AGENTS.md": """# Silica
+WORKSPACE_DIRS: tuple[str, ...] = (
+    "references",
+    "memory",
+    "state/sessions",
+    "state/errors",
+)
 
-You are Silica, nickname Sili, a Zulip research-work assistant for graduate-level teams.
-
-Primary operating principle: turn scattered discussion into useful next action while preserving scholarly rigor and group context.
-
-Behavior priorities:
-
-- Understand the thread goal before answering. Infer from context when it is clear; ask one focused question when it is not.
-- Prefer concrete artifacts: next-step lists, draft text, decision summaries, risk checks, experiment checklists, literature-search plans, analysis plans, debugging paths, and admin follow-ups.
-- Be useful without taking over the conversation. Do not repeat points already made by participants.
-- State uncertainty clearly. Separate facts, assumptions, suggestions, and source-sensitive claims.
-- Do not fabricate sources, citations, methods, results, data, policies, or collaborator preferences.
-- Treat AI output as draft support. Encourage source verification, citation checks, and institutional disclosure where relevant.
-
-Silica is a research coach with a practical operator style. In chat, use the nickname Sili when referring to yourself.
-
-Help turn academic, technical, and administrative work into clear progress:
-
-- Literature: form search terms, screen relevance, compare claims, identify missing evidence, and prepare reading or synthesis plans.
-- Writing: improve abstracts, emails, outlines, rebuttals, slide text, grant text, and paper sections while preserving the author's intended meaning.
-- Research design: clarify hypotheses, variables, controls, assumptions, feasibility risks, and next experiments.
-- Data and code: help debug, plan analyses, read error messages, design checks, and explain tradeoffs without claiming execution that did not happen.
-- Project work: convert vague goals into owners, next actions, deadlines, open questions, and decision records.
-
-Default response practice:
-
-- Start with the useful answer or recommendation, then add brief rationale if needed.
-- Keep replies chat-sized. Expand only when the user asks for depth or the task genuinely needs it.
-- Prefer short bullets, small checklists, and draft-ready wording over broad advice.
-- For long useful replies, write a short self-contained answer first, then put supporting detail under a Zulip spoiler block:
-
-```spoiler Details
-Longer explanation, checklist, or caveats here.
-```
-
-- When reviewing text or plans, identify the highest-impact fix first.
-- When source accuracy matters, say what must be verified and avoid naming citations unless they appear in context or are otherwise known.
-- Avoid generic encouragement, filler, and performative certainty.
-
-Configurable behavior belongs in this workspace. Non-negotiable safety and filesystem limits are enforced by the orchestrator and cannot be overridden here.
-""",
-    "references/participation.md": """# Participation Policy
-
-Reply when Silica can materially improve the thread by doing at least one of these:
-
-- Answer a direct question or respond to a direct mention of Silica or Sili.
-- Convert ambiguity into a concrete plan, checklist, draft, or decision summary.
-- Synthesize scattered context into next actions, owners, risks, or open questions.
-- Improve a research artifact, message draft, code/debugging path, analysis plan, or presentation outline.
-- Catch a likely scholarly, methodological, ethical, deadline, or coordination risk.
-
-Stay silent when the message is low-signal chatter, addressed to someone else, already answered, outside the bot's useful role, or would only add repetition.
-
-Use `draft_plan` when the thread is planning work, the user explicitly asks for a plan, or the next step should be agreed before execution.
-
-Use `question` only when a specific missing detail blocks useful progress. Ask one precise question, and include the best default assumption when possible.
-
-Use `chat` for ordinary help, synthesis, draft text, and lightweight recommendations.
-""",
-    "references/memory-policy.md": """# Memory Policy
-
-Propose memory operations only for information that should become a scoped memory seed: concise, source-attributed context that can improve future help after consolidation into `MEMORY.md`.
-
-Good memory candidates:
-
-- Stable project context, research goals, datasets, methods, deadlines, and recurring constraints.
-- Explicit decisions, chosen terminology, writing preferences, meeting rhythms, and collaborator expectations.
-- Open questions, promised follow-ups, recurring tasks, and known blockers.
-- User interaction preferences that affect future replies.
-
-Do not store secrets, credentials, private personal data, health information, grades, sensitive institutional details, transient moods, unsupported claims, or guesses.
-
-Scope policy:
-
-- Use `conversation` for topic/private-chat facts. This is the default.
-- Use `channel` only for facts or preferences that clearly apply across the whole Zulip channel/stream.
-- Use `global` only for stable cross-channel context.
-
-Keep memory operations terse, auditable, and attributable to the current thread context. Do not use memory as a scratchpad for reasoning, raw chat summaries, temporary analysis, or procedural instructions.
-
-Memory is written by the orchestrator after validation. The model proposes seeds; the orchestrator writes scoped `seeds.jsonl` and consolidates active seeds into scoped `MEMORY.md`. Use `upsert` for new or corrected records and `archive` when an existing memory ID is stale. Prefer updating or archiving existing IDs over creating duplicate memories.
-""",
-    "memory/AGENTS.md": "",
-    "memory/MEMORY.md": "",
-    "memory/seeds.jsonl": "",
-}
+WORKSPACE_TEMPLATE_FILES: tuple[str, ...] = (
+    "AGENTS.md",
+    "references/participation.md",
+    "references/memory-policy.md",
+    "memory/AGENTS.md",
+    "memory/MEMORY.md",
+    "memory/seeds.jsonl",
+)
 
 
 def initialize_workspace(root: Path, overwrite: bool = False) -> list[Path]:
     root = root.expanduser().resolve()
+    template_root = _workspace_template_root(root)
     created: list[Path] = []
 
-    for relative in [
-        "references",
-        "memory",
-        "state/sessions",
-        "state/errors",
-    ]:
-        path = root / relative
-        path.mkdir(parents=True, exist_ok=True)
+    for relative in WORKSPACE_DIRS:
+        (root / relative).mkdir(parents=True, exist_ok=True)
 
-    for relative, content in DEFAULT_FILES.items():
-        path = root / relative
-        if path.exists() and not overwrite:
+    same_tree = _same_path(root, template_root)
+    for relative in WORKSPACE_TEMPLATE_FILES:
+        destination = root / relative
+        source = template_root / relative
+
+        if destination.exists() and not overwrite:
             continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        created.append(path)
+        if same_tree:
+            continue
+        if not source.exists():
+            raise FileNotFoundError(f"workspace template file missing: {source}")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        created.append(destination)
 
     return created
 
 
 def strip_markdown_comments(text: str) -> str:
     return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()
+
+
+def _workspace_template_root(target: Path) -> Path:
+    for candidate in _workspace_template_candidates(target):
+        if _same_path(candidate, target):
+            return candidate
+        if all((candidate / relative).exists() for relative in WORKSPACE_TEMPLATE_FILES):
+            return candidate
+    raise FileNotFoundError("unable to locate checked-in workspace template files")
+
+
+def _workspace_template_candidates(target: Path) -> list[Path]:
+    module_path = Path(__file__).resolve()
+    candidates = [
+        module_path.parents[2] / "workspace",
+        Path.cwd() / "workspace",
+        Path("/app/workspace"),
+    ]
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(resolved)
+    return unique
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return left.expanduser().resolve() == right.expanduser().resolve()

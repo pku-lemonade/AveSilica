@@ -15,7 +15,7 @@ def test_instruction_layers_are_ordered(tmp_path):
     (stream_dir / "AGENTS.md").write_text("stream rule", encoding="utf-8")
     (topic_dir / "AGENTS.md").write_text("topic rule", encoding="utf-8")
 
-    text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, role="default", stream_id=10)
+    text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, stream_id=10)
 
     assert "hardcoded safety contract" in text
     assert text.index("## Source: AGENTS.md") < text.index("## Source: references/participation.md")
@@ -36,7 +36,6 @@ def test_default_instruction_content_names_silica_and_research_guardrails(tmp_pa
     text = InstructionLoader(tmp_path).compose(
         "Engineering",
         normalized_topic_hash("Launch Plan"),
-        role="default",
         stream_id=10,
     )
 
@@ -56,9 +55,13 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
 
     assert "```spoiler Details" in global_text
     assert "Keep replies chat-sized" in global_text
+    assert "long useful public-channel replies" in global_text
+    assert "supporting detail, caveats, or long checklists" in global_text
     assert "when Silica can materially improve" not in global_text
     assert "```spoiler Details" not in participation_text
     assert "when Silica can materially improve" in participation_text
+    assert "use available lookup tools" in participation_text
+    assert "instead of suggesting search terms" in participation_text
     assert "unsupported claims" in memory_policy_text
     assert "MEMORY.md" in memory_policy_text
 

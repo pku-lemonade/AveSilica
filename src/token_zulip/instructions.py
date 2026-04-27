@@ -36,7 +36,6 @@ class InstructionLoader:
         self,
         stream: str,
         topic_hash: str,
-        role: str = "default",
         *,
         stream_id: int | None = None,
         conversation_type: str = "stream",
@@ -45,7 +44,6 @@ class InstructionLoader:
         sources = self.sources(
             stream=stream,
             topic_hash=topic_hash,
-            role=role,
             stream_id=stream_id,
             conversation_type=conversation_type,
             private_user_key=private_user_key,
@@ -70,7 +68,6 @@ class InstructionLoader:
         self,
         stream: str,
         topic_hash: str,
-        role: str = "default",
         *,
         stream_id: int | None = None,
         conversation_type: str = "stream",

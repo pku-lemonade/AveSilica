@@ -23,7 +23,6 @@ def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
         bot_email="bot@example.com",
         bot_user_id=99,
         bot_aliases=("Silica", "Sili"),
-        role="default",
         codex_model="gpt-5.4",
         codex_reasoning_effort=None,
         codex_cwd=workspace,

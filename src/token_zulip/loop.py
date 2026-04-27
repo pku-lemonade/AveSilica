@@ -161,7 +161,6 @@ class AgentLoop:
         instructions = self.instructions.compose(
             stream=first.stream,
             topic_hash=first.topic_hash,
-            role=self.config.role,
             stream_id=first.stream_id,
             conversation_type=first.conversation_type,
             private_user_key=first.private_user_key,

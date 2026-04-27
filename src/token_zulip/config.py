@@ -67,7 +67,6 @@ class BotConfig:
     bot_email: str | None
     bot_user_id: int | None
     bot_aliases: tuple[str, ...]
-    role: str
     codex_model: str
     codex_reasoning_effort: str | None
     codex_cwd: Path
@@ -93,7 +92,6 @@ class BotConfig:
             bot_email=os.getenv("TOKENZULIP_BOT_EMAIL") or None,
             bot_user_id=_optional_int_env("TOKENZULIP_BOT_USER_ID"),
             bot_aliases=_aliases_env("TOKENZULIP_BOT_ALIASES", ("Silica", "Sili")),
-            role=os.getenv("TOKENZULIP_ROLE", "default"),
             codex_model=os.getenv("TOKENZULIP_CODEX_MODEL", "gpt-5.4"),
             codex_reasoning_effort=os.getenv("TOKENZULIP_CODEX_REASONING_EFFORT") or "medium",
             codex_cwd=codex_cwd,

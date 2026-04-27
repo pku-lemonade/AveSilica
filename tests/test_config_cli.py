@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from token_zulip.cli import main
 from token_zulip.config import BotConfig
+from token_zulip.workspace import WORKSPACE_TEMPLATE_FILES
+
+
+TEMPLATE_ROOT = Path(__file__).resolve().parents[1] / "workspace"
 
 
 def test_default_workspace_is_workspace(tmp_path, monkeypatch):
@@ -46,6 +52,5 @@ def test_cli_init_creates_workspace_layout(tmp_path):
     assert (workspace / "memory" / "seeds.jsonl").exists()
     assert not (workspace / "roles").exists()
     assert not (workspace / "loop").exists()
-    assert "Silica" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
-    assert "Sili" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
-    assert "unsupported claims" in (workspace / "references" / "memory-policy.md").read_text(encoding="utf-8")
+    for relative in WORKSPACE_TEMPLATE_FILES:
+        assert (workspace / relative).read_bytes() == (TEMPLATE_ROOT / relative).read_bytes()

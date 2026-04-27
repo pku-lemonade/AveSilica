@@ -142,7 +142,7 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 
 ## Instruction Architecture
 
-Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` only seeds missing files during `token-zulip init`; it does not update an existing workspace unless initialization is explicitly run with overwrite behavior. `src/token_zulip/prompt.py` wraps the loaded instructions with the native Codex output schema and runtime contract.
+Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing seed files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/prompt.py` wraps the loaded instructions with the native Codex output schema and runtime contract.
 
 Instruction layers are loaded in this order: hardcoded safety contract, `workspace/AGENTS.md`, `workspace/references/participation.md`, `workspace/references/memory-policy.md`, optional `workspace/memory/AGENTS.md`, optional channel `AGENTS.md`, then optional topic/private `AGENTS.md` under `workspace/memory/`. Later configurable layers can specialize earlier workspace guidance, but they cannot override the hardcoded runtime contract.
 
