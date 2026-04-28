@@ -109,6 +109,7 @@ def test_storage_uses_readable_session_messages_pending_and_turns(tmp_path):
     storage.append_message(first)
     storage.append_pending_messages(key, [second])
     storage.set_codex_thread_state(key, thread_id="thread-1", instruction_mode="developer-v1")
+    storage.set_last_injected_memory_hash(key, "memory-hash")
     storage.mark_processed(key, [1])
     storage.log_turn(
         key,
@@ -122,6 +123,7 @@ def test_storage_uses_readable_session_messages_pending_and_turns(tmp_path):
     assert storage.pop_pending_messages(key)[0].message_id == 2
     assert storage.load_metadata(key).codex_thread_id == "thread-1"
     assert storage.load_metadata(key).codex_instruction_mode == "developer-v1"
+    assert storage.load_metadata(key).last_injected_memory_hash == "memory-hash"
     assert storage.load_metadata(key).last_processed_message_id == 1
 
     message_record = json.loads(storage.session_path(key, "messages.jsonl").read_text(encoding="utf-8").splitlines()[0])
@@ -175,6 +177,7 @@ def test_channel_rename_moves_records_and_memory_by_stream_id(tmp_path):
     assert (
         tmp_path / "memory" / "stream-platform-10" / f"topic-launch-{first.topic_hash}" / "MEMORY.md"
     ).read_text(encoding="utf-8") == "channel fact\n"
+    assert "channel fact" in MemoryStore(tmp_path / "memory").render_selected(new_key)
 
 
 def test_full_topic_rename_moves_records_memory_and_preserves_thread(tmp_path):
@@ -194,6 +197,7 @@ def test_full_topic_rename_moves_records_memory_and_preserves_thread(tmp_path):
     assert storage.read_recent_messages(destination, 10)[0]["message_id"] == 1
     assert storage.load_metadata(destination).codex_thread_id == "thread-1"
     assert (tmp_path / "memory" / "stream-engineering-10" / f"topic-release-{destination.topic_hash}").exists()
+    assert "launch fact" in MemoryStore(tmp_path / "memory").render_selected(destination)
 
 
 def test_full_topic_rename_rewrites_message_upload_paths(tmp_path):
@@ -254,6 +258,10 @@ def test_partial_topic_move_moves_only_matching_message_records(tmp_path):
     storage.append_message(first)
     storage.append_message(second)
     storage.append_pending_messages(first.session_key, [second])
+    MemoryStore(tmp_path / "memory").apply_ops(
+        first.session_key,
+        [MemoryOperation(op="add", scope="conversation", content="Launch-only memory")],
+    )
 
     result = storage.apply_message_move(_move([2], propagate_mode="change_one"))
     destination = _topic_message(3, topic="Release").session_key
@@ -263,6 +271,7 @@ def test_partial_topic_move_moves_only_matching_message_records(tmp_path):
     assert [record["message_id"] for record in storage.read_recent_messages(destination, 10)] == [2]
     assert [message.message_id for message in storage.pop_pending_messages(destination)] == [2]
     assert storage.load_metadata(destination).codex_thread_id is None
+    assert "Launch-only memory" not in MemoryStore(tmp_path / "memory").render_selected(destination)
     storage.apply_reaction(_reaction(2))
     assert storage.read_recent_messages(destination, 10)[0]["reactions"][0]["emoji_name"] == "100"
 

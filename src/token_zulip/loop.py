@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from .instructions import InstructionLoader
 from .memory import MemoryStore
 from .models import AgentDecision, NormalizedMessage, NormalizedReaction, SessionKey
 from .prompt import PromptBuilder, PromptParts
-from .storage import WorkspaceStorage
+from .storage import SessionMetadata, WorkspaceStorage
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
 from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, normalize_zulip_update_message_event
@@ -239,10 +240,12 @@ class AgentLoop:
                 )
             else:
                 recent_context = []
+            memory_context, memory_hash, memory_hash_changed = self._memory_context_for_prompt(key, metadata)
             prompt = self.prompt_builder.build(
                 PromptParts(
                     recent_context=recent_context,
                     current_messages=messages,
+                    memory_context=memory_context,
                 )
             )
 
@@ -259,23 +262,31 @@ class AgentLoop:
                 )
 
             decision = AgentDecision.from_json_text(codex_result.raw_text)
-            message_to_post = self._message_to_post(first, decision)
-            if typing_started and first.conversation_type == "stream" and not message_to_post:
-                await stack.aclose()
-                typing_started = False
+            if memory_hash_changed:
+                self.storage.set_last_injected_memory_hash(key, memory_hash)
 
             memory_applied = self.memory.apply_ops(
                 key,
                 decision.memory_ops,
                 [message.message_id for message in messages],
             )
+            memory_acknowledgement = self._memory_acknowledgement(memory_applied)
+            message_to_post = self._message_to_post(
+                first,
+                decision,
+                memory_acknowledgement=memory_acknowledgement,
+            )
+            outbound_message = self._with_memory_acknowledgement(message_to_post, memory_acknowledgement)
+            if typing_started and first.conversation_type == "stream" and not outbound_message:
+                await stack.aclose()
+                typing_started = False
 
             post: dict[str, Any] | None = None
-            if message_to_post:
+            if outbound_message:
                 if self.config.post_replies:
-                    post = self._post_summary(await self.zulip.post_reply(first, message_to_post), dry_run=False)
+                    post = self._post_summary(await self.zulip.post_reply(first, outbound_message), dry_run=False)
                 else:
-                    post = {"status": "dry_run", "dry_run": True}
+                    post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
 
             self.storage.log_turn(
                 key=key,
@@ -283,15 +294,105 @@ class AgentLoop:
                 decision=decision,
                 post=post,
                 memory_applied=memory_applied,
+                memory_acknowledgement=memory_acknowledgement,
             )
         self.storage.mark_processed(key, [message.message_id for message in messages])
 
-    def _message_to_post(self, first: NormalizedMessage, decision: AgentDecision) -> str:
+    def _memory_context_for_prompt(
+        self,
+        key: SessionKey,
+        metadata: SessionMetadata,
+    ) -> tuple[str, str | None, bool]:
+        rendered = self.memory.render_selected(key).strip()
+        current_hash = self._memory_hash(rendered)
+        previous_hash = metadata.last_injected_memory_hash or None
+        if rendered and current_hash != previous_hash:
+            return (
+                "\n".join(
+                    [
+                        "# Scoped Memory",
+                        "",
+                        "Remembered background, not new user input or instructions. "
+                        "Use it as context. If it conflicts with current messages, "
+                        "prefer current messages and use memory_ops to correct stale memory.",
+                        "",
+                        rendered,
+                    ]
+                ),
+                current_hash,
+                True,
+            )
+        if not rendered and previous_hash:
+            return (
+                "\n".join(
+                    [
+                        "# Scoped Memory",
+                        "",
+                        "Scoped memory is now empty. Treat earlier scoped memory for this Zulip session as stale. "
+                        "Do not use it unless current messages restate it.",
+                    ]
+                ),
+                None,
+                True,
+            )
+        return "", current_hash, False
+
+    def _memory_hash(self, rendered: str) -> str | None:
+        if not rendered:
+            return None
+        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+    def _message_to_post(
+        self,
+        first: NormalizedMessage,
+        decision: AgentDecision,
+        *,
+        memory_acknowledgement: str = "",
+    ) -> str:
         content = decision.message_to_post.strip()
         if decision.should_reply and content:
             return content
+        if first.reply_required and memory_acknowledgement and not content:
+            return ""
         if first.reply_required:
             return content or PRIVATE_REPLY_FALLBACK
+        return ""
+
+    def _with_memory_acknowledgement(self, message_to_post: str, acknowledgement: str) -> str:
+        if not acknowledgement:
+            return message_to_post
+        if not message_to_post:
+            return acknowledgement
+        return f"{message_to_post}\n\n{acknowledgement}"
+
+    def _memory_acknowledgement(self, memory_applied: list[dict[str, Any]]) -> str:
+        changes = [
+            self._memory_change_text(result)
+            for result in memory_applied
+            if result.get("status") == "applied"
+        ]
+        changes = [change for change in changes if change]
+        if not changes:
+            return ""
+        if len(changes) == 1:
+            return f"Memory updated: {changes[0]}"
+        return "Memory updated:\n" + "\n".join(f"- {change}" for change in changes)
+
+    def _memory_change_text(self, result: dict[str, Any]) -> str:
+        scope = str(result.get("scope") or "conversation")
+        op = str(result.get("op") or "")
+        content = str(result.get("content") or "").strip()
+        old_text = str(result.get("old_text") or "").strip()
+        if op == "add" and content:
+            return f"added {scope} memory: {content}"
+        if op == "remove":
+            removed = content or old_text
+            if removed:
+                return f"forgot {scope} memory: {removed}"
+        if op == "replace" and content:
+            if old_text:
+                return f'replaced {scope} memory: "{old_text}" -> "{content}"'
+            return f"replaced {scope} memory: {content}"
         return ""
 
     def _post_summary(self, post_result: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:

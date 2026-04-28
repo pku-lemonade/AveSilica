@@ -175,6 +175,26 @@ class MemoryCheckingCodex:
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
 
 
+class SilentMemoryCodex:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        payload = {
+            "should_reply": False,
+            "reply_kind": "silent",
+            "message_to_post": "",
+            "memory_ops": [
+                {"op": "add", "scope": "conversation", "content": "Silent memory fact", "old_text": ""}
+            ],
+            "confidence": 0.9,
+        }
+        return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
+
+
 class SilentCodex:
     async def run_decision(
         self,
@@ -523,10 +543,100 @@ def test_memory_ops_are_applied_before_posting(tmp_path):
 
         await bot._handle_message(_message(1, "remember this"))
 
-        assert poster.posts == [{"topic": "Launch", "content": "Recorded."}]
+        assert poster.posts == [
+            {
+                "topic": "Launch",
+                "content": (
+                    "Recorded.\n\n"
+                    "Memory updated: added conversation memory: Launch date is Friday"
+                ),
+            }
+        ]
         assert "Launch date is Friday" in memory_file.read_text(encoding="utf-8")
 
     asyncio.run(scenario())
+
+
+def test_silent_decision_with_memory_change_posts_acknowledgement(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=SilentMemoryCodex(),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1, "remember silently"))
+
+        assert poster.posts == [
+            {
+                "topic": "Launch",
+                "content": "Memory updated: added conversation memory: Silent memory fact",
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_dry_run_records_memory_acknowledgement_without_posting(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        bot = AgentLoop(
+            config=_config(tmp_path, post_replies=False),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=SilentMemoryCodex(),
+            zulip=FakePoster(),
+        )
+        message = _message(1, "remember silently")
+
+        await bot._handle_message(message)
+
+        turns = storage.session_path(message.session_key, "turns.jsonl").read_text(encoding="utf-8").splitlines()
+        record = json.loads(turns[-1])
+        assert record["memory_acknowledgement"] == "Memory updated: added conversation memory: Silent memory fact"
+        assert record["post"]["dry_run"] is True
+        assert record["post"]["message_to_post"] == record["memory_acknowledgement"]
+
+    asyncio.run(scenario())
+
+
+def test_memory_acknowledgement_formats_applied_add_replace_and_remove(tmp_path):
+    initialize_workspace(tmp_path)
+    bot = AgentLoop(
+        config=_config(tmp_path),
+        storage=WorkspaceStorage(tmp_path),
+        instructions=InstructionLoader(tmp_path),
+        memory=MemoryStore(tmp_path / "memory"),
+        codex=SilentCodex(),
+        zulip=FakePoster(),
+    )
+
+    assert bot._memory_acknowledgement(
+        [
+            {"op": "add", "scope": "conversation", "status": "applied", "content": "New fact"},
+            {
+                "op": "replace",
+                "scope": "channel",
+                "status": "applied",
+                "old_text": "Old fact",
+                "content": "New channel fact",
+            },
+            {"op": "remove", "scope": "global", "status": "applied", "content": "Forgotten fact"},
+            {"op": "add", "scope": "conversation", "status": "skipped", "content": "Duplicate"},
+        ]
+    ) == (
+        "Memory updated:\n"
+        "- added conversation memory: New fact\n"
+        '- replaced channel memory: "Old fact" -> "New channel fact"\n'
+        "- forgot global memory: Forgotten fact"
+    )
 
 
 def test_current_message_is_not_duplicated_in_rendered_prompt(tmp_path):
@@ -614,7 +724,7 @@ def test_legacy_thread_without_instruction_marker_starts_fresh_with_bootstrap(tm
     asyncio.run(scenario())
 
 
-def test_memory_entries_are_not_injected_into_codex_prompt(tmp_path):
+def test_memory_entries_are_conditionally_injected_into_codex_prompt(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -626,13 +736,14 @@ def test_memory_entries_are_not_injected_into_codex_prompt(tmp_path):
                 MemoryOperation(
                     op="add",
                     scope="conversation",
-                    content="Secret launch note should stay out of prompts",
+                    content="Launch date is Friday",
                 )
             ],
         )
+        storage = WorkspaceStorage(tmp_path)
         bot = AgentLoop(
             config=_config(tmp_path),
-            storage=WorkspaceStorage(tmp_path),
+            storage=storage,
             instructions=InstructionLoader(tmp_path),
             memory=memory,
             codex=codex,
@@ -640,9 +751,76 @@ def test_memory_entries_are_not_injected_into_codex_prompt(tmp_path):
         )
 
         await bot._handle_message(message)
+        await bot._handle_message(_message(2, "next turn"))
 
-        assert "Secret launch note" not in codex.prompt
-        assert "Secret launch note" not in (codex.developer_instructions[0] or "")
+        assert "Scoped Memory" in codex.prompts[0]
+        assert "Launch date is Friday" in codex.prompts[0]
+        assert "remembered background" in codex.prompts[0].casefold()
+        assert "use memory_ops to correct stale memory" in codex.prompts[0]
+        assert "Launch date is Friday" not in (codex.developer_instructions[0] or "")
+        assert "Scoped Memory" not in codex.prompts[1]
+        assert storage.load_metadata(message.session_key).last_injected_memory_hash is not None
+
+    asyncio.run(scenario())
+
+
+def test_memory_injection_hash_is_not_saved_when_codex_fails(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        memory = MemoryStore(tmp_path / "memory")
+        message = _message(1, "hello")
+        memory.apply_ops(
+            message.session_key,
+            [MemoryOperation(op="add", scope="conversation", content="Launch date is Friday")],
+        )
+        storage = WorkspaceStorage(tmp_path)
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=memory,
+            codex=FailingCodex(),
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(message)
+
+        assert storage.load_metadata(message.session_key).last_injected_memory_hash is None
+
+    asyncio.run(scenario())
+
+
+def test_removed_memory_after_prior_injection_sends_stale_update(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        memory = MemoryStore(tmp_path / "memory")
+        first = _message(1, "hello")
+        memory.apply_ops(
+            first.session_key,
+            [MemoryOperation(op="add", scope="conversation", content="Launch date is Friday")],
+        )
+        storage = WorkspaceStorage(tmp_path)
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=memory,
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(first)
+        memory.apply_ops(
+            first.session_key,
+            [MemoryOperation(op="remove", scope="conversation", old_text="Launch date")],
+        )
+        await bot._handle_message(_message(2, "next turn"))
+
+        assert "Launch date is Friday" in codex.prompts[0]
+        assert "Scoped memory is now empty" in codex.prompts[1]
+        assert "Do not use it unless current messages restate it" in codex.prompts[1]
+        assert storage.load_metadata(first.session_key).last_injected_memory_hash is None
 
     asyncio.run(scenario())
 
@@ -900,6 +1078,31 @@ def test_private_message_posts_fallback_when_codex_is_silent(tmp_path):
 
         assert poster.posts == [{"topic": "private", "content": PRIVATE_REPLY_FALLBACK}]
         assert bot.storage.load_metadata(_private_message(1).session_key).last_processed_message_id == 1
+
+    asyncio.run(scenario())
+
+
+def test_private_memory_only_decision_posts_acknowledgement_without_fallback(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=SilentMemoryCodex(),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_private_message(1))
+
+        assert poster.posts == [
+            {
+                "topic": "private",
+                "content": "Memory updated: added conversation memory: Silent memory fact",
+            }
+        ]
 
     asyncio.run(scenario())
 

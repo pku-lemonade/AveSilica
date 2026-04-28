@@ -158,9 +158,9 @@ Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 - `workspace/references/memory-policy.md`: memory operation and scope policy.
 - `workspace/memory/AGENTS.md`: human-authored global deployment/team preferences.
 - `workspace/memory/.../AGENTS.md`: human-authored channel/topic/private exceptions or preferences.
-- `workspace/memory/.../MEMORY.md`: compact remembered context. This is the memory source of truth for validated memory operations, but entries are not currently retrieved into Codex prompts.
+- `workspace/memory/.../MEMORY.md`: compact remembered context. This is the memory source of truth for validated memory operations and is injected into Codex prompts when the scoped memory snapshot changes.
 
-Memory follows a Hermes-style markdown model. `MEMORY.md` is a compact memory source of truth. Entries are separated by `§`; the orchestrator applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/stream-*/topic-*/messages.jsonl` or `workspace/records/private-*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions and applied or rejected operations.
+Memory follows a Hermes-style markdown model. `MEMORY.md` is a compact memory source of truth. Entries are separated by `§`; the orchestrator applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/stream-*/topic-*/messages.jsonl` or `workspace/records/private-*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions, acknowledgements, and applied or rejected operations.
 
 For Zulip terminology, the code uses `stream` for what Zulip's UI calls a channel. A topic is the thread-like subject inside a channel.
 
@@ -170,7 +170,7 @@ Incoming Zulip messages are normalized and persisted before any model call. Rout
 
 Zulip upload links in raw Markdown are downloaded to the session's `uploads/<message_id>/` directory before Codex runs. The prompt receives rewritten Markdown pointing at the local downloaded files. Set `TOKENZULIP_UPLOAD_MAX_BYTES` to control the per-file download limit.
 
-When a stream/topic or private-chat session already has a marked Codex thread, TokenZulip resumes that thread and sends only the new Zulip message batch. New or legacy unmarked sessions start a fresh Codex thread with composed `developer_instructions` and a capped bootstrap of previous messages. `TOKENZULIP_RECENT_MESSAGES` controls that bootstrap cap and defaults to 100.
+When a stream/topic or private-chat session already has a marked Codex thread, TokenZulip resumes that thread and sends only the new Zulip message batch plus any changed scoped memory snapshot. New or legacy unmarked sessions start a fresh Codex thread with composed `developer_instructions` and a capped bootstrap of previous messages. `TOKENZULIP_RECENT_MESSAGES` controls that bootstrap cap and defaults to 100.
 
 Codex returns structured output with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, and confidence via the native `output_schema`. The orchestrator validates memory operations, edits scoped `MEMORY.md`, and then posts any reply.
 

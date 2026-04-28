@@ -26,9 +26,11 @@
       "type": "string"
     },
     "memory_ops": {
+      "description": "Memory write requests. Use an empty array when scoped memory should not change.",
       "type": "array",
       "items": {
         "type": "object",
+        "description": "One validated memory write request. The orchestrator persists applied writes.",
         "additionalProperties": false,
         "required": [
           "op",
@@ -38,6 +40,7 @@
         ],
         "properties": {
           "op": {
+            "description": "Use add for a new entry, replace to update one existing entry, and remove to delete one existing entry.",
             "type": "string",
             "enum": [
               "add",
@@ -46,6 +49,7 @@
             ]
           },
           "scope": {
+            "description": "Where to write the memory. Prefer conversation unless a channel-wide or global memory is clearly needed.",
             "type": "string",
             "enum": [
               "channel",
@@ -54,9 +58,11 @@
             ]
           },
           "content": {
+            "description": "Full entry for add/replace. Empty string for remove.",
             "type": "string"
           },
           "old_text": {
+            "description": "Empty string for add. Short unique substring of the existing entry for replace/remove.",
             "type": "string"
           }
         }

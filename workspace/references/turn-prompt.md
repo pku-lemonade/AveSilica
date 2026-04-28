@@ -6,6 +6,8 @@ Zulip conversation update.
 - Reply required: $reply_required
 - Directly addressed: $directly_addressed
 
+$memory_context
+
 # Recent Zulip Context
 
 $recent_context

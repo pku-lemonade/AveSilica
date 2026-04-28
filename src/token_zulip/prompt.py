@@ -12,6 +12,7 @@ from .workspace import TURN_PROMPT_FILE
 class PromptParts:
     recent_context: list[dict[str, object]]
     current_messages: list[NormalizedMessage]
+    memory_context: str = ""
 
 
 class PromptBuilder:
@@ -26,6 +27,7 @@ class PromptBuilder:
             conversation_type=self._conversation_type(parts),
             reply_required=self._reply_required(parts),
             directly_addressed=self._directly_addressed(parts),
+            memory_context=parts.memory_context.strip(),
             recent_context=recent or "(no recent context)",
             current_messages=current,
         ).rstrip() + "\n"

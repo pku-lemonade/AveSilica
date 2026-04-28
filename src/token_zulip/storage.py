@@ -37,6 +37,7 @@ class SessionMetadata:
     private_user_key: str | None = None
     codex_thread_id: str | None = None
     codex_instruction_mode: str | None = None
+    last_injected_memory_hash: str | None = None
     last_processed_message_id: int | None = None
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
@@ -96,6 +97,11 @@ class SessionMetadata:
             codex_instruction_mode=(
                 str(record["codex_instruction_mode"]) if record.get("codex_instruction_mode") is not None else None
             ),
+            last_injected_memory_hash=(
+                str(record["last_injected_memory_hash"])
+                if record.get("last_injected_memory_hash") is not None
+                else None
+            ),
             last_processed_message_id=last_processed,
             created_at=str(record.get("created_at") or utc_now_iso()),
             updated_at=str(record.get("updated_at") or utc_now_iso()),
@@ -116,6 +122,7 @@ class SessionMetadata:
             "private_user_key": self.private_user_key,
             "codex_thread_id": self.codex_thread_id,
             "codex_instruction_mode": self.codex_instruction_mode,
+            "last_injected_memory_hash": self.last_injected_memory_hash,
             "last_processed_message_id": self.last_processed_message_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -375,6 +382,11 @@ class WorkspaceStorage:
         metadata.codex_instruction_mode = instruction_mode
         self.save_metadata(metadata)
 
+    def set_last_injected_memory_hash(self, key: SessionKey, memory_hash: str | None) -> None:
+        metadata = self.load_metadata(key)
+        metadata.last_injected_memory_hash = memory_hash
+        self.save_metadata(metadata)
+
     def mark_processed(self, key: SessionKey, message_ids: list[int]) -> None:
         if not message_ids:
             return
@@ -391,17 +403,18 @@ class WorkspaceStorage:
         decision: AgentDecision,
         post: dict[str, Any] | None,
         memory_applied: list[dict[str, Any]],
+        memory_acknowledgement: str = "",
     ) -> None:
-        self._append_jsonl(
-            self.session_path(key, "turns.jsonl"),
-            {
-                "created_at": utc_now_iso(),
-                "message_ids": [message.message_id for message in messages],
-                "decision": decision.to_record(),
-                "post": post,
-                "memory_applied": memory_applied,
-            },
-        )
+        record: dict[str, Any] = {
+            "created_at": utc_now_iso(),
+            "message_ids": [message.message_id for message in messages],
+            "decision": decision.to_record(),
+            "post": post,
+            "memory_applied": memory_applied,
+        }
+        if memory_acknowledgement:
+            record["memory_acknowledgement"] = memory_acknowledgement
+        self._append_jsonl(self.session_path(key, "turns.jsonl"), record)
 
     def log_error(self, key: SessionKey | None, event: dict[str, Any]) -> None:
         record = {
