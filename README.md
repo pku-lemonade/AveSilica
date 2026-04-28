@@ -59,10 +59,8 @@ token-zulip run
 
 After sending a test message in a visible public channel, inspect:
 
-- `workspace/records/sessions/*/session.json`: session identity, Codex thread ID, and last processed message ID.
-- `workspace/records/sessions/*/messages.jsonl`: compact normalized messages for the session.
-- `workspace/records/sessions/*/turns.jsonl`: parsed model decisions, memory operations, and post status.
-- `workspace/records/sessions/*/pending.json`: pending message IDs for an active session.
+- `workspace/records/stream-*/topic-*/*`: stream/topic session identity, messages, pending queues, turns, and downloaded uploads.
+- `workspace/records/private-*/*`: private-chat session identity, messages, pending queues, turns, and downloaded uploads.
 - `workspace/memory/MEMORY.md`: compact global memory injected into prompts.
 - `workspace/memory/stream-*/MEMORY.md`: compact channel memory.
 - `workspace/memory/stream-*/topic-*/MEMORY.md`: compact topic memory.
@@ -77,10 +75,11 @@ Clone the repo on the Debian host. Keep runtime files in the clone:
 cp examples/.env.example .env
 cp examples/.zuliprc.example .zuliprc
 $EDITOR .env .zuliprc
-podman build -t token-zulip .
+podman build --http-proxy=false -t token-zulip .
 ```
 
 The commands mount your existing `$HOME/.codex` into the container so Codex can reuse your local login and config.
+The build disables Podman's host proxy forwarding so image dependency installation is not tied to any runtime HTTP proxy configured in `.env`.
 
 If you want to initialize or refresh the editable workspace from the container:
 
@@ -129,12 +128,14 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 - `workspace/references/memory-policy.md`: memory operation and scope policy.
 - `workspace/memory/AGENTS.md`: optional global deployment/team instructions.
 - `workspace/memory/MEMORY.md`: compact global memory injected into every prompt.
-- `workspace/memory/stream-<id>-<slug>/AGENTS.md`: optional channel-specific instructions.
-- `workspace/memory/stream-<id>-<slug>/MEMORY.md`: compact channel memory.
-- `workspace/memory/stream-<id>-<slug>/topic-<hash>/AGENTS.md`: optional topic-specific instructions.
-- `workspace/memory/stream-<id>-<slug>/topic-<hash>/MEMORY.md`: compact topic memory.
+- `workspace/memory/stream-<slug>-<id>/AGENTS.md`: optional channel-specific instructions.
+- `workspace/memory/stream-<slug>-<id>/MEMORY.md`: compact channel memory.
+- `workspace/memory/stream-<slug>-<id>/topic-<slug>-<hash>/AGENTS.md`: optional topic-specific instructions.
+- `workspace/memory/stream-<slug>-<id>/topic-<slug>-<hash>/MEMORY.md`: compact topic memory.
 - `workspace/memory/private-<user>/MEMORY.md`: compact private-chat memory.
-- `workspace/records/`: generated session messages, session metadata, pending queues, turns, and error/ignored-event summaries.
+- `workspace/records/stream-<slug>-<id>/topic-<slug>-<hash>/`: generated stream/topic session messages, session metadata, pending queues, turns, and uploads.
+- `workspace/records/private-<user>/`: generated private-chat session messages, session metadata, pending queues, turns, and uploads.
+- `workspace/records/errors/`: error and ignored-event summaries.
 
 ## Instruction Architecture
 
@@ -151,13 +152,15 @@ Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 - `workspace/memory/.../AGENTS.md`: human-authored channel/topic/private exceptions or preferences.
 - `workspace/memory/.../MEMORY.md`: compact remembered context. This is read into prompts and is the memory source of truth.
 
-Memory follows a Hermes-style markdown model. `MEMORY.md` is the compact always-injected memory surface and source of truth. Entries are separated by `§`; the orchestrator applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/sessions/*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions and applied or rejected operations.
+Memory follows a Hermes-style markdown model. `MEMORY.md` is the compact always-injected memory surface and source of truth. Entries are separated by `§`; the orchestrator applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/stream-*/topic-*/messages.jsonl` or `workspace/records/private-*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions and applied or rejected operations.
 
 For Zulip terminology, the code uses `stream` for what Zulip's UI calls a channel. A topic is the thread-like subject inside a channel.
 
 ## Behavior
 
 Incoming Zulip messages are normalized and persisted before any model call. Routine raw Zulip events are not stored. Work is serialized per `zulip:<realm_id>:stream:<stream_id>:topic:<topic_hash>` session, so a busy topic cannot race itself. If messages arrive for an active topic, their IDs are appended to that topic's pending queue and processed in a follow-up turn.
+
+Zulip upload links in raw Markdown are downloaded to the session's `uploads/<message_id>/` directory before Codex runs. The prompt receives rewritten Markdown pointing at the local downloaded files. Set `TOKENZULIP_UPLOAD_MAX_BYTES` to control the per-file download limit.
 
 Codex returns structured output with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, and confidence via the native `output_schema`. The orchestrator validates memory operations, edits scoped `MEMORY.md`, and then posts any reply.
 

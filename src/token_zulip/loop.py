@@ -14,6 +14,7 @@ from .models import AgentDecision, NormalizedMessage, SessionKey
 from .prompt import PromptBuilder, PromptParts
 from .storage import WorkspaceStorage
 from .typing_status import TypingStatusManager
+from .uploads import MessageUploadProcessor
 from .zulip_io import normalize_zulip_event
 
 LOGGER = logging.getLogger(__name__)
@@ -54,6 +55,12 @@ class AgentLoop:
         self.zulip = zulip
         self.typing = typing or TypingStatusManager(enabled=False)
         self.prompt_builder = prompt_builder or PromptBuilder()
+        self.uploads = MessageUploadProcessor(
+            storage=storage,
+            zulip=zulip,
+            codex_cwd=config.codex_cwd,
+            max_bytes=config.upload_max_bytes,
+        )
         self.queue: asyncio.Queue[NormalizedMessage] = asyncio.Queue(maxsize=config.queue_limit)
         self._active_sessions: set[str] = set()
         self._active_guard = asyncio.Lock()
@@ -158,34 +165,41 @@ class AgentLoop:
             return
 
         first = messages[0]
-        instructions = self.instructions.compose(
-            stream=first.stream,
-            topic_hash=first.topic_hash,
-            stream_id=first.stream_id,
-            conversation_type=first.conversation_type,
-            private_user_key=first.private_user_key,
-        )
-        memory_text = self.memory.render_selected(key)
-        recent_context = self.storage.read_recent_messages(
-            key,
-            self.config.max_recent_messages,
-            exclude_message_ids={message.message_id for message in messages},
-        )
-        prompt = self.prompt_builder.build(
-            PromptParts(
-                instructions=instructions,
-                memory=memory_text,
-                recent_context=recent_context,
-                current_messages=messages,
-            )
-        )
-
         metadata = self.storage.load_metadata(key)
         async with AsyncExitStack() as stack:
             typing_started = False
             if self.typing.should_show_typing(first, post_replies=self.config.post_replies):
                 await stack.enter_async_context(self.typing.active(first))
                 typing_started = True
+
+            messages = await self.uploads.process_messages(messages)
+            for processed_message in messages:
+                if processed_message.uploads:
+                    self.storage.update_message(processed_message)
+
+            first = messages[0]
+            instructions = self.instructions.compose(
+                stream=first.stream,
+                topic_hash=first.topic_hash,
+                topic=first.topic,
+                stream_id=first.stream_id,
+                conversation_type=first.conversation_type,
+                private_user_key=first.private_user_key,
+            )
+            memory_text = self.memory.render_selected(key)
+            recent_context = self.storage.read_recent_messages(
+                key,
+                self.config.max_recent_messages,
+                exclude_message_ids={message.message_id for message in messages},
+            )
+            prompt = self.prompt_builder.build(
+                PromptParts(
+                    instructions=instructions,
+                    memory=memory_text,
+                    recent_context=recent_context,
+                    current_messages=messages,
+                )
+            )
 
             codex_result = await self.codex.run_decision(prompt, metadata.codex_thread_id)
             if codex_result.thread_id:

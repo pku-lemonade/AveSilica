@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import private_memory_dir_name, stream_memory_dir_name, topic_memory_dir_name
+from .models import SessionKey, safe_slug, scoped_conversation_dir, scoped_stream_dir
 from .workspace import strip_markdown_comments
 
 
@@ -37,6 +37,7 @@ class InstructionLoader:
         stream: str,
         topic_hash: str,
         *,
+        topic: str | None = None,
         stream_id: int | None = None,
         conversation_type: str = "stream",
         private_user_key: str | None = None,
@@ -44,6 +45,7 @@ class InstructionLoader:
         sources = self.sources(
             stream=stream,
             topic_hash=topic_hash,
+            topic=topic,
             stream_id=stream_id,
             conversation_type=conversation_type,
             private_user_key=private_user_key,
@@ -69,6 +71,7 @@ class InstructionLoader:
         stream: str,
         topic_hash: str,
         *,
+        topic: str | None = None,
         stream_id: int | None = None,
         conversation_type: str = "stream",
         private_user_key: str | None = None,
@@ -80,7 +83,7 @@ class InstructionLoader:
             ("references/memory-policy.md", self.root / "references" / "memory-policy.md"),
             ("memory/AGENTS.md", self.root / "memory" / "AGENTS.md"),
         ]
-        candidates.extend(self._local_candidates(stream, topic_hash, stream_id, conversation_type, private_user_key))
+        candidates.extend(self._local_candidates(stream, topic_hash, topic, stream_id, conversation_type, private_user_key))
 
         sources: list[InstructionSource] = [InstructionSource(candidates[0][0], None, HARDCODED_SAFETY_CONTRACT)]
         for label, path in candidates[1:]:
@@ -96,28 +99,38 @@ class InstructionLoader:
         self,
         stream: str,
         topic_hash: str,
+        topic: str | None,
         stream_id: int | None,
         conversation_type: str,
         private_user_key: str | None,
     ) -> list[tuple[str, Path | None]]:
+        key = SessionKey(
+            realm_id="instructions",
+            stream_id=stream_id,
+            topic_hash=topic_hash,
+            conversation_type=conversation_type,
+            private_user_key=private_user_key,
+            stream_slug=safe_slug(stream),
+            topic_slug=safe_slug(topic or topic_hash),
+        )
         if conversation_type == "private":
-            private_dir = private_memory_dir_name(private_user_key or topic_hash)
+            private_path = scoped_conversation_dir(self.root / "memory", key)
             return [
                 (
-                    f"memory/{private_dir}/AGENTS.md",
-                    self.root / "memory" / private_dir / "AGENTS.md",
+                    f"{private_path.relative_to(self.root).as_posix()}/AGENTS.md",
+                    private_path / "AGENTS.md",
                 )
             ]
 
-        stream_dir = stream_memory_dir_name(stream_id, stream)
-        topic_dir = topic_memory_dir_name(topic_hash)
+        stream_path = scoped_stream_dir(self.root / "memory", key)
+        topic_path = scoped_conversation_dir(self.root / "memory", key)
         return [
             (
-                f"memory/{stream_dir}/AGENTS.md",
-                self.root / "memory" / stream_dir / "AGENTS.md",
+                f"{stream_path.relative_to(self.root).as_posix()}/AGENTS.md",
+                stream_path / "AGENTS.md",
             ),
             (
-                f"memory/{stream_dir}/{topic_dir}/AGENTS.md",
-                self.root / "memory" / stream_dir / topic_dir / "AGENTS.md",
+                f"{topic_path.relative_to(self.root).as_posix()}/AGENTS.md",
+                topic_path / "AGENTS.md",
             ),
         ]

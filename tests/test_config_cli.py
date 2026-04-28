@@ -19,6 +19,7 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("TOKENZULIP_BOT_ALIASES", raising=False)
     monkeypatch.delenv("TOKENZULIP_TYPING_ENABLED", raising=False)
     monkeypatch.delenv("TOKENZULIP_TYPING_REFRESH_SECONDS", raising=False)
+    monkeypatch.delenv("TOKENZULIP_UPLOAD_MAX_BYTES", raising=False)
 
     config = BotConfig.from_env()
 
@@ -29,6 +30,7 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     assert config.bot_aliases == ("Silica", "Sili")
     assert config.typing_enabled is True
     assert config.typing_refresh_seconds == 8.0
+    assert config.upload_max_bytes == 25_000_000
 
 
 def test_listen_all_public_streams_can_be_disabled(monkeypatch):
@@ -49,7 +51,8 @@ def test_cli_init_creates_workspace_layout(tmp_path):
     assert (workspace / "references" / "memory-policy.md").exists()
     assert (workspace / "memory" / "AGENTS.md").exists()
     assert (workspace / "memory" / "MEMORY.md").exists()
-    assert (workspace / "records" / "sessions").exists()
+    assert (workspace / "records").exists()
+    assert not (workspace / "records" / "sessions").exists()
     assert (workspace / "records" / "errors").exists()
     assert not (workspace / "memory" / "seeds.jsonl").exists()
     assert not (workspace / "state").exists()

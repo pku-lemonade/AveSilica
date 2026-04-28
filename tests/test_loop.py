@@ -32,6 +32,7 @@ def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
         queue_limit=8,
         worker_count=2,
         instruction_max_bytes=96_000,
+        upload_max_bytes=25_000_000,
         post_replies=post_replies,
         listen_all_public_streams=True,
         typing_enabled=True,
@@ -176,6 +177,20 @@ class FakePoster:
             assert "Launch date is Friday" in self.memory_file.read_text(encoding="utf-8")
         self.posts.append({"topic": message.topic, "content": content})
         return {"result": "success"}
+
+
+class FakeUploadPoster(FakePoster):
+    def __init__(self, typing: FakeTypingNotifier, codex_cwd: Path) -> None:
+        super().__init__()
+        self.typing = typing
+        self.codex_cwd = codex_cwd
+
+    async def download_upload(self, upload_path: str, destination: Path, max_bytes: int) -> dict[str, object]:
+        assert self.typing.events == [("start", 1)]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"image")
+        assert destination.is_relative_to(self.codex_cwd)
+        return {"status": "downloaded", "content_type": "image/png", "byte_size": 5}
 
 
 class FailingPoster(FakePoster):
@@ -411,7 +426,7 @@ def test_pending_messages_preserve_direct_addressed(tmp_path):
 def test_memory_ops_are_applied_before_posting(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
-        memory_file = tmp_path / "memory" / "stream-10-engineering" / "topic-topic123" / "MEMORY.md"
+        memory_file = tmp_path / "memory" / "stream-engineering-10" / "topic-launch-topic123" / "MEMORY.md"
         poster = FakePoster(memory_file)
         bot = AgentLoop(
             config=_config(tmp_path),
@@ -451,6 +466,31 @@ def test_current_message_is_not_duplicated_in_rendered_prompt(tmp_path):
 
         assert codex.prompt.count("current request") == 1
         assert "previous context" in codex.prompt
+
+    asyncio.run(scenario())
+
+
+def test_uploads_are_downloaded_after_typing_starts_and_rewritten_in_prompt(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        typing = FakeTypingNotifier()
+        codex = PromptCapturingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakeUploadPoster(typing, tmp_path),
+            typing=_typing(typing),
+        )
+
+        await bot._handle_message(_message(1, "inspect ![diagram](/user_uploads/7/Ab/diagram.png)"))
+
+        assert typing.events == [("start", 1), ("stop", 1)]
+        assert "![diagram](records/stream-engineering-10/topic-launch-topic123/uploads/1/01-diagram.png)" in codex.prompt
+        message_record = bot.storage.read_recent_messages(_message(1).session_key, 1)[0]
+        assert message_record["uploads"][0]["status"] == "downloaded"
 
     asyncio.run(scenario())
 

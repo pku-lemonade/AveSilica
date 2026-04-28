@@ -151,6 +151,7 @@ def _render_prompt(args: argparse.Namespace) -> int:
     instructions = InstructionLoader(config.workspace_dir, config.instruction_max_bytes).compose(
         stream=message.stream,
         topic_hash=message.topic_hash,
+        topic=message.topic,
         stream_id=message.stream_id,
         conversation_type=message.conversation_type,
         private_user_key=message.private_user_key,

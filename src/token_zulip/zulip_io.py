@@ -4,8 +4,11 @@ import asyncio
 import html
 import logging
 import re
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .addressing import is_directly_addressed
@@ -165,10 +168,17 @@ def _common_message_fields(
     if message_id is None:
         return None
 
-    content_html = str(message.get("content") or "")
-    content = html_to_text(content_html) or content_html
+    content_raw = str(message.get("content") or "")
+    if message.get("content_type") == "text/html" or _looks_like_rendered_html(content_raw):
+        content = html_to_text(content_raw) or content_raw
+    else:
+        content = content_raw
     resolved_realm_id = str(event.get("realm_id") or message.get("realm_id") or realm_id or "unknown")
     return content, int(message_id), resolved_realm_id
+
+
+def _looks_like_rendered_html(value: str) -> bool:
+    return re.search(r"<(?:p|br|div|span|a|ul|ol|li|blockquote|pre|code|img)\b", value, re.IGNORECASE) is not None
 
 
 def _optional_int(value: Any) -> int | None:
@@ -275,11 +285,65 @@ class ZulipClientIO:
             raise RuntimeError(f"Zulip send_message failed: {response!r}")
         return ZulipPostResult(request=request, response=response).to_record()
 
+    async def download_upload(self, upload_path: str, destination: Path, max_bytes: int) -> dict[str, Any]:
+        return await asyncio.to_thread(self._download_upload_sync, upload_path, destination, max_bytes)
+
+    def _download_upload_sync(self, upload_path: str, destination: Path, max_bytes: int) -> dict[str, Any]:
+        request_path = upload_path.lstrip("/")
+        response = self.client.call_endpoint(url=request_path, method="GET")
+        if not isinstance(response, dict):
+            raise RuntimeError(f"Zulip upload URL request returned non-dict response: {response!r}")
+        if response.get("result") not in {None, "success"}:
+            raise RuntimeError(f"Zulip upload URL request failed: {response!r}")
+        url = response.get("url")
+        if not isinstance(url, str) or not url:
+            raise RuntimeError(f"Zulip upload URL response missing url: {response!r}")
+        return self._download_temporary_url(self._absolute_zulip_url(url), destination, max_bytes)
+
+    def _download_temporary_url(self, url: str, destination: Path, max_bytes: int) -> dict[str, Any]:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        tmp = destination.with_name(destination.name + ".tmp")
+        total = 0
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None and int(content_length) > max_bytes:
+                    raise RuntimeError(f"upload exceeds maximum size ({content_length} > {max_bytes} bytes)")
+                content_type = response.headers.get_content_type()
+                with tmp.open("wb") as handle:
+                    while True:
+                        chunk = response.read(1024 * 256)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise RuntimeError(f"upload exceeds maximum size ({total} > {max_bytes} bytes)")
+                        handle.write(chunk)
+            tmp.replace(destination)
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
+        return {
+            "status": "downloaded",
+            "content_type": content_type,
+            "byte_size": total,
+        }
+
+    def _absolute_zulip_url(self, url: str) -> str:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme and parsed.netloc:
+            return url
+        base_url = str(getattr(self.client, "base_url", ""))
+        site_url = base_url.split("/api/", 1)[0] if "/api/" in base_url else base_url
+        return urllib.parse.urljoin(site_url.rstrip("/") + "/", url)
+
     def listen(self, callback: Callable[[dict[str, Any]], None], *, all_public_streams: bool = False) -> None:
         self.client.call_on_each_event(
             callback,
             event_types=["message"],
             all_public_streams=all_public_streams,
+            apply_markdown=False,
         )
 
 

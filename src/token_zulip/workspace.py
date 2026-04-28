@@ -8,7 +8,7 @@ from pathlib import Path
 WORKSPACE_DIRS: tuple[str, ...] = (
     "references",
     "memory",
-    "records/sessions",
+    "records",
     "records/errors",
 )
 

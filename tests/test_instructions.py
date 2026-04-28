@@ -10,20 +10,20 @@ def test_instruction_layers_are_ordered(tmp_path):
     (tmp_path / "memory" / "AGENTS.md").write_text("workspace memory rule", encoding="utf-8")
     stream_dir = tmp_path / "memory" / stream_memory_dir_name(10, "engineering")
     topic_hash = normalized_topic_hash("Launch Plan")
-    topic_dir = stream_dir / topic_memory_dir_name(topic_hash)
+    topic_dir = stream_dir / topic_memory_dir_name(topic_hash, "launch-plan")
     topic_dir.mkdir(parents=True)
     (stream_dir / "AGENTS.md").write_text("stream rule", encoding="utf-8")
     (topic_dir / "AGENTS.md").write_text("topic rule", encoding="utf-8")
 
-    text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, stream_id=10)
+    text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, topic="Launch Plan", stream_id=10)
 
     assert "hardcoded safety contract" in text
     assert text.index("## Source: AGENTS.md") < text.index("## Source: references/participation.md")
     assert text.index("## Source: references/participation.md") < text.index("## Source: references/memory-policy.md")
     assert text.index("## Source: references/memory-policy.md") < text.index("## Source: memory/AGENTS.md")
     assert "workspace memory rule" in text
-    stream_label = "memory/stream-10-engineering/AGENTS.md"
-    topic_label = f"memory/stream-10-engineering/topic-{topic_hash}/AGENTS.md"
+    stream_label = "memory/stream-engineering-10/AGENTS.md"
+    topic_label = f"memory/stream-engineering-10/topic-launch-plan-{topic_hash}/AGENTS.md"
     assert text.index("## Source: memory/AGENTS.md") < text.index(stream_label)
     assert text.index(stream_label) < text.index(topic_label)
     assert "stream rule" in text

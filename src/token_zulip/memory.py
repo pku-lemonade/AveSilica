@@ -6,9 +6,8 @@ from typing import Any
 from .models import (
     MemoryOperation,
     SessionKey,
-    private_memory_dir_name,
-    stream_memory_dir_name,
-    topic_memory_dir_name,
+    scoped_conversation_dir,
+    scoped_stream_dir,
 )
 
 
@@ -169,13 +168,13 @@ class MemoryStore:
         return self._topic_dir(session_key)
 
     def _stream_dir(self, session_key: SessionKey) -> Path:
-        return self.memory_dir / stream_memory_dir_name(session_key.stream_id, session_key.stream_slug)
+        return scoped_stream_dir(self.memory_dir, session_key)
 
     def _topic_dir(self, session_key: SessionKey) -> Path:
-        return self._stream_dir(session_key) / topic_memory_dir_name(session_key.topic_hash)
+        return scoped_conversation_dir(self.memory_dir, session_key)
 
     def _private_dir(self, session_key: SessionKey) -> Path:
-        return self.memory_dir / private_memory_dir_name(session_key.private_user_key or session_key.topic_hash)
+        return scoped_conversation_dir(self.memory_dir, session_key)
 
     def _read_memory_text(self, directory: Path) -> str:
         path = directory / MEMORY_FILENAME

@@ -5,7 +5,10 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+from slugify import slugify
 
 
 REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
@@ -70,8 +73,7 @@ def private_user_key(sender_id: int | None, sender_email: str) -> str:
 
 
 def safe_slug(value: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip().lower())
-    slug = re.sub(r"-+", "-", slug).strip("-")
+    slug = slugify(value, allow_unicode=True, regex_pattern=r"[^\w.\-]+")
     return slug or "unnamed"
 
 
@@ -81,15 +83,37 @@ def stream_memory_dir_name(stream_id: int | None, stream_slug: str | None = None
     slug = safe_slug(stream_slug or "")
     if slug == "unnamed":
         raise ValueError("stream memory paths require stream_slug")
-    return f"stream-{stream_id}-{slug}"
+    return f"stream-{slug}-{stream_id}"
 
 
-def topic_memory_dir_name(topic_hash: str) -> str:
-    return f"topic-{safe_slug(topic_hash)}"
+def topic_dir_name(topic_hash: str, topic_slug: str | None) -> str:
+    return f"topic-{safe_slug(topic_slug or '')}-{safe_slug(topic_hash)}"
+
+
+def topic_memory_dir_name(topic_hash: str, topic_slug: str | None = None) -> str:
+    return topic_dir_name(topic_hash, topic_slug)
 
 
 def private_memory_dir_name(user_key: str | None) -> str:
     return f"private-{safe_slug(user_key or 'unknown')}"
+
+
+def topic_record_dir_name(topic_hash: str, topic_slug: str | None = None) -> str:
+    return topic_dir_name(topic_hash, topic_slug)
+
+
+def scoped_stream_dir(root: Path, key: "SessionKey") -> Path:
+    return root / stream_memory_dir_name(key.stream_id, key.stream_slug)
+
+
+def scoped_private_dir(root: Path, key: "SessionKey") -> Path:
+    return root / private_memory_dir_name(key.private_user_key or key.topic_hash)
+
+
+def scoped_conversation_dir(root: Path, key: "SessionKey", *, readable_topic: bool = False) -> Path:
+    if key.conversation_type == "private":
+        return scoped_private_dir(root, key)
+    return scoped_stream_dir(root, key) / topic_dir_name(key.topic_hash, key.topic_slug)
 
 
 @dataclass(frozen=True)
@@ -100,6 +124,7 @@ class SessionKey:
     conversation_type: str = "stream"
     private_user_key: str | None = None
     stream_slug: str | None = None
+    topic_slug: str | None = None
 
     @property
     def value(self) -> str:
@@ -133,6 +158,7 @@ class NormalizedMessage:
     private_user_key: str | None = None
     reply_required: bool = False
     directly_addressed: bool = False
+    uploads: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def session_key(self) -> SessionKey:
@@ -143,10 +169,11 @@ class NormalizedMessage:
             conversation_type=self.conversation_type,
             private_user_key=self.private_user_key,
             stream_slug=self.stream_slug,
+            topic_slug=safe_slug(self.topic),
         )
 
     def to_record(self) -> dict[str, Any]:
-        return {
+        record: dict[str, Any] = {
             "message_id": self.message_id,
             "reply_required": self.reply_required,
             "sender_email": self.sender_email,
@@ -157,6 +184,9 @@ class NormalizedMessage:
             "received_at": self.received_at,
             "directly_addressed": self.directly_addressed,
         }
+        if self.uploads:
+            record["uploads"] = self.uploads
+        return record
 
 
 @dataclass(frozen=True)

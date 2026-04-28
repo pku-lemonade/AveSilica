@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import AgentDecision, NormalizedMessage, SessionKey, utc_now_iso
+from .models import (
+    AgentDecision,
+    NormalizedMessage,
+    SessionKey,
+    safe_slug,
+    scoped_conversation_dir,
+    utc_now_iso,
+)
 
 
 @dataclass
@@ -20,6 +27,7 @@ class SessionMetadata:
     stream_slug: str
     topic: str
     topic_hash: str
+    topic_slug: str
     private_user_key: str | None = None
     codex_thread_id: str | None = None
     last_processed_message_id: int | None = None
@@ -39,6 +47,7 @@ class SessionMetadata:
             stream_slug=message.stream_slug,
             topic=message.topic,
             topic_hash=message.topic_hash,
+            topic_slug=safe_slug(message.topic),
             private_user_key=message.private_user_key,
         )
 
@@ -54,6 +63,7 @@ class SessionMetadata:
             stream_slug="private" if key.conversation_type == "private" else "unknown",
             topic="private" if key.conversation_type == "private" else key.topic_hash,
             topic_hash=key.topic_hash,
+            topic_slug=key.topic_slug or safe_slug("private" if key.conversation_type == "private" else key.topic_hash),
             private_user_key=key.private_user_key,
         )
 
@@ -62,6 +72,7 @@ class SessionMetadata:
         stream_id = record.get("stream_id", key.stream_id)
         private_key = record.get("private_user_key", key.private_user_key)
         last_processed = _optional_int(record.get("last_processed_message_id"))
+        topic = str(record.get("topic") or ("private" if key.conversation_type == "private" else key.topic_hash))
         return cls(
             session_id=str(record.get("session_id") or key.storage_id),
             session_key=str(record.get("session_key") or key.value),
@@ -70,8 +81,9 @@ class SessionMetadata:
             stream_id=int(stream_id) if stream_id is not None else None,
             stream=str(record.get("stream") or ("private" if key.conversation_type == "private" else "unknown")),
             stream_slug=str(record.get("stream_slug") or ("private" if key.conversation_type == "private" else "unknown")),
-            topic=str(record.get("topic") or ("private" if key.conversation_type == "private" else key.topic_hash)),
+            topic=topic,
             topic_hash=str(record.get("topic_hash") or key.topic_hash),
+            topic_slug=str(record.get("topic_slug") or key.topic_slug or safe_slug(topic)),
             private_user_key=str(private_key) if private_key is not None else None,
             codex_thread_id=record.get("codex_thread_id"),
             last_processed_message_id=last_processed,
@@ -90,6 +102,7 @@ class SessionMetadata:
             "stream_slug": self.stream_slug,
             "topic": self.topic,
             "topic_hash": self.topic_hash,
+            "topic_slug": self.topic_slug,
             "private_user_key": self.private_user_key,
             "codex_thread_id": self.codex_thread_id,
             "last_processed_message_id": self.last_processed_message_id,
@@ -102,12 +115,11 @@ class WorkspaceStorage:
     def __init__(self, workspace_dir: Path) -> None:
         self.workspace_dir = workspace_dir.expanduser().resolve()
         self.records_dir = self.workspace_dir / "records"
-        self.sessions_dir = self.records_dir / "sessions"
         self.errors_dir = self.records_dir / "errors"
         self.ensure_dirs()
 
     def ensure_dirs(self) -> None:
-        for path in [self.records_dir, self.sessions_dir, self.errors_dir]:
+        for path in [self.records_dir, self.errors_dir]:
             path.mkdir(parents=True, exist_ok=True)
 
     def log_ignored_event(self, event: dict[str, Any], reason: str, key: SessionKey | None = None) -> None:
@@ -128,6 +140,17 @@ class WorkspaceStorage:
         path = self.session_path(message.session_key, "messages.jsonl")
         if message.message_id in self._message_ids(path):
             return
+        self._append_jsonl(path, message.to_record())
+
+    def update_message(self, message: NormalizedMessage) -> None:
+        self.ensure_session(message)
+        path = self.session_path(message.session_key, "messages.jsonl")
+        records = self._read_jsonl(path)
+        for index, record in enumerate(records):
+            if self._optional_message_id(record) == message.message_id:
+                records[index] = message.to_record()
+                self._write_jsonl(path, records)
+                return
         self._append_jsonl(path, message.to_record())
 
     def read_recent_messages(
@@ -181,6 +204,7 @@ class WorkspaceStorage:
                 "stream_slug": message.stream_slug,
                 "topic": message.topic,
                 "topic_hash": message.topic_hash,
+                "topic_slug": safe_slug(message.topic),
                 "private_user_key": message.private_user_key,
             }.items():
                 if getattr(metadata, field_name) != value:
@@ -215,6 +239,7 @@ class WorkspaceStorage:
             conversation_type=metadata.conversation_type,
             private_user_key=metadata.private_user_key,
             stream_slug=metadata.stream_slug,
+            topic_slug=metadata.topic_slug,
         )
         self._write_json(self.session_path(key, "session.json"), metadata.to_record())
 
@@ -260,9 +285,12 @@ class WorkspaceStorage:
         self._append_jsonl(self._error_path(), record)
 
     def session_path(self, key: SessionKey, filename: str) -> Path:
-        directory = self.sessions_dir / key.storage_id
+        directory = self.session_dir(key)
         directory.mkdir(parents=True, exist_ok=True)
         return directory / filename
+
+    def session_dir(self, key: SessionKey) -> Path:
+        return scoped_conversation_dir(self.records_dir, key, readable_topic=True)
 
     def _load_messages(self, key: SessionKey, metadata: SessionMetadata) -> list[NormalizedMessage]:
         return [self._message_from_record(record, metadata) for record in self._read_jsonl(self.session_path(key, "messages.jsonl"))]
@@ -288,6 +316,7 @@ class WorkspaceStorage:
             private_user_key=metadata.private_user_key,
             reply_required=bool(record.get("reply_required") or metadata.conversation_type == "private"),
             directly_addressed=bool(record.get("directly_addressed")),
+            uploads=list(record.get("uploads") or []),
         )
 
     def _message_ids(self, path: Path) -> set[int]:
@@ -339,6 +368,11 @@ class WorkspaceStorage:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=False) + "\n")
+
+    def _write_jsonl(self, path: Path, records: list[dict[str, Any]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = "".join(json.dumps(record, ensure_ascii=False, sort_keys=False) + "\n" for record in records)
+        path.write_text(text, encoding="utf-8")
 
     def _write_json(self, path: Path, record: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

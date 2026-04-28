@@ -49,6 +49,51 @@ def test_normalize_zulip_stream_event_strips_html_and_hashes_topic():
     assert message.content == "Hello\nworld"
 
 
+def test_normalize_zulip_stream_event_preserves_raw_markdown_content():
+    event = {
+        "type": "message",
+        "message": {
+            "id": 42,
+            "type": "stream",
+            "stream_id": 7,
+            "display_recipient": "Engineering",
+            "subject": "Launch",
+            "sender_email": "alice@example.com",
+            "sender_full_name": "Alice",
+            "sender_id": 3,
+            "content": "see ![diagram](/user_uploads/7/Ab/diagram.png)",
+            "content_type": "text/x-markdown",
+        },
+    }
+
+    message = normalize_zulip_event(event, "realm")
+
+    assert message is not None
+    assert message.content == "see ![diagram](/user_uploads/7/Ab/diagram.png)"
+
+
+def test_normalize_zulip_stream_event_preserves_markdown_autolinks_without_content_type():
+    event = {
+        "type": "message",
+        "message": {
+            "id": 42,
+            "type": "stream",
+            "stream_id": 7,
+            "display_recipient": "Engineering",
+            "subject": "Launch",
+            "sender_email": "alice@example.com",
+            "sender_full_name": "Alice",
+            "sender_id": 3,
+            "content": "see <https://example.com>",
+        },
+    }
+
+    message = normalize_zulip_event(event, "realm")
+
+    assert message is not None
+    assert message.content == "see <https://example.com>"
+
+
 def test_normalize_zulip_private_event_uses_sender_session_and_requires_reply():
     event = {
         "type": "message",
@@ -321,6 +366,7 @@ def test_zulip_listener_can_request_all_public_stream_events():
             "callback": callback,
             "event_types": ["message"],
             "all_public_streams": True,
+            "apply_markdown": False,
         }
     ]
 
