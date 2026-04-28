@@ -15,21 +15,24 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
-COPY src ./src
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
-    && pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir '.[codex]' \
+    && pip install --no-cache-dir --upgrade pip "setuptools>=68" wheel \
+    && python -c 'import tomllib; data = tomllib.load(open("pyproject.toml", "rb")); deps = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["codex"]; print("\n".join(deps))' > /tmp/token-zulip-requirements.txt \
+    && pip install --no-cache-dir -r /tmp/token-zulip-requirements.txt \
+    && rm /tmp/token-zulip-requirements.txt \
     && apt-get purge -y --auto-remove git \
     && rm -rf /var/lib/apt/lists/*
-
-
-COPY workspace ./workspace
 
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
 RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps --no-build-isolation .
+
+COPY workspace ./workspace
 
 ENTRYPOINT ["token-zulip"]
 CMD ["run"]
