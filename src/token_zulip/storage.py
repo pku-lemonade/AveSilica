@@ -403,7 +403,11 @@ class WorkspaceStorage:
         decision: AgentDecision,
         post: dict[str, Any] | None,
         memory_applied: list[dict[str, Any]],
+        skill_applied: list[dict[str, Any]] | None = None,
+        schedule_applied: list[dict[str, Any]] | None = None,
         memory_acknowledgement: str = "",
+        skill_acknowledgement: str = "",
+        schedule_acknowledgement: str = "",
     ) -> None:
         record: dict[str, Any] = {
             "created_at": utc_now_iso(),
@@ -412,8 +416,16 @@ class WorkspaceStorage:
             "post": post,
             "memory_applied": memory_applied,
         }
+        if skill_applied:
+            record["skill_applied"] = skill_applied
+        if schedule_applied:
+            record["schedule_applied"] = schedule_applied
         if memory_acknowledgement:
             record["memory_acknowledgement"] = memory_acknowledgement
+        if skill_acknowledgement:
+            record["skill_acknowledgement"] = skill_acknowledgement
+        if schedule_acknowledgement:
+            record["schedule_acknowledgement"] = schedule_acknowledgement
         self._append_jsonl(self.session_path(key, "turns.jsonl"), record)
 
     def log_error(self, key: SessionKey | None, event: dict[str, Any]) -> None:

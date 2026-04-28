@@ -6,6 +6,8 @@
     "reply_kind",
     "message_to_post",
     "memory_ops",
+    "schedule_ops",
+    "skill_ops",
     "confidence"
   ],
   "properties": {
@@ -63,6 +65,112 @@
           },
           "old_text": {
             "description": "Empty string for add. Short unique substring of the existing entry for replace/remove.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "schedule_ops": {
+      "description": "Scheduled task operation requests. Use an empty array when schedules should not change.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "job_id",
+          "name",
+          "match",
+          "prompt",
+          "schedule",
+          "repeat",
+          "skills",
+          "confidence"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "remove",
+              "pause",
+              "resume",
+              "list",
+              "run_now"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "match": {
+            "description": "Natural-language selector for update/remove/pause/resume/run_now when job_id is unknown.",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "Self-contained scheduled task prompt for create/update. Empty string when unchanged.",
+            "type": "string"
+          },
+          "schedule": {
+            "description": "Use ISO timestamp, duration like 30m, interval like every 2h, or cron expression.",
+            "type": "string"
+          },
+          "repeat": {
+            "description": "Positive repeat count, or null for default/infinite depending on schedule kind.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "skills": {
+            "description": "Skill names to attach to a new job. Use [] for prompt-only jobs.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "skill_ops": {
+      "description": "Reusable skill file requests. Use an empty array when skills should not change.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "name",
+          "description",
+          "content"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "remove"
+            ]
+          },
+          "name": {
+            "description": "Lowercase letters, digits, and hyphens only.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Skill trigger description for create/update. Empty for remove.",
+            "type": "string"
+          },
+          "content": {
+            "description": "SKILL.md body or full SKILL.md content for create/update. Empty for remove.",
             "type": "string"
           }
         }

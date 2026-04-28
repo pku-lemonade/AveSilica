@@ -14,6 +14,8 @@ from slugify import slugify
 REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
 MEMORY_OPS = {"add", "remove", "replace"}
 MEMORY_SCOPES = {"channel", "conversation", "global"}
+SCHEDULE_OPS = {"create", "update", "remove", "pause", "resume", "list", "run_now"}
+SKILL_OPS = {"create", "update", "remove"}
 CONVERSATION_TYPES = {"stream", "private"}
 TOPIC_HASH_LENGTH = 6
 
@@ -298,11 +300,107 @@ class MemoryOperation:
 
 
 @dataclass(frozen=True)
+class SkillOperation:
+    action: str
+    name: str = ""
+    description: str = ""
+    content: str = ""
+
+    @classmethod
+    def from_mapping(cls, value: dict[str, Any]) -> "SkillOperation":
+        action = str(value.get("action") or "").strip().lower()
+        if action not in SKILL_OPS:
+            raise ValueError(f"invalid skill op: {action!r}")
+        return cls(
+            action=action,
+            name=str(value.get("name") or ""),
+            description=str(value.get("description") or ""),
+            content=str(value.get("content") or ""),
+        )
+
+    def to_record(self) -> dict[str, str]:
+        return {
+            "action": self.action,
+            "name": self.name,
+            "description": self.description,
+            "content": self.content,
+        }
+
+
+@dataclass(frozen=True)
+class ScheduleOperation:
+    action: str
+    job_id: str = ""
+    name: str = ""
+    match: str = ""
+    prompt: str = ""
+    schedule: str = ""
+    repeat: int | None = None
+    skills: tuple[str, ...] = ()
+    confidence: float = 0.0
+
+    @classmethod
+    def from_mapping(cls, value: dict[str, Any]) -> "ScheduleOperation":
+        action = str(value.get("action") or "").strip().lower()
+        if action == "modify":
+            action = "update"
+        if action not in SCHEDULE_OPS:
+            raise ValueError(f"invalid schedule op: {action!r}")
+
+        raw_skills = value.get("skills") or []
+        if isinstance(raw_skills, str):
+            skills = (raw_skills,)
+        elif isinstance(raw_skills, list):
+            skills = tuple(str(item) for item in raw_skills if str(item).strip())
+        else:
+            skills = ()
+
+        repeat = value.get("repeat")
+        if repeat is not None:
+            try:
+                repeat = int(repeat)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("schedule repeat must be an integer or null") from exc
+            if repeat <= 0:
+                repeat = None
+
+        confidence = float(value.get("confidence") or 0.0)
+        confidence = max(0.0, min(1.0, confidence))
+
+        return cls(
+            action=action,
+            job_id=str(value.get("job_id") or ""),
+            name=str(value.get("name") or ""),
+            match=str(value.get("match") or ""),
+            prompt=str(value.get("prompt") or ""),
+            schedule=str(value.get("schedule") or ""),
+            repeat=repeat,
+            skills=skills,
+            confidence=confidence,
+        )
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "action": self.action,
+            "job_id": self.job_id,
+            "name": self.name,
+            "match": self.match,
+            "prompt": self.prompt,
+            "schedule": self.schedule,
+            "repeat": self.repeat,
+            "skills": list(self.skills),
+            "confidence": self.confidence,
+        }
+
+
+@dataclass(frozen=True)
 class AgentDecision:
     should_reply: bool
     reply_kind: str
     message_to_post: str
     memory_ops: list[MemoryOperation] = field(default_factory=list)
+    schedule_ops: list[ScheduleOperation] = field(default_factory=list)
+    skill_ops: list[SkillOperation] = field(default_factory=list)
     confidence: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -335,6 +433,16 @@ class AgentDecision:
             for item in data.get("memory_ops", [])
             if isinstance(item, dict)
         ]
+        schedule_ops = [
+            ScheduleOperation.from_mapping(item)
+            for item in data.get("schedule_ops", [])
+            if isinstance(item, dict)
+        ]
+        skill_ops = [
+            SkillOperation.from_mapping(item)
+            for item in data.get("skill_ops", [])
+            if isinstance(item, dict)
+        ]
 
         should_reply = bool(data.get("should_reply"))
         message_to_post = str(data.get("message_to_post") or "")
@@ -347,6 +455,8 @@ class AgentDecision:
             reply_kind=reply_kind,
             message_to_post=message_to_post,
             memory_ops=memory_ops,
+            schedule_ops=schedule_ops,
+            skill_ops=skill_ops,
             confidence=confidence,
             raw=data,
         )
@@ -357,6 +467,8 @@ class AgentDecision:
             "reply_kind": self.reply_kind,
             "message_to_post": self.message_to_post,
             "memory_ops": [item.to_record() for item in self.memory_ops],
+            "schedule_ops": [item.to_record() for item in self.schedule_ops],
+            "skill_ops": [item.to_record() for item in self.skill_ops],
             "confidence": self.confidence,
         }
 

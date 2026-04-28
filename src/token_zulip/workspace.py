@@ -7,9 +7,12 @@ from pathlib import Path
 
 WORKSPACE_DIRS: tuple[str, ...] = (
     "references",
+    "skills",
+    "schedules",
     "memory",
     "records",
     "records/errors",
+    "records/scheduled",
 )
 
 RUNTIME_CONTRACT_FILE = "references/runtime-contract.md"

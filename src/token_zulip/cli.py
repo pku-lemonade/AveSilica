@@ -125,6 +125,9 @@ async def _run(args: argparse.Namespace) -> int:
         future.add_done_callback(report_result)
 
     workers = asyncio.create_task(loop.run_workers())
+    scheduler: asyncio.Task[None] | None = None
+    if config.schedules_enabled:
+        scheduler = asyncio.create_task(loop.run_scheduler())
     try:
         await asyncio.to_thread(
             zulip.listen,
@@ -133,6 +136,8 @@ async def _run(args: argparse.Namespace) -> int:
         )
     finally:
         workers.cancel()
+        if scheduler is not None:
+            scheduler.cancel()
     return 0
 
 

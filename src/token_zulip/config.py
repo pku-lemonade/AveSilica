@@ -81,6 +81,12 @@ class BotConfig:
     listen_all_public_streams: bool
     typing_enabled: bool
     typing_refresh_seconds: float
+    schedules_enabled: bool = True
+    schedule_tick_seconds: float = 60.0
+    schedule_timezone: str = "UTC"
+    schedule_run_timeout_seconds: float = 600.0
+    schedule_skill_max_bytes: int = 32_000
+    schedule_skill_max_count: int = 4
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -107,4 +113,10 @@ class BotConfig:
             listen_all_public_streams=_bool_env("TOKENZULIP_LISTEN_ALL_PUBLIC_STREAMS", True),
             typing_enabled=_bool_env("TOKENZULIP_TYPING_ENABLED", True),
             typing_refresh_seconds=_float_env("TOKENZULIP_TYPING_REFRESH_SECONDS", 8.0),
+            schedules_enabled=_bool_env("TOKENZULIP_SCHEDULES_ENABLED", True),
+            schedule_tick_seconds=_float_env("TOKENZULIP_SCHEDULE_TICK_SECONDS", 60.0),
+            schedule_timezone=os.getenv("TOKENZULIP_SCHEDULE_TIMEZONE") or os.getenv("TZ") or "UTC",
+            schedule_run_timeout_seconds=_float_env("TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS", 600.0),
+            schedule_skill_max_bytes=_int_env("TOKENZULIP_SCHEDULE_SKILL_MAX_BYTES", 32_000),
+            schedule_skill_max_count=_int_env("TOKENZULIP_SCHEDULE_SKILL_MAX_COUNT", 4),
         )
