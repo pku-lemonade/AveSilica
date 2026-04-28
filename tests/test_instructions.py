@@ -22,6 +22,8 @@ def test_instruction_layers_are_ordered(tmp_path):
     assert text.index("## Source: references/participation.md") < text.index("## Source: references/memory-policy.md")
     assert text.index("## Source: references/memory-policy.md") < text.index("## Source: memory/AGENTS.md")
     assert "workspace memory rule" in text
+    assert "Do not try to write files" not in text
+    assert "Propose memory changes in the structured fields only" not in text
     stream_label = "memory/stream-engineering-10/AGENTS.md"
     topic_label = f"memory/stream-engineering-10/topic-launch-plan-{topic_hash}/AGENTS.md"
     assert text.index("## Source: memory/AGENTS.md") < text.index(stream_label)
