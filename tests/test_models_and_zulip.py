@@ -12,6 +12,7 @@ from token_zulip.zulip_io import (
     ZulipTypingNotifier,
     normalize_zulip_event,
     normalize_zulip_reaction_event,
+    normalize_zulip_update_message_event,
 )
 
 
@@ -144,6 +145,26 @@ def test_normalize_zulip_reaction_event_accepts_nested_user_for_removes():
     assert reaction.op == "remove"
     assert reaction.user_id == 4
     assert reaction.user_full_name == "Chen"
+
+
+def test_normalize_zulip_update_message_event_for_topic_move():
+    event = {
+        "type": "update_message",
+        "message_ids": [42, "43"],
+        "stream_id": 7,
+        "stream_name": "Engineering",
+        "orig_subject": "Launch",
+        "subject": "Release",
+        "propagate_mode": "change_later",
+    }
+
+    move = normalize_zulip_update_message_event(event, "realm")
+
+    assert move is not None
+    assert move.message_ids == [42, 43]
+    assert move.source_key.value == f"zulip:realm:stream:7:topic:{normalized_topic_hash('Launch')}"
+    assert move.destination_key.value == f"zulip:realm:stream:7:topic:{normalized_topic_hash('Release')}"
+    assert len(move.destination_topic_hash) == 6
 
 
 def test_normalize_zulip_private_event_uses_sender_session_and_requires_reply():
@@ -416,7 +437,7 @@ def test_zulip_listener_can_request_all_public_stream_events():
     assert client.calls == [
         {
             "callback": callback,
-            "event_types": ["message", "reaction"],
+            "event_types": ["message", "reaction", "update_message"],
             "all_public_streams": True,
             "apply_markdown": False,
         }

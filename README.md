@@ -133,10 +133,10 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 - `workspace/memory/MEMORY.md`: compact global memory updated by validated memory operations.
 - `workspace/memory/stream-<slug>-<id>/AGENTS.md`: optional channel-specific instructions.
 - `workspace/memory/stream-<slug>-<id>/MEMORY.md`: compact channel memory.
-- `workspace/memory/stream-<slug>-<id>/topic-<slug>-<hash>/AGENTS.md`: optional topic-specific instructions.
-- `workspace/memory/stream-<slug>-<id>/topic-<slug>-<hash>/MEMORY.md`: compact topic memory.
+- `workspace/memory/stream-<slug>-<id>/topic-<slug>-<6hex>/AGENTS.md`: optional topic-specific instructions.
+- `workspace/memory/stream-<slug>-<id>/topic-<slug>-<6hex>/MEMORY.md`: compact topic memory.
 - `workspace/memory/private-<user>/MEMORY.md`: compact private-chat memory.
-- `workspace/records/stream-<slug>-<id>/topic-<slug>-<hash>/`: generated stream/topic session messages, session metadata, pending queues, turns, and uploads.
+- `workspace/records/stream-<slug>-<id>/topic-<slug>-<6hex>/`: generated stream/topic session messages, session metadata, pending queues, turns, and uploads. Channel renames and Zulip topic/message moves update these readable paths while preserving known local history.
 - `workspace/records/private-<user>/`: generated private-chat session messages, session metadata, pending queues, turns, and uploads.
 - `workspace/records/errors/`: error and ignored-event summaries.
 

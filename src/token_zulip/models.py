@@ -15,6 +15,7 @@ REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
 MEMORY_OPS = {"add", "remove", "replace"}
 MEMORY_SCOPES = {"channel", "conversation", "global"}
 CONVERSATION_TYPES = {"stream", "private"}
+TOPIC_HASH_LENGTH = 6
 
 
 def utc_now_iso() -> str:
@@ -27,7 +28,7 @@ def normalize_topic_name(topic: str) -> str:
 
 def normalized_topic_hash(topic: str) -> str:
     normalized = normalize_topic_name(topic)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:TOPIC_HASH_LENGTH]
 
 
 def private_user_key(sender_id: int | None, sender_email: str) -> str:
@@ -214,6 +215,49 @@ class NormalizedReaction:
             "timestamp": self.timestamp,
             "received_at": self.received_at,
         }
+
+
+@dataclass(frozen=True)
+class NormalizedMessageMove:
+    realm_id: str
+    message_id: int
+    message_ids: list[int]
+    stream_id: int
+    stream_name: str
+    orig_subject: str
+    new_stream_id: int
+    subject: str
+    propagate_mode: str
+    raw: dict[str, Any]
+
+    @property
+    def source_topic_hash(self) -> str:
+        return normalized_topic_hash(self.orig_subject)
+
+    @property
+    def destination_topic_hash(self) -> str:
+        return normalized_topic_hash(self.subject)
+
+    @property
+    def source_key(self) -> SessionKey:
+        return SessionKey(
+            realm_id=self.realm_id,
+            stream_id=self.stream_id,
+            topic_hash=self.source_topic_hash,
+            stream_slug=safe_slug(self.stream_name),
+            topic_slug=safe_slug(self.orig_subject),
+        )
+
+    @property
+    def destination_key(self) -> SessionKey:
+        stream_slug = safe_slug(self.stream_name) if self.new_stream_id == self.stream_id else None
+        return SessionKey(
+            realm_id=self.realm_id,
+            stream_id=self.new_stream_id,
+            topic_hash=self.destination_topic_hash,
+            stream_slug=stream_slug,
+            topic_slug=safe_slug(self.subject),
+        )
 
 
 @dataclass(frozen=True)

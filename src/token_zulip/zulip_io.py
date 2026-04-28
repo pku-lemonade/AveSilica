@@ -15,6 +15,7 @@ from .addressing import is_directly_addressed
 from .config import BotConfig
 from .models import (
     NormalizedMessage,
+    NormalizedMessageMove,
     NormalizedReaction,
     normalized_topic_hash,
     private_user_key,
@@ -121,6 +122,55 @@ def normalize_zulip_reaction_event(
         received_at=utc_now_iso(),
         raw=event,
     )
+
+
+def normalize_zulip_update_message_event(
+    event: dict[str, Any],
+    realm_id: str,
+) -> NormalizedMessageMove | None:
+    if event.get("type") != "update_message":
+        return None
+
+    stream_id = _optional_int(event.get("stream_id"))
+    if stream_id is None:
+        return None
+
+    orig_subject = str(event.get("orig_subject") or "")
+    if not orig_subject:
+        return None
+
+    new_stream_id = _optional_int(event.get("new_stream_id")) or stream_id
+    subject = str(event.get("subject") or orig_subject)
+    if subject == orig_subject and new_stream_id == stream_id:
+        return None
+
+    message_ids = _message_ids_for_update_event(event)
+    if not message_ids:
+        return None
+
+    return NormalizedMessageMove(
+        realm_id=str(event.get("realm_id") or realm_id or "unknown"),
+        message_id=message_ids[0],
+        message_ids=message_ids,
+        stream_id=stream_id,
+        stream_name=str(event.get("stream_name") or event.get("stream") or "unknown"),
+        orig_subject=orig_subject,
+        new_stream_id=new_stream_id,
+        subject=subject,
+        propagate_mode=str(event.get("propagate_mode") or "change_one"),
+        raw=event,
+    )
+
+
+def _message_ids_for_update_event(event: dict[str, Any]) -> list[int]:
+    raw_ids = event.get("message_ids")
+    values = raw_ids if isinstance(raw_ids, list) else [event.get("message_id")]
+    ids: list[int] = []
+    for value in values:
+        message_id = _optional_int(value)
+        if message_id is not None and message_id not in ids:
+            ids.append(message_id)
+    return ids
 
 
 def _normalize_stream_message(
@@ -389,7 +439,7 @@ class ZulipClientIO:
     def listen(self, callback: Callable[[dict[str, Any]], None], *, all_public_streams: bool = False) -> None:
         self.client.call_on_each_event(
             callback,
-            event_types=["message", "reaction"],
+            event_types=["message", "reaction", "update_message"],
             all_public_streams=all_public_streams,
             apply_markdown=False,
         )

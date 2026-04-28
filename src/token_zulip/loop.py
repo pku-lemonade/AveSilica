@@ -15,7 +15,7 @@ from .prompt import PromptBuilder, PromptParts
 from .storage import WorkspaceStorage
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
-from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event
+from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, normalize_zulip_update_message_event
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_REPLY_FALLBACK = "I saw this, but couldn't produce a useful reply. Please try again."
@@ -79,6 +79,17 @@ class AgentLoop:
                 return EnqueueResult(False, "ignored reaction for unknown message", message_id=reaction.message_id)
             return EnqueueResult(True, "recorded reaction", key.value, reaction.message_id)
 
+        move = normalize_zulip_update_message_event(event, self.config.realm_id)
+        if move is not None:
+            result = self.storage.apply_message_move(move)
+            accepted = result.get("status") == "applied"
+            return EnqueueResult(
+                accepted,
+                str(result.get("reason") or "processed update_message"),
+                str(result["session_key"]) if result.get("session_key") else None,
+                move.message_id,
+            )
+
         message = normalize_zulip_event(
             event,
             self.config.realm_id,
@@ -89,6 +100,8 @@ class AgentLoop:
             reason = (
                 "ignored unsupported reaction"
                 if event.get("type") == "reaction"
+                else "ignored non-move update_message"
+                if event.get("type") == "update_message"
                 else "ignored unsupported message"
             )
             self.storage.log_ignored_event(event, reason)

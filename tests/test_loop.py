@@ -9,7 +9,7 @@ from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
 from token_zulip.loop import CODEX_INSTRUCTION_MODE, PRIVATE_REPLY_FALLBACK, AgentLoop
 from token_zulip.memory import MemoryStore
-from token_zulip.models import MemoryOperation, NormalizedMessage
+from token_zulip.models import MemoryOperation, NormalizedMessage, normalized_topic_hash
 from token_zulip.storage import WorkspaceStorage
 from token_zulip.typing_status import TypingStatusManager
 from token_zulip.workspace import initialize_workspace
@@ -102,6 +102,18 @@ def _reaction_event(
         "user_id": user_id,
         "user_email": user_email or f"user{user_id}@example.com",
         "user_full_name": user_full_name,
+    }
+
+
+def _update_message_event() -> dict[str, object]:
+    return {
+        "type": "update_message",
+        "message_ids": [1],
+        "stream_id": 10,
+        "stream_name": "Engineering",
+        "orig_subject": "Launch",
+        "subject": "Release",
+        "propagate_mode": "change_all",
     }
 
 
@@ -830,6 +842,43 @@ def test_active_reaction_context_is_rendered_on_next_normal_message(tmp_path):
 
         assert "previous context Reactions: Bob 100" in codex.prompt
         assert "current request" in codex.prompt
+
+    asyncio.run(scenario())
+
+
+def test_update_message_move_event_relocates_records_without_codex_turn(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        source = _message(1, "moved context")
+        source = NormalizedMessage(**{**source.__dict__, "topic_hash": normalized_topic_hash("Launch")})
+        storage.append_message(source)
+        codex = PromptCapturingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        result = await bot.enqueue_event(_update_message_event())
+
+        assert result.accepted is True
+        assert bot.queue.empty()
+        assert codex.prompts == []
+        release = _message(2)
+        release = NormalizedMessage(
+            **{
+                **release.__dict__,
+                "topic": "Release",
+                "topic_hash": normalized_topic_hash("Release"),
+                "content": "new message",
+            }
+        )
+        await bot._handle_message(release)
+        assert "moved context" in codex.prompt
 
     asyncio.run(scenario())
 

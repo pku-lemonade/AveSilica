@@ -7,8 +7,10 @@ from token_zulip.models import (
     AgentDecision,
     MemoryOperation,
     NormalizedMessage,
+    NormalizedMessageMove,
     NormalizedReaction,
     SessionKey,
+    normalized_topic_hash,
     safe_slug,
 )
 from token_zulip.storage import REACTION_EVENTS_CAP, WorkspaceStorage
@@ -30,6 +32,46 @@ def _message(message_id: int = 1) -> NormalizedMessage:
         content=f"message {message_id}",
         timestamp=None,
         received_at="now",
+        raw={},
+    )
+
+
+def _topic_message(message_id: int, *, stream: str = "Engineering", topic: str = "Launch") -> NormalizedMessage:
+    return NormalizedMessage(
+        realm_id="realm",
+        message_id=message_id,
+        stream_id=10,
+        stream=stream,
+        stream_slug=safe_slug(stream),
+        topic=topic,
+        topic_hash=normalized_topic_hash(topic),
+        sender_email="alice@example.com",
+        sender_full_name="Alice",
+        sender_id=1,
+        content=f"message {message_id}",
+        timestamp=None,
+        received_at="now",
+        raw={},
+    )
+
+
+def _move(
+    message_ids: list[int],
+    *,
+    orig_subject: str = "Launch",
+    subject: str = "Release",
+    propagate_mode: str = "change_later",
+) -> NormalizedMessageMove:
+    return NormalizedMessageMove(
+        realm_id="realm",
+        message_id=message_ids[0],
+        message_ids=message_ids,
+        stream_id=10,
+        stream_name="Engineering",
+        orig_subject=orig_subject,
+        new_stream_id=10,
+        subject=subject,
+        propagate_mode=propagate_mode,
         raw={},
     )
 
@@ -112,6 +154,132 @@ def test_read_recent_messages_excludes_current_message_ids(tmp_path):
     storage.append_message(second)
 
     assert [record["message_id"] for record in storage.read_recent_messages(key, 10, exclude_message_ids={2})] == [1]
+
+
+def test_channel_rename_moves_records_and_memory_by_stream_id(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    first = _topic_message(1, stream="Engineering", topic="Launch")
+    storage.append_message(first)
+    old_memory = tmp_path / "memory" / "stream-engineering-10" / f"topic-launch-{first.topic_hash}"
+    old_memory.mkdir(parents=True)
+    (old_memory / "MEMORY.md").write_text("channel fact\n", encoding="utf-8")
+
+    renamed = _topic_message(2, stream="Platform", topic="Launch")
+    storage.append_message(renamed)
+
+    new_key = renamed.session_key
+    assert not (tmp_path / "records" / "stream-engineering-10").exists()
+    assert storage.read_recent_messages(new_key, 10)[0]["message_id"] == 1
+    assert storage.load_metadata(new_key).stream == "Platform"
+    assert (
+        tmp_path / "memory" / "stream-platform-10" / f"topic-launch-{first.topic_hash}" / "MEMORY.md"
+    ).read_text(encoding="utf-8") == "channel fact\n"
+
+
+def test_full_topic_rename_moves_records_memory_and_preserves_thread(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    source = _topic_message(1, topic="Launch")
+    storage.append_message(source)
+    storage.set_codex_thread_state(source.session_key, thread_id="thread-1", instruction_mode="developer-v1")
+    memory_dir = tmp_path / "memory" / "stream-engineering-10" / f"topic-launch-{source.topic_hash}"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("launch fact\n", encoding="utf-8")
+
+    result = storage.apply_message_move(_move([1], propagate_mode="change_all"))
+    destination = _topic_message(2, topic="Release").session_key
+
+    assert result["status"] == "applied"
+    assert storage.read_recent_messages(destination, 10)[0]["message_id"] == 1
+    assert storage.load_metadata(destination).codex_thread_id == "thread-1"
+    assert (tmp_path / "memory" / "stream-engineering-10" / f"topic-release-{destination.topic_hash}").exists()
+
+
+def test_full_topic_rename_rewrites_message_upload_paths(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    source = _topic_message(1, topic="Launch")
+    old_rel = f"records/stream-engineering-10/topic-launch-{source.topic_hash}/uploads/1/01-figure.png"
+    source = NormalizedMessage(
+        **{
+            **source.__dict__,
+            "content": f"see ![figure]({old_rel})",
+            "uploads": [{"local_path": old_rel}],
+        }
+    )
+    storage.append_message(source)
+    upload_dir = storage.session_dir(source.session_key) / "uploads" / "1"
+    upload_dir.mkdir(parents=True)
+    (upload_dir / "01-figure.png").write_bytes(b"image")
+
+    storage.apply_message_move(_move([1], propagate_mode="change_all"))
+    destination = _topic_message(2, topic="Release").session_key
+    record = storage.read_recent_messages(destination, 1)[0]
+
+    assert f"topic-release-{destination.topic_hash}/uploads/1/01-figure.png" in record["content"]
+    assert f"topic-release-{destination.topic_hash}/uploads/1/01-figure.png" in record["uploads"][0]["local_path"]
+    assert (storage.session_dir(destination) / "uploads" / "1" / "01-figure.png").exists()
+
+
+def test_full_topic_rename_into_existing_destination_merges_messages_and_memory(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    source = _topic_message(1, topic="Launch")
+    destination_message = _topic_message(2, topic="Release")
+    storage.append_message(source)
+    storage.append_message(destination_message)
+    storage.set_codex_thread_state(destination_message.session_key, thread_id="destination-thread", instruction_mode="developer-v1")
+    source_memory = tmp_path / "memory" / "stream-engineering-10" / f"topic-launch-{source.topic_hash}"
+    destination_memory = tmp_path / "memory" / "stream-engineering-10" / f"topic-release-{destination_message.topic_hash}"
+    source_memory.mkdir(parents=True)
+    destination_memory.mkdir(parents=True)
+    (source_memory / "MEMORY.md").write_text("source fact\n", encoding="utf-8")
+    (destination_memory / "MEMORY.md").write_text("destination fact\n", encoding="utf-8")
+
+    storage.apply_message_move(_move([1], propagate_mode="change_all"))
+
+    records = storage.read_recent_messages(destination_message.session_key, 10)
+    assert [record["message_id"] for record in records] == [1, 2]
+    assert storage.load_metadata(destination_message.session_key).codex_thread_id == "destination-thread"
+    assert "source fact" in (destination_memory / "MEMORY.md").read_text(encoding="utf-8")
+    assert "destination fact" in (destination_memory / "MEMORY.md").read_text(encoding="utf-8")
+
+
+def test_partial_topic_move_moves_only_matching_message_records(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    first = _topic_message(1, topic="Launch")
+    second = _topic_message(2, topic="Launch")
+    storage.append_message(first)
+    storage.append_message(second)
+    storage.append_pending_messages(first.session_key, [second])
+
+    result = storage.apply_message_move(_move([2], propagate_mode="change_one"))
+    destination = _topic_message(3, topic="Release").session_key
+
+    assert result["status"] == "applied"
+    assert [record["message_id"] for record in storage.read_recent_messages(first.session_key, 10)] == [1]
+    assert [record["message_id"] for record in storage.read_recent_messages(destination, 10)] == [2]
+    assert [message.message_id for message in storage.pop_pending_messages(destination)] == [2]
+    assert storage.load_metadata(destination).codex_thread_id is None
+    storage.apply_reaction(_reaction(2))
+    assert storage.read_recent_messages(destination, 10)[0]["reactions"][0]["emoji_name"] == "100"
+
+
+def test_partial_topic_move_into_existing_destination_preserves_destination_thread(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    source = _topic_message(1, topic="Launch")
+    destination_message = _topic_message(2, topic="Release")
+    storage.append_message(source)
+    storage.append_message(destination_message)
+    storage.set_codex_thread_state(destination_message.session_key, thread_id="destination-thread", instruction_mode="developer-v1")
+
+    storage.apply_message_move(_move([1], propagate_mode="change_one"))
+
+    assert storage.load_metadata(destination_message.session_key).codex_thread_id == "destination-thread"
+    assert [record["message_id"] for record in storage.read_recent_messages(destination_message.session_key, 10)] == [1, 2]
 
 
 def test_apply_reaction_updates_target_message_record(tmp_path):

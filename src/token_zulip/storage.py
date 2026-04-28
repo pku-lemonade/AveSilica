@@ -9,6 +9,7 @@ from typing import Any
 from .models import (
     AgentDecision,
     NormalizedMessage,
+    NormalizedMessageMove,
     NormalizedReaction,
     SessionKey,
     safe_slug,
@@ -18,6 +19,7 @@ from .models import (
 
 
 REACTION_EVENTS_CAP = 20
+ENTRY_DELIMITER = "\n§\n"
 
 
 @dataclass
@@ -124,6 +126,7 @@ class WorkspaceStorage:
     def __init__(self, workspace_dir: Path) -> None:
         self.workspace_dir = workspace_dir.expanduser().resolve()
         self.records_dir = self.workspace_dir / "records"
+        self.memory_dir = self.workspace_dir / "memory"
         self.errors_dir = self.records_dir / "errors"
         self.ensure_dirs()
 
@@ -196,6 +199,72 @@ class WorkspaceStorage:
         self._write_jsonl(path, records)
         return key
 
+    def reconcile_message_paths(self, message: NormalizedMessage) -> None:
+        if message.conversation_type == "private" or message.stream_id is None:
+            return
+        new_slug = safe_slug(message.stream)
+        for root in [self.records_dir, self.memory_dir]:
+            self._rename_stream_dirs(root, message.stream_id, new_slug)
+        self._update_stream_metadata(message.stream_id, message.stream, new_slug)
+
+    def apply_message_move(self, move: NormalizedMessageMove) -> dict[str, Any]:
+        source_key = self._resolved_move_key(move.source_key)
+        destination_key = self._resolved_move_key(move.destination_key)
+        source_dir = self.session_dir(source_key)
+        destination_dir = self.session_dir(destination_key)
+
+        if not source_dir.exists():
+            result = {
+                "kind": "message_move",
+                "status": "ignored",
+                "reason": "source session not found",
+                "message_ids": move.message_ids,
+            }
+            self.log_error(None, result)
+            return result
+
+        if source_dir == destination_dir:
+            return {
+                "kind": "message_move",
+                "status": "skipped",
+                "reason": "source and destination are the same session",
+                "message_ids": move.message_ids,
+            }
+
+        if move.propagate_mode == "change_all":
+            moved = self._move_or_merge_session(
+                source_dir,
+                destination_dir,
+                destination_key,
+                move,
+                merge_memory=True,
+            )
+            return {
+                "kind": "message_move",
+                "status": "applied" if moved else "ignored",
+                "reason": "full conversation move",
+                "message_ids": move.message_ids,
+                "session_key": destination_key.value,
+            }
+
+        moved_ids = self._move_message_records(source_dir, destination_dir, destination_key, move)
+        if not moved_ids:
+            result = {
+                "kind": "message_move",
+                "status": "ignored",
+                "reason": "no matching message records found",
+                "message_ids": move.message_ids,
+            }
+            self.log_error(source_key, result)
+            return result
+        return {
+            "kind": "message_move",
+            "status": "applied",
+            "reason": "partial message move",
+            "message_ids": moved_ids,
+            "session_key": destination_key.value,
+        }
+
     def read_recent_messages(
         self,
         key: SessionKey,
@@ -235,6 +304,7 @@ class WorkspaceStorage:
         return [by_id[message_id] for message_id in pending_ids if message_id in by_id]
 
     def ensure_session(self, message: NormalizedMessage) -> SessionMetadata:
+        self.reconcile_message_paths(message)
         path = self.session_path(message.session_key, "session.json")
         if path.exists():
             metadata = self.load_metadata(message.session_key)
@@ -284,6 +354,8 @@ class WorkspaceStorage:
             stream_slug=metadata.stream_slug,
             topic_slug=metadata.topic_slug,
         )
+        metadata.session_id = key.storage_id
+        metadata.session_key = key.value
         self._write_json(self.session_path(key, "session.json"), metadata.to_record())
 
     def set_codex_thread_id(self, key: SessionKey, thread_id: str | None) -> None:
@@ -346,6 +418,347 @@ class WorkspaceStorage:
 
     def session_dir(self, key: SessionKey) -> Path:
         return scoped_conversation_dir(self.records_dir, key, readable_topic=True)
+
+    def _memory_session_dir(self, key: SessionKey) -> Path:
+        return scoped_conversation_dir(self.memory_dir, key, readable_topic=True)
+
+    def _resolved_move_key(self, key: SessionKey) -> SessionKey:
+        if key.conversation_type == "private" or key.stream_id is None:
+            return key
+        stream_slug = self._existing_stream_slug(key.stream_id) or key.stream_slug or "unknown"
+        return SessionKey(
+            realm_id=key.realm_id,
+            stream_id=key.stream_id,
+            topic_hash=key.topic_hash,
+            conversation_type=key.conversation_type,
+            private_user_key=key.private_user_key,
+            stream_slug=stream_slug,
+            topic_slug=key.topic_slug,
+        )
+
+    def _existing_stream_slug(self, stream_id: int) -> str | None:
+        suffix = f"-{stream_id}"
+        for root in [self.records_dir, self.memory_dir]:
+            if not root.exists():
+                continue
+            for path in sorted(root.glob(f"stream-*{suffix}")):
+                if path.is_dir() and path.name.endswith(suffix):
+                    return path.name[len("stream-") : -len(suffix)]
+        return None
+
+    def _rename_stream_dirs(self, root: Path, stream_id: int, new_slug: str) -> None:
+        if not root.exists():
+            return
+        suffix = f"-{stream_id}"
+        destination = root / f"stream-{new_slug}-{stream_id}"
+        for source in sorted(root.glob(f"stream-*{suffix}")):
+            if not source.is_dir() or not source.name.endswith(suffix) or source == destination:
+                continue
+            if destination.exists():
+                self._merge_directory(source, destination, old_base=source, new_base=destination, merge_memory=True)
+            else:
+                source.rename(destination)
+                self._rewrite_message_paths(destination, old_base=source, new_base=destination)
+
+    def _update_stream_metadata(self, stream_id: int, stream: str, stream_slug: str) -> None:
+        for session_path in sorted(self.records_dir.glob(f"stream-*-{stream_id}/topic-*/session.json")):
+            try:
+                record = json.loads(session_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            record["stream"] = stream
+            record["stream_slug"] = stream_slug
+            key = SessionKey(
+                realm_id=str(record.get("realm_id") or "unknown"),
+                stream_id=stream_id,
+                topic_hash=str(record.get("topic_hash") or ""),
+                conversation_type=str(record.get("conversation_type") or "stream"),
+                private_user_key=(
+                    str(record["private_user_key"]) if record.get("private_user_key") is not None else None
+                ),
+                stream_slug=stream_slug,
+                topic_slug=str(record.get("topic_slug") or "") or None,
+            )
+            record["session_id"] = key.storage_id
+            record["session_key"] = key.value
+            self._write_json(session_path, record)
+
+    def _move_or_merge_session(
+        self,
+        source_dir: Path,
+        destination_dir: Path,
+        destination_key: SessionKey,
+        move: NormalizedMessageMove,
+        *,
+        merge_memory: bool,
+    ) -> bool:
+        memory_source = self._memory_session_dir(self._resolved_move_key(move.source_key))
+        memory_destination = self._memory_session_dir(destination_key)
+        if destination_dir.exists():
+            self._merge_directory(source_dir, destination_dir, old_base=source_dir, new_base=destination_dir)
+        else:
+            destination_dir.parent.mkdir(parents=True, exist_ok=True)
+            source_dir.rename(destination_dir)
+            self._rewrite_message_paths(destination_dir, old_base=source_dir, new_base=destination_dir)
+        self._save_destination_metadata(destination_dir, destination_key, move, preserve_existing_thread=True)
+
+        if merge_memory and memory_source.exists() and memory_source != memory_destination:
+            if memory_destination.exists():
+                self._merge_directory(
+                    memory_source,
+                    memory_destination,
+                    old_base=memory_source,
+                    new_base=memory_destination,
+                    merge_memory=True,
+                )
+            else:
+                memory_destination.parent.mkdir(parents=True, exist_ok=True)
+                memory_source.rename(memory_destination)
+        return True
+
+    def _move_message_records(
+        self,
+        source_dir: Path,
+        destination_dir: Path,
+        destination_key: SessionKey,
+        move: NormalizedMessageMove,
+    ) -> list[int]:
+        source_path = source_dir / "messages.jsonl"
+        records = self._read_jsonl(source_path)
+        move_ids = set(move.message_ids)
+        moved: list[dict[str, Any]] = []
+        remaining: list[dict[str, Any]] = []
+        for record in records:
+            message_id = self._optional_message_id(record)
+            if message_id is not None and message_id in move_ids:
+                moved.append(self._rewrite_record_paths(record, old_base=source_dir, new_base=destination_dir))
+            else:
+                remaining.append(record)
+        if not moved:
+            return []
+
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        self._write_jsonl(source_path, remaining)
+        self._merge_message_records(destination_dir / "messages.jsonl", moved)
+        self._move_pending_ids(source_dir, destination_dir, [int(record["message_id"]) for record in moved])
+        self._move_upload_dirs(source_dir, destination_dir, [int(record["message_id"]) for record in moved])
+        self._save_destination_metadata(destination_dir, destination_key, move, preserve_existing_thread=True)
+        return [int(record["message_id"]) for record in moved]
+
+    def _merge_directory(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        old_base: Path,
+        new_base: Path,
+        merge_memory: bool = False,
+    ) -> None:
+        destination.mkdir(parents=True, exist_ok=True)
+        for child in sorted(source.iterdir()):
+            target = destination / child.name
+            if not target.exists():
+                was_dir = child.is_dir()
+                child.rename(target)
+                if was_dir or child.name == "messages.jsonl":
+                    self._rewrite_message_paths(destination, old_base=old_base, new_base=new_base)
+                continue
+            if child.is_dir() and target.is_dir():
+                self._merge_directory(child, target, old_base=old_base, new_base=new_base, merge_memory=merge_memory)
+                continue
+            if child.is_file() and target.is_file():
+                self._merge_file(child, target, old_base=old_base, new_base=new_base, merge_memory=merge_memory)
+        self._remove_empty_dir(source)
+
+    def _merge_file(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        old_base: Path,
+        new_base: Path,
+        merge_memory: bool,
+    ) -> None:
+        if source.name == "messages.jsonl":
+            records = [
+                self._rewrite_record_paths(record, old_base=old_base, new_base=new_base)
+                for record in self._read_jsonl(source)
+            ]
+            self._merge_message_records(destination, records)
+            source.unlink()
+            return
+        if source.name == "pending.json":
+            self._write_pending_ids(destination, self._merge_pending_values(destination, source))
+            source.unlink()
+            return
+        if source.name == "turns.jsonl":
+            existing = destination.read_text(encoding="utf-8") if destination.exists() else ""
+            extra = source.read_text(encoding="utf-8")
+            self._write_text_atomic(destination, existing + extra)
+            source.unlink()
+            return
+        if source.name == "MEMORY.md" and merge_memory:
+            self._write_memory_entries(destination, self._merge_memory_entries(destination, source))
+            source.unlink()
+            return
+        if source.read_bytes() == destination.read_bytes():
+            source.unlink()
+            return
+        if source.name == "AGENTS.md":
+            archive = destination.with_name(f"AGENTS.merged-{source.parent.name}.md")
+            if not archive.exists():
+                source.rename(archive)
+
+    def _save_destination_metadata(
+        self,
+        destination_dir: Path,
+        destination_key: SessionKey,
+        move: NormalizedMessageMove,
+        *,
+        preserve_existing_thread: bool,
+    ) -> None:
+        path = destination_dir / "session.json"
+        existing = self._read_json(path)
+        if existing is None:
+            existing = {}
+        elif not preserve_existing_thread:
+            existing.pop("codex_thread_id", None)
+            existing.pop("codex_instruction_mode", None)
+
+        metadata = SessionMetadata.from_record(existing, destination_key)
+        metadata.realm_id = destination_key.realm_id
+        metadata.conversation_type = "stream"
+        metadata.stream_id = destination_key.stream_id
+        metadata.stream = move.stream_name if move.new_stream_id == move.stream_id else (metadata.stream or "unknown")
+        metadata.stream_slug = destination_key.stream_slug or safe_slug(metadata.stream)
+        metadata.topic = move.subject
+        metadata.topic_hash = destination_key.topic_hash
+        metadata.topic_slug = destination_key.topic_slug or safe_slug(move.subject)
+        self.save_metadata(metadata)
+
+    def _merge_message_records(self, path: Path, records: list[dict[str, Any]]) -> None:
+        merged: dict[int, dict[str, Any]] = {}
+        without_id: list[dict[str, Any]] = []
+        for record in [*self._read_jsonl(path), *records]:
+            message_id = self._optional_message_id(record)
+            if message_id is None:
+                without_id.append(record)
+            else:
+                merged[message_id] = record
+        self._write_jsonl(path, [*without_id, *[merged[key] for key in sorted(merged)]])
+
+    def _rewrite_message_paths(self, directory: Path, *, old_base: Path, new_base: Path) -> None:
+        for path in sorted(directory.glob("**/messages.jsonl")):
+            records = self._read_jsonl(path)
+            if records:
+                self._write_jsonl(
+                    path,
+                    [self._rewrite_record_paths(record, old_base=old_base, new_base=new_base) for record in records],
+                )
+
+    def _rewrite_record_paths(self, record: dict[str, Any], *, old_base: Path, new_base: Path) -> dict[str, Any]:
+        rewritten = dict(record)
+        old_rel = old_base.relative_to(self.workspace_dir).as_posix()
+        new_rel = new_base.relative_to(self.workspace_dir).as_posix()
+        if isinstance(rewritten.get("content"), str):
+            rewritten["content"] = rewritten["content"].replace(old_rel, new_rel)
+        uploads: list[dict[str, Any]] = []
+        changed_uploads = False
+        for item in rewritten.get("uploads") or []:
+            if not isinstance(item, dict):
+                continue
+            upload = dict(item)
+            if isinstance(upload.get("local_path"), str):
+                upload["local_path"] = upload["local_path"].replace(old_rel, new_rel)
+                changed_uploads = True
+            uploads.append(upload)
+        if uploads and changed_uploads:
+            rewritten["uploads"] = uploads
+        return rewritten
+
+    def _move_pending_ids(self, source_dir: Path, destination_dir: Path, message_ids: list[int]) -> None:
+        source_path = source_dir / "pending.json"
+        destination_path = destination_dir / "pending.json"
+        source_ids = self._read_pending_ids(source_path)
+        moved = [message_id for message_id in source_ids if message_id in message_ids]
+        if not moved:
+            return
+        remaining = [message_id for message_id in source_ids if message_id not in message_ids]
+        self._write_pending_ids(source_path, remaining)
+        destination_ids = self._read_pending_ids(destination_path)
+        self._write_pending_ids(destination_path, [*destination_ids, *[item for item in moved if item not in destination_ids]])
+
+    def _move_upload_dirs(self, source_dir: Path, destination_dir: Path, message_ids: list[int]) -> None:
+        source_uploads = source_dir / "uploads"
+        if not source_uploads.exists():
+            return
+        destination_uploads = destination_dir / "uploads"
+        destination_uploads.mkdir(parents=True, exist_ok=True)
+        for message_id in message_ids:
+            source = source_uploads / str(message_id)
+            destination = destination_uploads / str(message_id)
+            if not source.exists():
+                continue
+            if destination.exists():
+                self._merge_directory(source, destination, old_base=source_dir, new_base=destination_dir)
+            else:
+                source.rename(destination)
+        self._remove_empty_dir(source_uploads)
+
+    def _merge_pending_values(self, destination: Path, source: Path) -> list[int]:
+        merged: list[int] = []
+        for message_id in [*self._read_pending_ids(destination), *self._read_pending_ids(source)]:
+            if message_id not in merged:
+                merged.append(message_id)
+        return merged
+
+    def _write_pending_ids(self, path: Path, message_ids: list[int]) -> None:
+        if message_ids:
+            self._write_json(path, {"message_ids": message_ids})
+        elif path.exists():
+            path.unlink()
+
+    def _merge_memory_entries(self, destination: Path, source: Path) -> list[str]:
+        entries: list[str] = []
+        seen: set[str] = set()
+        for path in [destination, source]:
+            for entry in self._read_memory_entries(path):
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                entries.append(entry)
+        return entries
+
+    def _read_memory_entries(self, path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return []
+        return [entry.strip() for entry in text.split(ENTRY_DELIMITER) if entry.strip()]
+
+    def _write_memory_entries(self, path: Path, entries: list[str]) -> None:
+        text = ENTRY_DELIMITER.join(entry.strip() for entry in entries if entry.strip())
+        self._write_text_atomic(path, text + ("\n" if text else ""))
+
+    def _read_json(self, path: Path) -> dict[str, Any] | None:
+        if not path.exists():
+            return None
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        return record if isinstance(record, dict) else None
+
+    def _remove_empty_dir(self, path: Path) -> None:
+        while path.exists() and path != self.records_dir and path != self.memory_dir:
+            try:
+                path.rmdir()
+            except OSError:
+                return
+            path = path.parent
 
     def _load_messages(self, key: SessionKey, metadata: SessionMetadata) -> list[NormalizedMessage]:
         return [self._message_from_record(record, metadata) for record in self._read_jsonl(self.session_path(key, "messages.jsonl"))]
@@ -486,12 +899,18 @@ class WorkspaceStorage:
     def _write_jsonl(self, path: Path, records: list[dict[str, Any]]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         text = "".join(json.dumps(record, ensure_ascii=False, sort_keys=False) + "\n" for record in records)
-        path.write_text(text, encoding="utf-8")
+        self._write_text_atomic(path, text)
 
     def _write_json(self, path: Path, record: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(path)
+
+    def _write_text_atomic(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
 
     def _error_path(self) -> Path:
