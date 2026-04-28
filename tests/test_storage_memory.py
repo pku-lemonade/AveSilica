@@ -3,8 +3,15 @@ from __future__ import annotations
 import json
 
 from token_zulip.memory import MemoryStore
-from token_zulip.models import AgentDecision, MemoryOperation, NormalizedMessage, SessionKey, safe_slug
-from token_zulip.storage import WorkspaceStorage
+from token_zulip.models import (
+    AgentDecision,
+    MemoryOperation,
+    NormalizedMessage,
+    NormalizedReaction,
+    SessionKey,
+    safe_slug,
+)
+from token_zulip.storage import REACTION_EVENTS_CAP, WorkspaceStorage
 from token_zulip.workspace import initialize_workspace
 
 
@@ -21,6 +28,29 @@ def _message(message_id: int = 1) -> NormalizedMessage:
         sender_full_name="Alice",
         sender_id=1,
         content=f"message {message_id}",
+        timestamp=None,
+        received_at="now",
+        raw={},
+    )
+
+
+def _reaction(
+    message_id: int = 1,
+    *,
+    op: str = "add",
+    emoji_name: str = "100",
+    user_id: int = 2,
+) -> NormalizedReaction:
+    return NormalizedReaction(
+        realm_id="realm",
+        message_id=message_id,
+        op=op,
+        emoji_name=emoji_name,
+        emoji_code="1f4af",
+        reaction_type="unicode_emoji",
+        user_id=user_id,
+        user_email=f"user{user_id}@example.com",
+        user_full_name=f"User {user_id}",
         timestamp=None,
         received_at="now",
         raw={},
@@ -82,6 +112,57 @@ def test_read_recent_messages_excludes_current_message_ids(tmp_path):
     storage.append_message(second)
 
     assert [record["message_id"] for record in storage.read_recent_messages(key, 10, exclude_message_ids={2})] == [1]
+
+
+def test_apply_reaction_updates_target_message_record(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    message = _message(1)
+    storage.append_message(message)
+
+    key = storage.apply_reaction(_reaction(1))
+
+    assert key == message.session_key
+    record = storage.read_recent_messages(message.session_key, 1)[0]
+    assert record["reactions"][0]["emoji_name"] == "100"
+    assert record["reactions"][0]["user_full_name"] == "User 2"
+    assert record["reaction_events"][0]["op"] == "add"
+
+
+def test_apply_reaction_remove_clears_active_reaction_and_keeps_audit(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    message = _message(1)
+    storage.append_message(message)
+
+    storage.apply_reaction(_reaction(1, op="add"))
+    storage.apply_reaction(_reaction(1, op="remove"))
+
+    record = storage.read_recent_messages(message.session_key, 1)[0]
+    assert "reactions" not in record
+    assert [event["op"] for event in record["reaction_events"]] == ["add", "remove"]
+
+
+def test_apply_reaction_caps_audit_events(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    message = _message(1)
+    storage.append_message(message)
+
+    for index in range(REACTION_EVENTS_CAP + 5):
+        storage.apply_reaction(_reaction(1, emoji_name=f"emoji-{index}", user_id=index + 10))
+
+    record = storage.read_recent_messages(message.session_key, 1)[0]
+    assert len(record["reaction_events"]) == REACTION_EVENTS_CAP
+    assert record["reaction_events"][0]["emoji_name"] == "emoji-5"
+    assert record["reaction_events"][-1]["emoji_name"] == f"emoji-{REACTION_EVENTS_CAP + 4}"
+
+
+def test_apply_reaction_unknown_message_returns_none(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+
+    assert storage.apply_reaction(_reaction(404)) is None
 
 
 def test_memory_ops_add_replace_remove_and_render_by_scope(tmp_path):

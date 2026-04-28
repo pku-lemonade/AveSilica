@@ -10,12 +10,12 @@ from .codex_adapter import CodexAdapter
 from .config import BotConfig
 from .instructions import InstructionLoader
 from .memory import MemoryStore
-from .models import AgentDecision, NormalizedMessage, SessionKey
+from .models import AgentDecision, NormalizedMessage, NormalizedReaction, SessionKey
 from .prompt import PromptBuilder, PromptParts
 from .storage import WorkspaceStorage
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
-from .zulip_io import normalize_zulip_event
+from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_REPLY_FALLBACK = "I saw this, but couldn't produce a useful reply. Please try again."
@@ -67,6 +67,18 @@ class AgentLoop:
         self._active_guard = asyncio.Lock()
 
     async def enqueue_event(self, event: dict[str, Any]) -> EnqueueResult:
+        reaction = normalize_zulip_reaction_event(event, self.config.realm_id)
+        if reaction is not None:
+            if self._reaction_from_bot(reaction):
+                self.storage.log_ignored_event(event, "ignored bot-authored reaction")
+                return EnqueueResult(False, "ignored bot-authored reaction", message_id=reaction.message_id)
+
+            key = self.storage.apply_reaction(reaction)
+            if key is None:
+                self.storage.log_ignored_event(event, "ignored reaction for unknown message")
+                return EnqueueResult(False, "ignored reaction for unknown message", message_id=reaction.message_id)
+            return EnqueueResult(True, "recorded reaction", key.value, reaction.message_id)
+
         message = normalize_zulip_event(
             event,
             self.config.realm_id,
@@ -74,8 +86,13 @@ class AgentLoop:
             bot_aliases=self.config.bot_aliases,
         )
         if message is None:
-            self.storage.log_ignored_event(event, "ignored unsupported message")
-            return EnqueueResult(False, "ignored unsupported message")
+            reason = (
+                "ignored unsupported reaction"
+                if event.get("type") == "reaction"
+                else "ignored unsupported message"
+            )
+            self.storage.log_ignored_event(event, reason)
+            return EnqueueResult(False, reason)
 
         if self.config.bot_email and message.sender_email.casefold() == self.config.bot_email.casefold():
             self.storage.log_ignored_event(event, "ignored bot-authored message", message.session_key)
@@ -84,6 +101,13 @@ class AgentLoop:
         self.storage.append_message(message)
         await self.queue.put(message)
         return EnqueueResult(True, "accepted", message.session_key.value, message.message_id)
+
+    def _reaction_from_bot(self, reaction: NormalizedReaction) -> bool:
+        if self.config.bot_user_id is not None and reaction.user_id == self.config.bot_user_id:
+            return True
+        if self.config.bot_email and reaction.user_email.casefold() == self.config.bot_email.casefold():
+            return True
+        return False
 
     async def run_workers(self) -> None:
         workers = [

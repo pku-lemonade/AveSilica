@@ -126,6 +126,8 @@ class NormalizedMessage:
     reply_required: bool = False
     directly_addressed: bool = False
     uploads: list[dict[str, Any]] = field(default_factory=list)
+    reactions: list[dict[str, Any]] = field(default_factory=list)
+    reaction_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def session_key(self) -> SessionKey:
@@ -153,7 +155,65 @@ class NormalizedMessage:
         }
         if self.uploads:
             record["uploads"] = self.uploads
+        if self.reactions:
+            record["reactions"] = self.reactions
+        if self.reaction_events:
+            record["reaction_events"] = self.reaction_events
         return record
+
+
+@dataclass(frozen=True)
+class NormalizedReaction:
+    realm_id: str
+    message_id: int
+    op: str
+    emoji_name: str
+    emoji_code: str
+    reaction_type: str
+    user_id: int | None
+    user_email: str
+    user_full_name: str
+    timestamp: int | None
+    received_at: str
+    raw: dict[str, Any]
+
+    @property
+    def user_key(self) -> str:
+        if self.user_id is not None:
+            return str(self.user_id)
+        email = self.user_email.strip().casefold()
+        return email or "unknown"
+
+    @property
+    def active_key(self) -> tuple[str, str]:
+        return (self.user_key, self.emoji_name)
+
+    def to_active_record(self) -> dict[str, Any]:
+        return {
+            "user_key": self.user_key,
+            "user_id": self.user_id,
+            "user_email": self.user_email,
+            "user_full_name": self.user_full_name,
+            "emoji_name": self.emoji_name,
+            "emoji_code": self.emoji_code,
+            "reaction_type": self.reaction_type,
+            "received_at": self.received_at,
+        }
+
+    def to_event_record(self) -> dict[str, Any]:
+        return {
+            "op": self.op,
+            "message_id": self.message_id,
+            "user_key": self.user_key,
+            "user_id": self.user_id,
+            "user_email": self.user_email,
+            "user_full_name": self.user_full_name,
+            "emoji_name": self.emoji_name,
+            "emoji_code": self.emoji_code,
+            "reaction_type": self.reaction_type,
+            "timestamp": self.timestamp,
+            "received_at": self.received_at,
+        }
 
 
 @dataclass(frozen=True)

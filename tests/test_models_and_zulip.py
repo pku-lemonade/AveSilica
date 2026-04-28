@@ -7,7 +7,12 @@ from pathlib import Path
 from token_zulip.addressing import alias_is_directly_addressed
 from token_zulip.models import AgentDecision, NormalizedMessage, normalized_topic_hash
 from token_zulip.workspace import DECISION_SCHEMA_FILE
-from token_zulip.zulip_io import ZulipClientIO, ZulipTypingNotifier, normalize_zulip_event
+from token_zulip.zulip_io import (
+    ZulipClientIO,
+    ZulipTypingNotifier,
+    normalize_zulip_event,
+    normalize_zulip_reaction_event,
+)
 
 
 TEMPLATE_ROOT = Path(__file__).resolve().parents[1] / "workspace"
@@ -98,6 +103,47 @@ def test_normalize_zulip_stream_event_preserves_markdown_autolinks_without_conte
 
     assert message is not None
     assert message.content == "see <https://example.com>"
+
+
+def test_normalize_zulip_reaction_event_from_flat_user_fields():
+    event = {
+        "type": "reaction",
+        "op": "add",
+        "message_id": 42,
+        "emoji_name": "100",
+        "emoji_code": "1f4af",
+        "reaction_type": "unicode_emoji",
+        "user_id": 3,
+        "user_email": "bob@example.com",
+        "user_full_name": "Bob",
+        "timestamp": 1710000002,
+    }
+
+    reaction = normalize_zulip_reaction_event(event, "realm")
+
+    assert reaction is not None
+    assert reaction.realm_id == "realm"
+    assert reaction.message_id == 42
+    assert reaction.op == "add"
+    assert reaction.active_key == ("3", "100")
+    assert reaction.user_email == "bob@example.com"
+
+
+def test_normalize_zulip_reaction_event_accepts_nested_user_for_removes():
+    event = {
+        "type": "reaction",
+        "op": "remove",
+        "message_id": 42,
+        "emoji_name": "laughing",
+        "user": {"id": 4, "email": "chen@example.com", "full_name": "Chen"},
+    }
+
+    reaction = normalize_zulip_reaction_event(event, "realm")
+
+    assert reaction is not None
+    assert reaction.op == "remove"
+    assert reaction.user_id == 4
+    assert reaction.user_full_name == "Chen"
 
 
 def test_normalize_zulip_private_event_uses_sender_session_and_requires_reply():
@@ -370,7 +416,7 @@ def test_zulip_listener_can_request_all_public_stream_events():
     assert client.calls == [
         {
             "callback": callback,
-            "event_types": ["message"],
+            "event_types": ["message", "reaction"],
             "all_public_streams": True,
             "apply_markdown": False,
         }

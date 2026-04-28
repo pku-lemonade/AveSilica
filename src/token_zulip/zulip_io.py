@@ -13,7 +13,14 @@ from typing import Any, Callable, Sequence
 
 from .addressing import is_directly_addressed
 from .config import BotConfig
-from .models import NormalizedMessage, normalized_topic_hash, private_user_key, safe_slug, utc_now_iso
+from .models import (
+    NormalizedMessage,
+    NormalizedReaction,
+    normalized_topic_hash,
+    private_user_key,
+    safe_slug,
+    utc_now_iso,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +80,47 @@ def normalize_zulip_event(
     if message_type == "private":
         return _normalize_private_message(event, message, realm_id)
     return None
+
+
+def normalize_zulip_reaction_event(
+    event: dict[str, Any],
+    realm_id: str,
+) -> NormalizedReaction | None:
+    if event.get("type") != "reaction":
+        return None
+
+    op = str(event.get("op") or "")
+    if op not in {"add", "remove"}:
+        return None
+
+    message_id = _optional_int(event.get("message_id"))
+    if message_id is None:
+        return None
+
+    emoji_name = str(event.get("emoji_name") or "")
+    if not emoji_name:
+        return None
+
+    user = event.get("user") if isinstance(event.get("user"), dict) else {}
+    user_id = _optional_int(event.get("user_id") or user.get("id"))
+    user_email = str(event.get("user_email") or user.get("email") or "")
+    user_full_name = str(event.get("user_full_name") or user.get("full_name") or "")
+    resolved_realm_id = str(event.get("realm_id") or realm_id or "unknown")
+
+    return NormalizedReaction(
+        realm_id=resolved_realm_id,
+        message_id=message_id,
+        op=op,
+        emoji_name=emoji_name,
+        emoji_code=str(event.get("emoji_code") or ""),
+        reaction_type=str(event.get("reaction_type") or ""),
+        user_id=user_id,
+        user_email=user_email,
+        user_full_name=user_full_name,
+        timestamp=_optional_int(event.get("timestamp")),
+        received_at=utc_now_iso(),
+        raw=event,
+    )
 
 
 def _normalize_stream_message(
@@ -341,7 +389,7 @@ class ZulipClientIO:
     def listen(self, callback: Callable[[dict[str, Any]], None], *, all_public_streams: bool = False) -> None:
         self.client.call_on_each_event(
             callback,
-            event_types=["message"],
+            event_types=["message", "reaction"],
             all_public_streams=all_public_streams,
             apply_markdown=False,
         )

@@ -9,11 +9,15 @@ from typing import Any
 from .models import (
     AgentDecision,
     NormalizedMessage,
+    NormalizedReaction,
     SessionKey,
     safe_slug,
     scoped_conversation_dir,
     utc_now_iso,
 )
+
+
+REACTION_EVENTS_CAP = 20
 
 
 @dataclass
@@ -134,9 +138,9 @@ class WorkspaceStorage:
             "kind": "ignored_event",
             "reason": reason,
             "session_id": key.storage_id if key else None,
-            "message_id": message.get("id") if isinstance(message, dict) else None,
+            "message_id": message.get("id") if isinstance(message, dict) else event.get("message_id"),
             "message_type": message.get("type") if isinstance(message, dict) else None,
-            "sender_email": message.get("sender_email") if isinstance(message, dict) else None,
+            "sender_email": message.get("sender_email") if isinstance(message, dict) else event.get("user_email"),
         }
         self._append_jsonl(self._error_path(), record)
 
@@ -153,10 +157,44 @@ class WorkspaceStorage:
         records = self._read_jsonl(path)
         for index, record in enumerate(records):
             if self._optional_message_id(record) == message.message_id:
-                records[index] = message.to_record()
+                updated = message.to_record()
+                for field_name in ["reactions", "reaction_events"]:
+                    if field_name not in updated and field_name in record:
+                        updated[field_name] = record[field_name]
+                records[index] = updated
                 self._write_jsonl(path, records)
                 return
         self._append_jsonl(path, message.to_record())
+
+    def apply_reaction(self, reaction: NormalizedReaction) -> SessionKey | None:
+        found = self._find_message_record(reaction.message_id)
+        if found is None:
+            return None
+
+        path, records, index, key = found
+        record = records[index]
+        active = {
+            self._reaction_record_key(item): item
+            for item in record.get("reactions") or []
+            if isinstance(item, dict)
+        }
+        if reaction.op == "add":
+            active[reaction.active_key] = reaction.to_active_record()
+        else:
+            active.pop(reaction.active_key, None)
+
+        active_records = sorted(active.values(), key=self._reaction_sort_key)
+        if active_records:
+            record["reactions"] = active_records
+        else:
+            record.pop("reactions", None)
+
+        events = [item for item in record.get("reaction_events") or [] if isinstance(item, dict)]
+        events.append(reaction.to_event_record())
+        record["reaction_events"] = events[-REACTION_EVENTS_CAP:]
+        records[index] = record
+        self._write_jsonl(path, records)
+        return key
 
     def read_recent_messages(
         self,
@@ -334,7 +372,66 @@ class WorkspaceStorage:
             reply_required=bool(record.get("reply_required") or metadata.conversation_type == "private"),
             directly_addressed=bool(record.get("directly_addressed")),
             uploads=list(record.get("uploads") or []),
+            reactions=[item for item in record.get("reactions", []) if isinstance(item, dict)],
+            reaction_events=[item for item in record.get("reaction_events", []) if isinstance(item, dict)],
         )
+
+    def _find_message_record(
+        self,
+        message_id: int,
+    ) -> tuple[Path, list[dict[str, Any]], int, SessionKey] | None:
+        for path in sorted(self.records_dir.glob("**/messages.jsonl")):
+            records = self._read_jsonl(path)
+            for index, record in enumerate(records):
+                if self._optional_message_id(record) != message_id:
+                    continue
+                key = self._key_from_session_file(path.parent / "session.json")
+                if key is None:
+                    return None
+                return path, records, index, key
+        return None
+
+    def _key_from_session_file(self, path: Path) -> SessionKey | None:
+        if not path.exists():
+            return None
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(record, dict):
+            return None
+
+        realm_id = str(record.get("realm_id") or "")
+        topic_hash = str(record.get("topic_hash") or "")
+        if not realm_id or not topic_hash:
+            return None
+        conversation_type = str(record.get("conversation_type") or "stream")
+        return SessionKey(
+            realm_id=realm_id,
+            stream_id=_optional_int(record.get("stream_id")),
+            topic_hash=topic_hash,
+            conversation_type=conversation_type,
+            private_user_key=(
+                str(record["private_user_key"]) if record.get("private_user_key") is not None else None
+            ),
+            stream_slug=str(record.get("stream_slug") or "") or None,
+            topic_slug=str(record.get("topic_slug") or "") or None,
+        )
+
+    def _reaction_record_key(self, record: dict[str, Any]) -> tuple[str, str]:
+        user_key = str(record.get("user_key") or "").strip()
+        if not user_key:
+            user_id = _optional_int(record.get("user_id"))
+            user_key = (
+                str(user_id)
+                if user_id is not None
+                else str(record.get("user_email") or "").strip().casefold()
+            )
+        return (user_key or "unknown", str(record.get("emoji_name") or ""))
+
+    def _reaction_sort_key(self, record: dict[str, Any]) -> tuple[str, str]:
+        user = str(record.get("user_full_name") or record.get("user_email") or record.get("user_key") or "")
+        return (str(record.get("emoji_name") or ""), user.casefold())
 
     def _message_ids(self, path: Path) -> set[int]:
         ids: set[int] = set()

@@ -83,6 +83,28 @@ def _private_message(message_id: int, sender_id: int = 1, sender_email: str = "a
     )
 
 
+def _reaction_event(
+    message_id: int,
+    *,
+    op: str = "add",
+    emoji_name: str = "100",
+    user_id: int = 2,
+    user_email: str | None = None,
+    user_full_name: str = "Bob",
+) -> dict[str, object]:
+    return {
+        "type": "reaction",
+        "op": op,
+        "message_id": message_id,
+        "emoji_name": emoji_name,
+        "emoji_code": "1f4af",
+        "reaction_type": "unicode_emoji",
+        "user_id": user_id,
+        "user_email": user_email or f"user{user_id}@example.com",
+        "user_full_name": user_full_name,
+    }
+
+
 class BlockingCodex:
     def __init__(self) -> None:
         self.calls = 0
@@ -672,6 +694,142 @@ def test_bot_authored_events_are_ignored_without_raw_event_storage(tmp_path):
         assert "ignored bot-authored message" in next((tmp_path / "records" / "errors").glob("*.jsonl")).read_text(
             encoding="utf-8"
         )
+
+    asyncio.run(scenario())
+
+
+def test_reaction_event_updates_message_without_codex_turn(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        storage.append_message(_message(1, "looks good"))
+        typing = FakeTypingNotifier()
+        codex = PromptCapturingCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+            typing=_typing(typing),
+        )
+
+        result = await bot.enqueue_event(_reaction_event(1))
+        await bot.drain_once()
+
+        assert result.accepted is True
+        assert result.reason == "recorded reaction"
+        assert bot.queue.empty()
+        assert codex.prompts == []
+        assert typing.events == []
+        assert poster.posts == []
+        record = storage.read_recent_messages(_message(1).session_key, 1)[0]
+        assert record["reactions"][0]["emoji_name"] == "100"
+        assert record["reaction_events"][0]["op"] == "add"
+
+    asyncio.run(scenario())
+
+
+def test_reaction_remove_deletes_active_reaction_without_queueing(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        storage.append_message(_message(1, "looks good"))
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PromptCapturingCodex(),
+            zulip=FakePoster(),
+        )
+
+        await bot.enqueue_event(_reaction_event(1, op="add"))
+        result = await bot.enqueue_event(_reaction_event(1, op="remove"))
+
+        assert result.accepted is True
+        assert bot.queue.empty()
+        record = storage.read_recent_messages(_message(1).session_key, 1)[0]
+        assert "reactions" not in record
+        assert [event["op"] for event in record["reaction_events"]] == ["add", "remove"]
+
+    asyncio.run(scenario())
+
+
+def test_unknown_reaction_event_is_ignored_without_queueing(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PromptCapturingCodex(),
+            zulip=FakePoster(),
+        )
+
+        result = await bot.enqueue_event(_reaction_event(404))
+
+        assert result.accepted is False
+        assert result.reason == "ignored reaction for unknown message"
+        assert result.message_id == 404
+        assert bot.queue.empty()
+        error_text = next((tmp_path / "records" / "errors").glob("*.jsonl")).read_text(encoding="utf-8")
+        assert "ignored reaction for unknown message" in error_text
+
+    asyncio.run(scenario())
+
+
+def test_bot_authored_reaction_event_is_ignored(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        storage.append_message(_message(1, "looks good"))
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PromptCapturingCodex(),
+            zulip=FakePoster(),
+        )
+
+        result = await bot.enqueue_event(
+            _reaction_event(1, user_id=99, user_email="bot@example.com", user_full_name="Bot")
+        )
+
+        assert result.accepted is False
+        assert result.reason == "ignored bot-authored reaction"
+        assert bot.queue.empty()
+        assert "reactions" not in storage.read_recent_messages(_message(1).session_key, 1)[0]
+
+    asyncio.run(scenario())
+
+
+def test_active_reaction_context_is_rendered_on_next_normal_message(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        previous = _message(1, "previous context")
+        current = _message(2, "current request")
+        storage.append_message(previous)
+        codex = PromptCapturingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot.enqueue_event(_reaction_event(1, user_full_name="Bob"))
+        await bot._handle_message(current)
+
+        assert "previous context Reactions: Bob 100" in codex.prompt
+        assert "current request" in codex.prompt
 
     asyncio.run(scenario())
 

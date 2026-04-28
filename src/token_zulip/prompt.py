@@ -47,11 +47,32 @@ class PromptBuilder:
         sender = record.get("sender_full_name") or record.get("sender_email") or "unknown"
         message_id = record.get("message_id") or "?"
         content = str(record.get("content") or "").strip()
-        return f"- [{message_id}] {sender}: {content}"
+        return self._with_reactions(f"- [{message_id}] {sender}: {content}", record.get("reactions"))
 
     def _format_message(self, message: NormalizedMessage) -> str:
         sender = message.sender_full_name or message.sender_email or "unknown"
-        return f"- [{message.message_id}] {sender}: {message.content.strip()}"
+        return self._with_reactions(f"- [{message.message_id}] {sender}: {message.content.strip()}", message.reactions)
+
+    def _with_reactions(self, line: str, reactions: object) -> str:
+        reaction_text = self._format_reactions(reactions)
+        if not reaction_text:
+            return line
+        return f"{line} Reactions: {reaction_text}"
+
+    def _format_reactions(self, reactions: object) -> str:
+        if not isinstance(reactions, list):
+            return ""
+        parts: list[str] = []
+        for item in reactions:
+            if not isinstance(item, dict):
+                continue
+            user = str(
+                item.get("user_full_name") or item.get("user_email") or item.get("user_key") or "unknown"
+            ).strip()
+            emoji = str(item.get("emoji_name") or item.get("emoji_code") or "reaction").strip()
+            if emoji:
+                parts.append(f"{user} {emoji}")
+        return ", ".join(parts)
 
     def _template_text(self) -> str:
         path = self.root / TURN_PROMPT_FILE
