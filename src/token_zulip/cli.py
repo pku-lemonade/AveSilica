@@ -16,7 +16,7 @@ from .memory import MemoryStore
 from .prompt import PromptBuilder, PromptParts
 from .storage import WorkspaceStorage
 from .typing_status import NoOpTypingNotifier, TypingStatusManager
-from .workspace import initialize_workspace
+from .workspace import DECISION_SCHEMA_FILE, initialize_workspace
 from .zulip_io import ZulipClientIO, ZulipTypingNotifier, normalize_zulip_event
 
 
@@ -99,6 +99,7 @@ async def _run(args: argparse.Namespace) -> int:
             reasoning_effort=config.codex_reasoning_effort,
             sandbox=config.codex_sandbox,
             approval_policy=config.codex_approval_policy,
+            output_schema_path=config.workspace_dir / DECISION_SCHEMA_FILE,
         ),
         zulip=zulip,
         typing=TypingStatusManager(
@@ -148,7 +149,7 @@ def _render_prompt(args: argparse.Namespace) -> int:
     if message is None:
         raise SystemExit("Event file does not contain a supported message event.")
 
-    prompt = PromptBuilder().build(
+    prompt = PromptBuilder(config.workspace_dir).build(
         PromptParts(
             recent_context=[],
             current_messages=[message],

@@ -6,6 +6,7 @@ import types
 from dataclasses import dataclass
 
 from token_zulip.codex_adapter import CodexSdkAdapter
+from token_zulip.workspace import initialize_workspace
 
 
 def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
@@ -59,6 +60,7 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
     )
     monkeypatch.setitem(sys.modules, "codex_app_server", fake_sdk)
     monkeypatch.setattr("token_zulip.codex_adapter.shutil.which", lambda name: "/usr/local/bin/codex")
+    initialize_workspace(tmp_path)
 
     adapter = CodexSdkAdapter(
         model="gpt-test",

@@ -17,7 +17,8 @@ def test_instruction_layers_are_ordered(tmp_path):
 
     text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, topic="Launch Plan", stream_id=10)
 
-    assert "hardcoded safety contract" in text
+    assert "## Source: references/runtime-contract.md" in text
+    assert text.index("## Source: references/runtime-contract.md") < text.index("## Source: AGENTS.md")
     assert text.index("## Source: AGENTS.md") < text.index("## Source: references/participation.md")
     assert text.index("## Source: references/participation.md") < text.index("## Source: references/memory-policy.md")
     assert text.index("## Source: references/memory-policy.md") < text.index("## Source: memory/AGENTS.md")

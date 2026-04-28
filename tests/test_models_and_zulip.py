@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 from token_zulip.addressing import alias_is_directly_addressed
-from token_zulip.models import AgentDecision, DECISION_JSON_SCHEMA, NormalizedMessage, normalized_topic_hash
+from token_zulip.models import AgentDecision, NormalizedMessage, normalized_topic_hash
+from token_zulip.workspace import DECISION_SCHEMA_FILE
 from token_zulip.zulip_io import ZulipClientIO, ZulipTypingNotifier, normalize_zulip_event
+
+
+TEMPLATE_ROOT = Path(__file__).resolve().parents[1] / "workspace"
 
 
 def _assert_required_matches_properties(schema: object, path: str = "$") -> None:
@@ -21,7 +26,8 @@ def _assert_required_matches_properties(schema: object, path: str = "$") -> None
 
 
 def test_decision_json_schema_requires_all_declared_object_properties():
-    _assert_required_matches_properties(DECISION_JSON_SCHEMA)
+    schema = json.loads((TEMPLATE_ROOT / DECISION_SCHEMA_FILE).read_text(encoding="utf-8"))
+    _assert_required_matches_properties(schema)
 
 
 def test_normalize_zulip_stream_event_strips_html_and_hashes_topic():

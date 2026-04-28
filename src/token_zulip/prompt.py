@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from string import Template
 
 from .models import NormalizedMessage
+from .workspace import TURN_PROMPT_FILE
 
 
 @dataclass(frozen=True)
@@ -12,23 +15,20 @@ class PromptParts:
 
 
 class PromptBuilder:
+    def __init__(self, root: Path) -> None:
+        self.root = root.expanduser().resolve()
+
     def build(self, parts: PromptParts) -> str:
         recent = "\n".join(self._format_record(record) for record in parts.recent_context)
         current = "\n".join(self._format_message(message) for message in parts.current_messages)
-        conversation_type = self._conversation_type(parts)
-        frame = self._conversation_frame(conversation_type)
-        return f"""Zulip conversation update.
-
-{frame}
-
-# Recent Zulip Context
-
-{recent or "(no recent context)"}
-
-# New Zulip Message(s)
-
-{current}
-"""
+        template = Template(self._template_text())
+        return template.safe_substitute(
+            conversation_type=self._conversation_type(parts),
+            reply_required=self._reply_required(parts),
+            directly_addressed=self._directly_addressed(parts),
+            recent_context=recent or "(no recent context)",
+            current_messages=current,
+        ).rstrip() + "\n"
 
     def _conversation_type(self, parts: PromptParts) -> str:
         for message in parts.current_messages:
@@ -37,10 +37,11 @@ class PromptBuilder:
             return str(record.get("conversation_type") or "stream")
         return "stream"
 
-    def _conversation_frame(self, conversation_type: str) -> str:
-        if conversation_type == "private":
-            return "This is a one-on-one private Zulip conversation. A concise direct reply is required."
-        return "This is a public Zulip stream/topic conversation."
+    def _reply_required(self, parts: PromptParts) -> str:
+        return str(any(message.reply_required for message in parts.current_messages)).lower()
+
+    def _directly_addressed(self, parts: PromptParts) -> str:
+        return str(any(message.directly_addressed for message in parts.current_messages)).lower()
 
     def _format_record(self, record: dict[str, object]) -> str:
         sender = record.get("sender_full_name") or record.get("sender_email") or "unknown"
@@ -51,3 +52,12 @@ class PromptBuilder:
     def _format_message(self, message: NormalizedMessage) -> str:
         sender = message.sender_full_name or message.sender_email or "unknown"
         return f"- [{message.message_id}] {sender}: {message.content.strip()}"
+
+    def _template_text(self) -> str:
+        path = self.root / TURN_PROMPT_FILE
+        if not path.exists():
+            raise FileNotFoundError(f"turn prompt file missing: {path}")
+        text = path.read_text(encoding="utf-8")
+        if not text.strip():
+            raise ValueError(f"turn prompt file is empty: {path}")
+        return text

@@ -17,39 +17,6 @@ MEMORY_SCOPES = {"channel", "conversation", "global"}
 CONVERSATION_TYPES = {"stream", "private"}
 
 
-DECISION_JSON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "should_reply",
-        "reply_kind",
-        "message_to_post",
-        "memory_ops",
-        "confidence",
-    ],
-    "properties": {
-        "should_reply": {"type": "boolean"},
-        "reply_kind": {"type": "string", "enum": sorted(REPLY_KINDS)},
-        "message_to_post": {"type": "string"},
-        "memory_ops": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["op", "scope", "content", "old_text"],
-                "properties": {
-                    "op": {"type": "string", "enum": sorted(MEMORY_OPS)},
-                    "scope": {"type": "string", "enum": sorted(MEMORY_SCOPES)},
-                    "content": {"type": "string"},
-                    "old_text": {"type": "string"},
-                },
-            },
-        },
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-    },
-}
-
-
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 

@@ -12,7 +12,14 @@ WORKSPACE_DIRS: tuple[str, ...] = (
     "records/errors",
 )
 
+RUNTIME_CONTRACT_FILE = "references/runtime-contract.md"
+TURN_PROMPT_FILE = "references/turn-prompt.md"
+DECISION_SCHEMA_FILE = "references/decision-schema.json"
+
 WORKSPACE_TEMPLATE_FILES: tuple[str, ...] = (
+    RUNTIME_CONTRACT_FILE,
+    TURN_PROMPT_FILE,
+    DECISION_SCHEMA_FILE,
     "AGENTS.md",
     "references/participation.md",
     "references/memory-policy.md",

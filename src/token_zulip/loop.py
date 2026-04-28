@@ -55,7 +55,7 @@ class AgentLoop:
         self.codex = codex
         self.zulip = zulip
         self.typing = typing or TypingStatusManager(enabled=False)
-        self.prompt_builder = prompt_builder or PromptBuilder()
+        self.prompt_builder = prompt_builder or PromptBuilder(config.workspace_dir)
         self.uploads = MessageUploadProcessor(
             storage=storage,
             zulip=zulip,

@@ -124,6 +124,9 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 ## Workspace Layout
 
 - `workspace/AGENTS.md`: global identity, voice, style, and high-level behavior.
+- `workspace/references/runtime-contract.md`: non-negotiable runtime contract included in Codex developer instructions.
+- `workspace/references/turn-prompt.md`: per-turn Zulip message prompt template.
+- `workspace/references/decision-schema.json`: native Codex structured output schema.
 - `workspace/references/participation.md`: rules for when to speak, stay silent, draft plans, or ask questions.
 - `workspace/references/memory-policy.md`: memory operation and scope policy.
 - `workspace/memory/AGENTS.md`: optional global deployment/team instructions.
@@ -139,15 +142,18 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 
 ## Instruction Architecture
 
-Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing template files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/instructions.py` composes developer instructions, and `src/token_zulip/prompt.py` renders only the per-turn Zulip conversation update.
+Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing template files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/instructions.py` composes developer instructions, `src/token_zulip/prompt.py` renders the per-turn Zulip update from `workspace/references/turn-prompt.md`, and `src/token_zulip/codex_adapter.py` loads `workspace/references/decision-schema.json` for the native Codex `output_schema`.
 
-Instruction layers are loaded in this order: hardcoded safety contract, `workspace/AGENTS.md`, `workspace/references/participation.md`, `workspace/references/memory-policy.md`, optional `workspace/memory/AGENTS.md`, optional channel `AGENTS.md`, then optional topic/private `AGENTS.md` under `workspace/memory/`. Later configurable layers can specialize earlier workspace guidance, but they cannot override the hardcoded runtime contract.
+Instruction layers are loaded in this order: `workspace/references/runtime-contract.md`, `workspace/AGENTS.md`, `workspace/references/participation.md`, `workspace/references/memory-policy.md`, optional `workspace/memory/AGENTS.md`, optional channel `AGENTS.md`, then optional topic/private `AGENTS.md` under `workspace/memory/`. Later configurable layers can specialize earlier workspace guidance, but they cannot override the runtime contract.
 
 The composed instruction layers are passed to Codex as `developer_instructions` only when a new Codex thread is created. Existing marked threads are resumed without repeating those instructions, and the per-turn prompt contains only the Zulip conversation update.
 
 Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 
 - `workspace/AGENTS.md`: global identity, voice, style, and high-level behavior.
+- `workspace/references/runtime-contract.md`: orchestrator contract, structured-output expectations, and reply/memory decision semantics.
+- `workspace/references/turn-prompt.md`: the current-message prompt template.
+- `workspace/references/decision-schema.json`: schema for `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, and confidence.
 - `workspace/references/participation.md`: when to reply and which `reply_kind` to choose.
 - `workspace/references/memory-policy.md`: memory operation and scope policy.
 - `workspace/memory/AGENTS.md`: human-authored global deployment/team preferences.

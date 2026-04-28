@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .models import DECISION_JSON_SCHEMA
+from .workspace import DECISION_SCHEMA_FILE
 
 
 @dataclass(frozen=True)
@@ -35,12 +36,14 @@ class CodexSdkAdapter:
         reasoning_effort: str | None = None,
         sandbox: str | None = "read-only",
         approval_policy: str = "never",
+        output_schema_path: Path | None = None,
     ) -> None:
         self.model = model
         self.cwd = cwd.expanduser().resolve()
         self.reasoning_effort = reasoning_effort
         self.sandbox = sandbox
         self.approval_policy = approval_policy
+        self.output_schema_path = output_schema_path.expanduser().resolve() if output_schema_path else None
 
     async def run_decision(
         self,
@@ -84,10 +87,19 @@ class CodexSdkAdapter:
         return kwargs
 
     def _run_kwargs(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"output_schema": DECISION_JSON_SCHEMA}
+        kwargs: dict[str, Any] = {"output_schema": self._output_schema()}
         if self.reasoning_effort:
             kwargs["effort"] = self.reasoning_effort
         return kwargs
+
+    def _output_schema(self) -> dict[str, Any]:
+        path = self.output_schema_path or (self.cwd / DECISION_SCHEMA_FILE)
+        if not path.exists():
+            raise FileNotFoundError(f"decision schema file missing: {path}")
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(schema, dict):
+            raise ValueError(f"decision schema must be a JSON object: {path}")
+        return schema
 
     def _codex_bin(self) -> str:
         codex_bin = shutil.which("codex")
