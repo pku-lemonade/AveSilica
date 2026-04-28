@@ -148,19 +148,8 @@ def _render_prompt(args: argparse.Namespace) -> int:
     if message is None:
         raise SystemExit("Event file does not contain a supported message event.")
 
-    instructions = InstructionLoader(config.workspace_dir, config.instruction_max_bytes).compose(
-        stream=message.stream,
-        topic_hash=message.topic_hash,
-        topic=message.topic,
-        stream_id=message.stream_id,
-        conversation_type=message.conversation_type,
-        private_user_key=message.private_user_key,
-    )
-    memory = MemoryStore(config.workspace_dir / "memory").render_selected(message.session_key)
     prompt = PromptBuilder().build(
         PromptParts(
-            instructions=instructions,
-            memory=memory,
             recent_context=[],
             current_messages=[message],
         )

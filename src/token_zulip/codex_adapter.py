@@ -16,7 +16,13 @@ class CodexRunResult:
 
 
 class CodexAdapter(Protocol):
-    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
         ...
 
 
@@ -36,7 +42,13 @@ class CodexSdkAdapter:
         self.sandbox = sandbox
         self.approval_policy = approval_policy
 
-    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
         try:
             from codex_app_server import AppServerConfig, AsyncCodex  # type: ignore[import-not-found]
         except ImportError as exc:
@@ -51,6 +63,8 @@ class CodexSdkAdapter:
             if thread_id:
                 thread = await codex.thread_resume(thread_id, **thread_kwargs)
             else:
+                if developer_instructions:
+                    thread_kwargs["developer_instructions"] = developer_instructions
                 thread = await codex.thread_start(**thread_kwargs)
 
             result = await thread.run(prompt, **self._run_kwargs())

@@ -61,7 +61,7 @@ After sending a test message in a visible public channel, inspect:
 
 - `workspace/records/stream-*/topic-*/*`: stream/topic session identity, messages, pending queues, turns, and downloaded uploads.
 - `workspace/records/private-*/*`: private-chat session identity, messages, pending queues, turns, and downloaded uploads.
-- `workspace/memory/MEMORY.md`: compact global memory injected into prompts.
+- `workspace/memory/MEMORY.md`: compact global memory updated by validated memory operations.
 - `workspace/memory/stream-*/MEMORY.md`: compact channel memory.
 - `workspace/memory/stream-*/topic-*/MEMORY.md`: compact topic memory.
 
@@ -127,7 +127,7 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 - `workspace/references/participation.md`: rules for when to speak, stay silent, draft plans, or ask questions.
 - `workspace/references/memory-policy.md`: memory operation and scope policy.
 - `workspace/memory/AGENTS.md`: optional global deployment/team instructions.
-- `workspace/memory/MEMORY.md`: compact global memory injected into every prompt.
+- `workspace/memory/MEMORY.md`: compact global memory updated by validated memory operations.
 - `workspace/memory/stream-<slug>-<id>/AGENTS.md`: optional channel-specific instructions.
 - `workspace/memory/stream-<slug>-<id>/MEMORY.md`: compact channel memory.
 - `workspace/memory/stream-<slug>-<id>/topic-<slug>-<hash>/AGENTS.md`: optional topic-specific instructions.
@@ -139,9 +139,11 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 
 ## Instruction Architecture
 
-Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing template files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/prompt.py` wraps the loaded instructions with the native Codex output schema and runtime contract.
+Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing template files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/instructions.py` composes developer instructions, and `src/token_zulip/prompt.py` renders only the per-turn Zulip conversation update.
 
 Instruction layers are loaded in this order: hardcoded safety contract, `workspace/AGENTS.md`, `workspace/references/participation.md`, `workspace/references/memory-policy.md`, optional `workspace/memory/AGENTS.md`, optional channel `AGENTS.md`, then optional topic/private `AGENTS.md` under `workspace/memory/`. Later configurable layers can specialize earlier workspace guidance, but they cannot override the hardcoded runtime contract.
+
+The composed instruction layers are passed to Codex as `developer_instructions` only when a new Codex thread is created. Existing marked threads are resumed without repeating those instructions, and the per-turn prompt contains only the Zulip conversation update.
 
 Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 
@@ -150,9 +152,9 @@ Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 - `workspace/references/memory-policy.md`: memory operation and scope policy.
 - `workspace/memory/AGENTS.md`: human-authored global deployment/team preferences.
 - `workspace/memory/.../AGENTS.md`: human-authored channel/topic/private exceptions or preferences.
-- `workspace/memory/.../MEMORY.md`: compact remembered context. This is read into prompts and is the memory source of truth.
+- `workspace/memory/.../MEMORY.md`: compact remembered context. This is the memory source of truth for validated memory operations, but entries are not currently retrieved into Codex prompts.
 
-Memory follows a Hermes-style markdown model. `MEMORY.md` is the compact always-injected memory surface and source of truth. Entries are separated by `§`; the orchestrator applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/stream-*/topic-*/messages.jsonl` or `workspace/records/private-*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions and applied or rejected operations.
+Memory follows a Hermes-style markdown model. `MEMORY.md` is a compact memory source of truth. Entries are separated by `§`; the orchestrator applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/stream-*/topic-*/messages.jsonl` or `workspace/records/private-*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions and applied or rejected operations.
 
 For Zulip terminology, the code uses `stream` for what Zulip's UI calls a channel. A topic is the thread-like subject inside a channel.
 
@@ -161,6 +163,8 @@ For Zulip terminology, the code uses `stream` for what Zulip's UI calls a channe
 Incoming Zulip messages are normalized and persisted before any model call. Routine raw Zulip events are not stored. Work is serialized per `zulip:<realm_id>:stream:<stream_id>:topic:<topic_hash>` session, so a busy topic cannot race itself. If messages arrive for an active topic, their IDs are appended to that topic's pending queue and processed in a follow-up turn.
 
 Zulip upload links in raw Markdown are downloaded to the session's `uploads/<message_id>/` directory before Codex runs. The prompt receives rewritten Markdown pointing at the local downloaded files. Set `TOKENZULIP_UPLOAD_MAX_BYTES` to control the per-file download limit.
+
+When a stream/topic or private-chat session already has a marked Codex thread, TokenZulip resumes that thread and sends only the new Zulip message batch. New or legacy unmarked sessions start a fresh Codex thread with composed `developer_instructions` and a capped bootstrap of previous messages. `TOKENZULIP_RECENT_MESSAGES` controls that bootstrap cap and defaults to 100.
 
 Codex returns structured output with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, and confidence via the native `output_schema`. The orchestrator validates memory operations, edits scoped `MEMORY.md`, and then posts any reply.
 

@@ -7,9 +7,9 @@ from pathlib import Path
 from token_zulip.codex_adapter import CodexRunResult
 from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
-from token_zulip.loop import PRIVATE_REPLY_FALLBACK, AgentLoop
+from token_zulip.loop import CODEX_INSTRUCTION_MODE, PRIVATE_REPLY_FALLBACK, AgentLoop
 from token_zulip.memory import MemoryStore
-from token_zulip.models import NormalizedMessage
+from token_zulip.models import MemoryOperation, NormalizedMessage
 from token_zulip.storage import WorkspaceStorage
 from token_zulip.typing_status import TypingStatusManager
 from token_zulip.workspace import initialize_workspace
@@ -89,7 +89,13 @@ class BlockingCodex:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
         self.calls += 1
         if self.calls == 1:
             self.started.set()
@@ -105,12 +111,24 @@ class BlockingCodex:
 
 
 class FailingCodex:
-    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
         raise RuntimeError("codex failed")
 
 
 class MemoryCheckingCodex:
-    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
         payload = {
             "should_reply": True,
             "reply_kind": "chat",
@@ -124,7 +142,13 @@ class MemoryCheckingCodex:
 
 
 class SilentCodex:
-    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
         payload = {
             "should_reply": False,
             "reply_kind": "silent",
@@ -138,9 +162,21 @@ class SilentCodex:
 class PromptCapturingCodex:
     def __init__(self) -> None:
         self.prompt = ""
+        self.prompts: list[str] = []
+        self.thread_ids: list[str | None] = []
+        self.developer_instructions: list[str | None] = []
 
-    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
         self.prompt = prompt
+        self.prompts.append(prompt)
+        self.thread_ids.append(thread_id)
+        self.developer_instructions.append(developer_instructions)
         payload = {
             "should_reply": False,
             "reply_kind": "silent",
@@ -154,9 +190,19 @@ class PromptCapturingCodex:
 class ThreadingCodex:
     def __init__(self) -> None:
         self.calls = 0
+        self.thread_ids: list[str | None] = []
+        self.developer_instructions: list[str | None] = []
 
-    async def run_decision(self, prompt: str, thread_id: str | None) -> CodexRunResult:
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
         self.calls += 1
+        self.thread_ids.append(thread_id)
+        self.developer_instructions.append(developer_instructions)
         payload = {
             "should_reply": True,
             "reply_kind": "chat",
@@ -278,6 +324,7 @@ def test_messages_for_active_topic_are_persisted_and_run_as_followup(tmp_path):
         assert codex.calls == 2
         assert metadata.last_processed_message_id == 2
         assert metadata.codex_thread_id == "thread-2"
+        assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
 
     asyncio.run(scenario())
 
@@ -326,6 +373,9 @@ def test_stream_messages_type_for_directly_addressed_and_ordinary_messages(tmp_p
         await bot._handle_message(_message(2))
 
         assert typing.events == [("start", 1), ("stop", 1), ("start", 2), ("stop", 2)]
+        assert bot.codex.thread_ids == [None, "thread-1"]
+        assert bot.codex.developer_instructions[0] is not None
+        assert bot.codex.developer_instructions[1] is None
 
     asyncio.run(scenario())
 
@@ -466,6 +516,99 @@ def test_current_message_is_not_duplicated_in_rendered_prompt(tmp_path):
 
         assert codex.prompt.count("current request") == 1
         assert "previous context" in codex.prompt
+        assert "Instruction Layers" not in codex.prompt
+        assert "Scoped Memory" not in codex.prompt
+        assert codex.thread_ids == [None]
+        assert codex.developer_instructions[0] is not None
+        assert "Non-Negotiable Runtime Contract" in codex.developer_instructions[0]
+
+    asyncio.run(scenario())
+
+
+def test_resumed_thread_gets_no_recent_context_or_developer_instructions(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(_message(1, "first context"))
+        await bot._handle_message(_message(2, "second request"))
+
+        assert codex.thread_ids == [None, "thread-1"]
+        assert codex.developer_instructions[0] is not None
+        assert codex.developer_instructions[1] is None
+        assert "first context" not in codex.prompts[1]
+        assert "second request" in codex.prompts[1]
+
+    asyncio.run(scenario())
+
+
+def test_legacy_thread_without_instruction_marker_starts_fresh_with_bootstrap(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        storage = WorkspaceStorage(tmp_path)
+        previous = _message(1, "legacy context")
+        current = _message(2, "current after migration")
+        storage.append_message(previous)
+        storage.set_codex_thread_id(previous.session_key, "legacy-thread")
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(current)
+
+        metadata = storage.load_metadata(current.session_key)
+        assert codex.thread_ids == [None]
+        assert codex.developer_instructions[0] is not None
+        assert "legacy context" in codex.prompt
+        assert metadata.codex_thread_id == "thread-1"
+        assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
+
+    asyncio.run(scenario())
+
+
+def test_memory_entries_are_not_injected_into_codex_prompt(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        memory = MemoryStore(tmp_path / "memory")
+        message = _message(1, "hello")
+        memory.apply_ops(
+            message.session_key,
+            [
+                MemoryOperation(
+                    op="add",
+                    scope="conversation",
+                    content="Secret launch note should stay out of prompts",
+                )
+            ],
+        )
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=memory,
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(message)
+
+        assert "Secret launch note" not in codex.prompt
+        assert "Secret launch note" not in (codex.developer_instructions[0] or "")
 
     asyncio.run(scenario())
 

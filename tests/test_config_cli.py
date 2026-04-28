@@ -20,6 +20,7 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("TOKENZULIP_TYPING_ENABLED", raising=False)
     monkeypatch.delenv("TOKENZULIP_TYPING_REFRESH_SECONDS", raising=False)
     monkeypatch.delenv("TOKENZULIP_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("TOKENZULIP_RECENT_MESSAGES", raising=False)
 
     config = BotConfig.from_env()
 
@@ -31,6 +32,7 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     assert config.typing_enabled is True
     assert config.typing_refresh_seconds == 8.0
     assert config.upload_max_bytes == 25_000_000
+    assert config.max_recent_messages == 100
 
 
 def test_listen_all_public_streams_can_be_disabled(monkeypatch):

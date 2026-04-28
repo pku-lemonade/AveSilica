@@ -30,6 +30,7 @@ class SessionMetadata:
     topic_slug: str
     private_user_key: str | None = None
     codex_thread_id: str | None = None
+    codex_instruction_mode: str | None = None
     last_processed_message_id: int | None = None
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
@@ -85,7 +86,10 @@ class SessionMetadata:
             topic_hash=str(record.get("topic_hash") or key.topic_hash),
             topic_slug=str(record.get("topic_slug") or key.topic_slug or safe_slug(topic)),
             private_user_key=str(private_key) if private_key is not None else None,
-            codex_thread_id=record.get("codex_thread_id"),
+            codex_thread_id=str(record["codex_thread_id"]) if record.get("codex_thread_id") is not None else None,
+            codex_instruction_mode=(
+                str(record["codex_instruction_mode"]) if record.get("codex_instruction_mode") is not None else None
+            ),
             last_processed_message_id=last_processed,
             created_at=str(record.get("created_at") or utc_now_iso()),
             updated_at=str(record.get("updated_at") or utc_now_iso()),
@@ -105,6 +109,7 @@ class SessionMetadata:
             "topic_slug": self.topic_slug,
             "private_user_key": self.private_user_key,
             "codex_thread_id": self.codex_thread_id,
+            "codex_instruction_mode": self.codex_instruction_mode,
             "last_processed_message_id": self.last_processed_message_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -246,6 +251,18 @@ class WorkspaceStorage:
     def set_codex_thread_id(self, key: SessionKey, thread_id: str | None) -> None:
         metadata = self.load_metadata(key)
         metadata.codex_thread_id = thread_id
+        self.save_metadata(metadata)
+
+    def set_codex_thread_state(
+        self,
+        key: SessionKey,
+        *,
+        thread_id: str | None,
+        instruction_mode: str | None,
+    ) -> None:
+        metadata = self.load_metadata(key)
+        metadata.codex_thread_id = thread_id
+        metadata.codex_instruction_mode = instruction_mode
         self.save_metadata(metadata)
 
     def mark_processed(self, key: SessionKey, message_ids: list[int]) -> None:

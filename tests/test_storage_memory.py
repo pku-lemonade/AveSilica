@@ -36,7 +36,7 @@ def test_storage_uses_readable_session_messages_pending_and_turns(tmp_path):
 
     storage.append_message(first)
     storage.append_pending_messages(key, [second])
-    storage.set_codex_thread_id(key, "thread-1")
+    storage.set_codex_thread_state(key, thread_id="thread-1", instruction_mode="developer-v1")
     storage.mark_processed(key, [1])
     storage.log_turn(
         key,
@@ -49,6 +49,7 @@ def test_storage_uses_readable_session_messages_pending_and_turns(tmp_path):
     assert storage.read_recent_messages(key, 10)[0]["message_id"] == 1
     assert storage.pop_pending_messages(key)[0].message_id == 2
     assert storage.load_metadata(key).codex_thread_id == "thread-1"
+    assert storage.load_metadata(key).codex_instruction_mode == "developer-v1"
     assert storage.load_metadata(key).last_processed_message_id == 1
 
     message_record = json.loads(storage.session_path(key, "messages.jsonl").read_text(encoding="utf-8").splitlines()[0])

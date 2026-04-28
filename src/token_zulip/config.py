@@ -98,7 +98,7 @@ class BotConfig:
             codex_cwd=codex_cwd,
             codex_sandbox=os.getenv("TOKENZULIP_CODEX_SANDBOX", "read-only") or None,
             codex_approval_policy=os.getenv("TOKENZULIP_CODEX_APPROVAL_POLICY", "never"),
-            max_recent_messages=_int_env("TOKENZULIP_RECENT_MESSAGES", 40),
+            max_recent_messages=_int_env("TOKENZULIP_RECENT_MESSAGES", 100),
             queue_limit=_int_env("TOKENZULIP_QUEUE_LIMIT", 64),
             worker_count=_int_env("TOKENZULIP_WORKERS", 4),
             instruction_max_bytes=_int_env("TOKENZULIP_INSTRUCTION_MAX_BYTES", 96_000),

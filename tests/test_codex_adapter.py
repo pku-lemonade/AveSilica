@@ -30,18 +30,24 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
 
     class FakeAsyncCodex:
         last: "FakeAsyncCodex | None" = None
+        instances: list["FakeAsyncCodex"] = []
 
         def __init__(self, *, config: FakeAppServerConfig) -> None:
             self.config = config
             self.thread_kwargs: dict[str, object] = {}
             self.thread = FakeThread()
             FakeAsyncCodex.last = self
+            FakeAsyncCodex.instances.append(self)
 
         async def __aenter__(self) -> "FakeAsyncCodex":
             return self
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             return None
+
+        async def thread_start(self, **kwargs) -> FakeThread:
+            self.thread_kwargs = kwargs
+            return self.thread
 
         async def thread_resume(self, thread_id: str, **kwargs) -> FakeThread:
             self.thread_kwargs = {"thread_id": thread_id, **kwargs}
@@ -62,15 +68,29 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
         approval_policy="never",
     )
 
-    result = asyncio.run(adapter.run_decision("prompt", "thread-1"))
+    started = asyncio.run(adapter.run_decision("prompt", None, developer_instructions="dev instructions"))
 
-    assert result.raw_text == '{"should_reply": false}'
-    assert result.thread_id == "thread-2"
+    assert started.raw_text == '{"should_reply": false}'
+    assert started.thread_id == "thread-2"
     assert FakeAsyncCodex.last is not None
     assert FakeAsyncCodex.last.config == FakeAppServerConfig(
         codex_bin="/usr/local/bin/codex",
         cwd=str(tmp_path),
     )
+    assert FakeAsyncCodex.last.thread_kwargs == {
+        "model": "gpt-test",
+        "cwd": str(tmp_path),
+        "approval_policy": "never",
+        "sandbox": "danger-full-access",
+        "developer_instructions": "dev instructions",
+    }
+    assert FakeAsyncCodex.last.thread.run_kwargs["prompt"] == "prompt"
+    assert FakeAsyncCodex.last.thread.run_kwargs["effort"] == "low"
+    assert FakeAsyncCodex.last.thread.run_kwargs["output_schema"]
+
+    resumed = asyncio.run(adapter.run_decision("prompt", "thread-1", developer_instructions="ignored"))
+
+    assert resumed.raw_text == '{"should_reply": false}'
     assert FakeAsyncCodex.last.thread_kwargs == {
         "thread_id": "thread-1",
         "model": "gpt-test",
@@ -78,6 +98,3 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
         "approval_policy": "never",
         "sandbox": "danger-full-access",
     }
-    assert FakeAsyncCodex.last.thread.run_kwargs["prompt"] == "prompt"
-    assert FakeAsyncCodex.last.thread.run_kwargs["effort"] == "low"
-    assert FakeAsyncCodex.last.thread.run_kwargs["output_schema"]

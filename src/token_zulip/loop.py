@@ -19,6 +19,7 @@ from .zulip_io import normalize_zulip_event
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_REPLY_FALLBACK = "I saw this, but couldn't produce a useful reply. Please try again."
+CODEX_INSTRUCTION_MODE = "developer-v1"
 
 
 class ZulipPoster(Protocol):
@@ -178,32 +179,47 @@ class AgentLoop:
                     self.storage.update_message(processed_message)
 
             first = messages[0]
-            instructions = self.instructions.compose(
-                stream=first.stream,
-                topic_hash=first.topic_hash,
-                topic=first.topic,
-                stream_id=first.stream_id,
-                conversation_type=first.conversation_type,
-                private_user_key=first.private_user_key,
+            active_thread_id = (
+                metadata.codex_thread_id
+                if metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE and metadata.codex_thread_id
+                else None
             )
-            memory_text = self.memory.render_selected(key)
-            recent_context = self.storage.read_recent_messages(
-                key,
-                self.config.max_recent_messages,
-                exclude_message_ids={message.message_id for message in messages},
-            )
+            starting_new_thread = active_thread_id is None
+            developer_instructions = None
+            if starting_new_thread:
+                developer_instructions = self.instructions.compose(
+                    stream=first.stream,
+                    topic_hash=first.topic_hash,
+                    topic=first.topic,
+                    stream_id=first.stream_id,
+                    conversation_type=first.conversation_type,
+                    private_user_key=first.private_user_key,
+                )
+                recent_context = self.storage.read_recent_messages(
+                    key,
+                    self.config.max_recent_messages,
+                    exclude_message_ids={message.message_id for message in messages},
+                )
+            else:
+                recent_context = []
             prompt = self.prompt_builder.build(
                 PromptParts(
-                    instructions=instructions,
-                    memory=memory_text,
                     recent_context=recent_context,
                     current_messages=messages,
                 )
             )
 
-            codex_result = await self.codex.run_decision(prompt, metadata.codex_thread_id)
+            codex_result = await self.codex.run_decision(
+                prompt,
+                active_thread_id,
+                developer_instructions=developer_instructions,
+            )
             if codex_result.thread_id:
-                self.storage.set_codex_thread_id(key, codex_result.thread_id)
+                self.storage.set_codex_thread_state(
+                    key,
+                    thread_id=codex_result.thread_id,
+                    instruction_mode=CODEX_INSTRUCTION_MODE,
+                )
 
             decision = AgentDecision.from_json_text(codex_result.raw_text)
             message_to_post = self._message_to_post(first, decision)
