@@ -14,13 +14,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
-    && pip install --no-cache-dir --upgrade pip "setuptools>=68" wheel \
-    && pip install --no-cache-dir '.[codex]'
+RUN pip install --no-cache-dir '.[codex]'
 
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
