@@ -113,6 +113,26 @@ def test_worker_instruction_profiles_do_not_load_reply_policy(tmp_path):
     assert "`@**topic**` mentions topic participants" in text
 
 
+def test_shared_instruction_includes_zulip_mention_semantics_for_reply_and_workers(tmp_path):
+    initialize_workspace(tmp_path)
+    topic_hash = normalized_topic_hash("Launch Plan")
+
+    reply_text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, stream_id=10)
+    schedule_text = InstructionLoader(tmp_path).compose(
+        "Engineering",
+        topic_hash,
+        role="schedule_worker",
+        stream_id=10,
+    )
+
+    for text in (reply_text, schedule_text):
+        assert "Zulip mention Markdown" in text
+        assert "`@**Full Name**`" in text
+        assert "`@_**Full Name**`" in text
+        assert "`@*group name*`" in text
+        assert "`@**topic**`" in text
+
+
 def test_scheduled_job_instruction_mentions_persisted_mentions_only(tmp_path):
     initialize_workspace(tmp_path)
 

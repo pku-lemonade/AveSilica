@@ -23,7 +23,7 @@ from .models import (
 REACTION_EVENTS_CAP = 20
 ENTRY_DELIMITER = "\n§\n"
 POSTED_BOT_UPDATES_FILENAME = "posted_bot_updates.jsonl"
-ZULIP_PERSON_MENTION_RE = re.compile(r"@\*\*([^|\n]+?)\|(\d+)\*\*")
+ZULIP_PERSON_MENTION_RE = re.compile(r"@_?\*\*([^|\n]+?)(?:\|(\d+))?\*\*")
 
 
 @dataclass

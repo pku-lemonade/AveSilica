@@ -158,6 +158,36 @@ def test_read_recent_messages_excludes_current_message_ids(tmp_path):
     assert [record["message_id"] for record in storage.read_recent_messages(key, 10, exclude_message_ids={2})] == [1]
 
 
+def test_read_conversation_participants_extracts_silent_and_id_mentions(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    message = NormalizedMessage(
+        realm_id="realm",
+        message_id=1,
+        stream_id=10,
+        stream="Engineering",
+        stream_slug="engineering",
+        topic="Launch",
+        topic_hash="topic123",
+        sender_email="alice@example.com",
+        sender_full_name="Alice",
+        sender_id=1,
+        content="cc @_**Ariella Drake|26** and @**Bo Lin|27**; FYI @_**Alice**",
+        timestamp=None,
+        received_at="now",
+        raw={},
+    )
+
+    storage.append_message(message)
+
+    participants = storage.read_conversation_participants(message.session_key)
+    assert {item["user_id"]: item["full_name"] for item in participants} == {
+        1: "Alice",
+        26: "Ariella Drake",
+        27: "Bo Lin",
+    }
+
+
 def test_channel_rename_moves_records_and_memory_by_stream_id(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)

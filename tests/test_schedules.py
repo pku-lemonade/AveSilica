@@ -500,7 +500,7 @@ def test_schedule_can_store_multiple_person_mentions_without_pinging_confirmatio
             {"kind": "person", "user_id": 3, "full_name": "Feiyang Liu", "confidence": 0.9},
         ]
         confirmation = poster.posts[0]["content"]
-        assert "- Mentions on run: Zhuohang Bian, Feiyang Liu" in confirmation
+        assert "- Mentions on run: @_**Zhuohang Bian**, @_**Feiyang Liu**" in confirmation
         assert "@**Zhuohang" not in confirmation
         assert "@**Feiyang" not in confirmation
         schedule_prompt = bot.codex.worker_prompts["schedule"]
@@ -706,12 +706,12 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
         assert poster.posts == [
             {
                 "topic": "Launch",
-                "content": "@**Zhuohang Bian|2** @**Feiyang Liu|3** Please handle tokencake.",
+                "content": "@**Zhuohang Bian** @**Feiyang Liu** Please handle tokencake.",
             }
         ]
         assert "# Persisted Mention Targets" in codex.prompts[0]
-        assert "mention=@**Zhuohang Bian|2**" in codex.prompts[0]
-        assert "mention=@**Feiyang Liu|3**" in codex.prompts[0]
+        assert "mention=@**Zhuohang Bian**" in codex.prompts[0]
+        assert "mention=@**Feiyang Liu**" in codex.prompts[0]
 
     asyncio.run(scenario())
 
@@ -734,5 +734,8 @@ def test_due_scheduled_job_does_not_duplicate_existing_mentions(tmp_path):
     }
 
     assert bot._with_scheduled_mentions(job, "@**Zhuohang Bian|2** done") == (
-        "@**Feiyang Liu|3** @**Zhuohang Bian|2** done"
+        "@**Feiyang Liu** @**Zhuohang Bian|2** done"
+    )
+    assert bot._with_scheduled_mentions(job, "@**Zhuohang Bian** done") == (
+        "@**Feiyang Liu** @**Zhuohang Bian** done"
     )

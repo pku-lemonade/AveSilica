@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime
@@ -683,18 +684,33 @@ class AgentLoop:
         return "\n".join(lines) if lines else "- None"
 
     def _with_scheduled_mentions(self, job: dict[str, Any], message_to_post: str) -> str:
-        mentions = [mention for mention in self._scheduled_mentions(job) if mention not in message_to_post]
+        mentions = [
+            mention
+            for target, mention in self._scheduled_mentions(job)
+            if not self._normal_mention_already_present(target, message_to_post)
+        ]
         if not mentions:
             return message_to_post
         return f"{' '.join(mentions)} {message_to_post}".strip()
 
-    def _scheduled_mentions(self, job: dict[str, Any]) -> list[str]:
-        mentions: list[str] = []
+    def _scheduled_mentions(self, job: dict[str, Any]) -> list[tuple[dict[str, Any], str]]:
+        mentions: list[tuple[dict[str, Any], str]] = []
         for target in self._job_mention_targets(job):
             mention = self._mention_text(target)
-            if mention and mention not in mentions:
-                mentions.append(mention)
+            if mention and all(existing != mention for _, existing in mentions):
+                mentions.append((target, mention))
         return mentions
+
+    def _normal_mention_already_present(self, target: dict[str, Any], message_to_post: str) -> bool:
+        kind = str(target.get("kind") or "").strip().lower()
+        if kind == "person":
+            full_name = str(target.get("full_name") or "").strip()
+            if not full_name:
+                return False
+            pattern = rf"@\*\*{re.escape(full_name)}(?:\|\d+)?\*\*"
+            return re.search(pattern, message_to_post) is not None
+        mention = self._mention_text(target)
+        return bool(mention and mention in message_to_post)
 
     def _job_mention_targets(self, job: dict[str, Any]) -> list[dict[str, Any]]:
         raw_targets = job.get("mention_targets")
@@ -706,26 +722,28 @@ class AgentLoop:
         kind = str(target.get("kind") or "").strip().lower()
         if kind == "person":
             full_name = str(target.get("full_name") or "").strip()
-            user_id = target.get("user_id")
-            if not full_name or user_id is None:
+            if not full_name:
                 return ""
-            return f"@**{full_name}|{user_id}**"
+            return f"@**{full_name}**"
         if kind in {"topic", "channel", "all"}:
             return f"@**{kind}**"
         return ""
 
-    def _mention_labels(self, job: dict[str, Any]) -> list[str]:
-        labels: list[str] = []
+    def _confirmation_mentions(self, job: dict[str, Any]) -> list[str]:
+        mentions: list[str] = []
         for target in self._job_mention_targets(job):
-            label = self._mention_label(target)
-            if label and label not in labels:
-                labels.append(label)
-        return labels
+            mention = self._confirmation_mention(target)
+            if mention and mention not in mentions:
+                mentions.append(mention)
+        return mentions
 
-    def _mention_label(self, target: dict[str, Any]) -> str:
+    def _confirmation_mention(self, target: dict[str, Any]) -> str:
         kind = str(target.get("kind") or "").strip().lower()
         if kind == "person":
-            return str(target.get("full_name") or "").strip()
+            full_name = str(target.get("full_name") or "").strip()
+            if not full_name:
+                return ""
+            return f"@_**{full_name}**"
         if kind == "topic":
             return "topic participants"
         if kind == "channel":
@@ -1042,9 +1060,9 @@ class AgentLoop:
             lines.append(f"- Trigger: {self._schedule_trigger_label(job or result)}")
             next_run_at = result.get("next_run_at") or job.get("next_run_at")
             lines.append(f"- Next run: {self._format_schedule_time(next_run_at)}")
-        mention_labels = self._mention_labels(job)
-        if mention_labels:
-            lines.append(f"- Mentions on run: {', '.join(mention_labels)}")
+        confirmation_mentions = self._confirmation_mentions(job)
+        if confirmation_mentions:
+            lines.append(f"- Mentions on run: {', '.join(confirmation_mentions)}")
         if job_id:
             lines.append(f"- Job ID: `{job_id}`")
         return "\n".join(lines)
