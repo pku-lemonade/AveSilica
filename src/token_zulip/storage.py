@@ -43,6 +43,9 @@ class SessionMetadata:
     codex_instruction_mode: str | None = None
     last_injected_memory_hash: str | None = None
     last_processed_message_id: int | None = None
+    cleared_at: str | None = None
+    cleared_at_message_id: int | None = None
+    previous_codex_thread_id: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
 
@@ -107,6 +110,13 @@ class SessionMetadata:
                 else None
             ),
             last_processed_message_id=last_processed,
+            cleared_at=str(record["cleared_at"]) if record.get("cleared_at") is not None else None,
+            cleared_at_message_id=_optional_int(record.get("cleared_at_message_id")),
+            previous_codex_thread_id=(
+                str(record["previous_codex_thread_id"])
+                if record.get("previous_codex_thread_id") is not None
+                else None
+            ),
             created_at=str(record.get("created_at") or utc_now_iso()),
             updated_at=str(record.get("updated_at") or utc_now_iso()),
         )
@@ -128,6 +138,9 @@ class SessionMetadata:
             "codex_instruction_mode": self.codex_instruction_mode,
             "last_injected_memory_hash": self.last_injected_memory_hash,
             "last_processed_message_id": self.last_processed_message_id,
+            "cleared_at": self.cleared_at,
+            "cleared_at_message_id": self.cleared_at_message_id,
+            "previous_codex_thread_id": self.previous_codex_thread_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -290,6 +303,9 @@ class WorkspaceStorage:
             if self._optional_message_id(record) not in exclude
         ]
         return records[-limit:]
+
+    def read_messages(self, key: SessionKey) -> list[dict[str, Any]]:
+        return self._read_jsonl(self.session_path(key, "messages.jsonl"))
 
     def read_conversation_participants(self, key: SessionKey) -> list[dict[str, Any]]:
         path = self.session_path(key, "messages.jsonl")
@@ -469,6 +485,23 @@ class WorkspaceStorage:
         ]
         self._write_jsonl(path, remaining)
 
+    def clear_posted_bot_updates(self, key: SessionKey) -> None:
+        path = self.session_path(key, POSTED_BOT_UPDATES_FILENAME)
+        if path.exists():
+            self._write_jsonl(path, [])
+
+    def clear_session_context(self, key: SessionKey, message: NormalizedMessage) -> SessionMetadata:
+        metadata = self.load_metadata(key)
+        metadata.previous_codex_thread_id = metadata.codex_thread_id
+        metadata.codex_thread_id = None
+        metadata.codex_instruction_mode = None
+        metadata.last_injected_memory_hash = None
+        metadata.cleared_at = utc_now_iso()
+        metadata.cleared_at_message_id = message.message_id
+        self.save_metadata(metadata)
+        self.clear_posted_bot_updates(key)
+        return metadata
+
     def mark_processed(self, key: SessionKey, message_ids: list[int]) -> None:
         if not message_ids:
             return
@@ -510,6 +543,26 @@ class WorkspaceStorage:
             record["schedule_acknowledgement"] = schedule_acknowledgement
         self._append_jsonl(self.session_path(key, "turns.jsonl"), record)
 
+    def log_control_turn(
+        self,
+        key: SessionKey,
+        message: NormalizedMessage,
+        *,
+        command: str,
+        post: dict[str, Any] | None,
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        record: dict[str, Any] = {
+            "created_at": utc_now_iso(),
+            "kind": "control",
+            "message_ids": [message.message_id],
+            "control": {"command": command},
+            "post": post,
+        }
+        if summary:
+            record["summary"] = summary
+        self._append_jsonl(self.session_path(key, "turns.jsonl"), record)
+
     def log_error(self, key: SessionKey | None, event: dict[str, Any]) -> None:
         record = {
             "created_at": utc_now_iso(),
@@ -517,6 +570,17 @@ class WorkspaceStorage:
             **event,
         }
         self._append_jsonl(self._error_path(), record)
+
+    def read_turns(self, key: SessionKey) -> list[dict[str, Any]]:
+        return self._read_jsonl(self.session_path(key, "turns.jsonl"))
+
+    def read_errors_for_session(self, key: SessionKey) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for path in sorted(self.errors_dir.glob("*.jsonl")):
+            for record in self._read_jsonl(path):
+                if record.get("session_id") == key.storage_id:
+                    records.append(record)
+        return records
 
     def session_path(self, key: SessionKey, filename: str) -> Path:
         directory = self.session_dir(key)

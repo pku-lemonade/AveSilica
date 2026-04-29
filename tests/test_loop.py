@@ -969,6 +969,240 @@ def test_posted_bot_update_is_injected_once_on_next_turn(tmp_path):
     asyncio.run(scenario())
 
 
+def test_clear_resets_codex_thread_and_starts_fresh_on_next_message(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        codex = ThreadingCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+        first = _message(1, "first request", directly_addressed=True)
+        clear = _message(2, "SILI CLEAR", directly_addressed=True)
+        after = _message(3, "after clear", directly_addressed=True)
+
+        await bot._handle_message(first)
+        assert storage.read_pending_posted_bot_updates(first.session_key)[0]["content"] == "Reply 1"
+
+        await bot._handle_message(clear)
+
+        metadata = storage.load_metadata(first.session_key)
+        assert codex.calls == 1
+        assert metadata.codex_thread_id is None
+        assert metadata.codex_instruction_mode is None
+        assert metadata.last_injected_memory_hash is None
+        assert metadata.cleared_at_message_id == 2
+        assert metadata.previous_codex_thread_id == "thread-1"
+        assert storage.read_pending_posted_bot_updates(first.session_key) == []
+        assert poster.posts[-1]["content"] == "Cleared. The next normal message starts a fresh Codex thread."
+
+        await bot._handle_message(after)
+
+        assert codex.calls == 2
+        assert codex.thread_ids == [None, None]
+        assert codex.developer_instructions[1] is not None
+        assert "Posted Bot Updates" not in codex.prompts[1]
+        assert "Reply 1" not in codex.prompts[1]
+        assert storage.load_metadata(first.session_key).codex_thread_id == "thread-2"
+
+    asyncio.run(scenario())
+
+
+def test_clear_in_pending_messages_splits_normal_turn_batches(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = BlockingCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+
+        first = asyncio.create_task(bot._handle_message(_message(1, "first", directly_addressed=True)))
+        await codex.started.wait()
+        await bot._handle_message(_message(2, "before clear", directly_addressed=True))
+        await bot._handle_message(_message(3, "sili clear", directly_addressed=True))
+        await bot._handle_message(_message(4, "after clear", directly_addressed=True))
+        codex.release.set()
+        await first
+
+        metadata = bot.storage.load_metadata(_message(1).session_key)
+        assert codex.calls == 3
+        assert metadata.last_processed_message_id == 4
+        assert metadata.codex_thread_id == "thread-3"
+        assert metadata.cleared_at_message_id == 3
+        assert poster.posts == [
+            {"topic": "Launch", "content": "Cleared. The next normal message starts a fresh Codex thread."}
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_status_reports_silent_decision_without_codex_call(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1, "hello"))
+        await bot._handle_message(_message(2, "sili STATUS"))
+
+        assert len(codex.prompts) == 1
+        status = poster.posts[-1]["content"]
+        assert "- Decision: silent (0.90)" in status
+        assert "- Why: chose not to reply; no runtime error" in status
+        assert '- Message: Alice: "hello"' in status
+        assert "- Errors: none" in status
+        assert "Thread:" not in status
+
+    asyncio.run(scenario())
+
+
+def test_status_reports_posted_reply(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = ThreadingCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1, "hello", directly_addressed=True))
+        await bot._handle_message(_message(2, "Sili status", directly_addressed=True))
+
+        assert codex.calls == 1
+        status = poster.posts[-1]["content"]
+        assert "- Decision: chat (0.90)" in status
+        assert '- Posted: "Reply 1"' in status
+        assert "- Errors: none" in status
+
+    asyncio.run(scenario())
+
+
+def test_status_reports_worker_error_surface(tmp_path):
+    class SkillErrorCodex(ThreadingCodex):
+        worker_errors = {"skill": "concurrent turn consumer"}
+
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = SkillErrorCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1, "hello", directly_addressed=True))
+        await bot._handle_message(_message(2, "sili status", directly_addressed=True))
+
+        status = poster.posts[-1]["content"]
+        assert "- Decision: chat (0.90)" in status
+        assert "- Errors: skill: concurrent turn consumer" in status
+
+    asyncio.run(scenario())
+
+
+def test_status_reports_reply_failure_without_calling_codex_again(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=FailingCodex(),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1, "hello", directly_addressed=True))
+        await bot._handle_message(_message(2, "sili status", directly_addressed=True))
+
+        status = poster.posts[-1]["content"]
+        assert "- Decision: failed before reply" in status
+        assert "- Why: reply failed before a decision was logged" in status
+        assert '- Message: Alice: "hello"' in status
+        assert "- Errors: reply: RuntimeError('codex failed')" in status
+
+    asyncio.run(scenario())
+
+
+def test_status_after_clear_reports_fresh_next_message(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=ThreadingCodex(),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1, "hello", directly_addressed=True))
+        await bot._handle_message(_message(2, "sili clear", directly_addressed=True))
+        await bot._handle_message(_message(3, "sili status", directly_addressed=True))
+
+        status = poster.posts[-1]["content"]
+        assert "- Decision: cleared" in status
+        assert "- Why: next normal message starts fresh" in status
+        assert '- Message: Alice: "sili clear"' in status
+        assert "- Errors: none" in status
+
+    asyncio.run(scenario())
+
+
+def test_unaddressed_stream_clear_is_not_control_command(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = ThreadingCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1, "clear"))
+
+        assert codex.calls == 1
+        assert poster.posts == [{"topic": "Launch", "content": "Reply 1"}]
+        assert bot.storage.load_metadata(_message(1).session_key).codex_thread_id == "thread-1"
+
+    asyncio.run(scenario())
+
+
 def test_memory_injection_hash_is_not_saved_when_codex_fails(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)

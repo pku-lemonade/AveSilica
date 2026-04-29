@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from .codex_adapter import CodexAdapter, CodexRunResult, CodexWorkerSpec
 from .config import BotConfig
+from .control import ControlCommand, parse_control_command
 from .instructions import InstructionLoader
 from .memory import MemoryStore
 from .models import (
@@ -235,13 +236,13 @@ class AgentLoop:
             self._active_sessions.add(key.value)
 
         try:
-            await self._run_turn(key, [message])
+            await self._run_messages(key, [message])
             while True:
                 pending = self.storage.pop_pending_messages(key)
                 pending = self._filter_unprocessed(key, pending)
                 if not pending:
                     break
-                await self._run_turn(key, pending)
+                await self._run_messages(key, pending)
         except Exception as exc:
             LOGGER.exception("Agent turn failed for %s", key.value)
             self.storage.log_error(
@@ -261,6 +262,262 @@ class AgentLoop:
         if metadata.last_processed_message_id is None:
             return messages
         return [message for message in messages if message.message_id > metadata.last_processed_message_id]
+
+    async def _run_messages(self, key: SessionKey, messages: list[NormalizedMessage]) -> None:
+        batch: list[NormalizedMessage] = []
+        for message in messages:
+            command = parse_control_command(message, self.config.bot_aliases)
+            if command is None:
+                batch.append(message)
+                continue
+            if batch:
+                await self._run_turn(key, batch)
+                batch = []
+            await self._run_control_command(key, message, command)
+        if batch:
+            await self._run_turn(key, batch)
+
+    async def _run_control_command(
+        self,
+        key: SessionKey,
+        message: NormalizedMessage,
+        command: ControlCommand,
+    ) -> None:
+        if command.name == "clear":
+            await self._run_clear_command(key, message)
+            return
+        await self._run_status_command(key, message)
+
+    async def _run_clear_command(self, key: SessionKey, message: NormalizedMessage) -> None:
+        self.storage.clear_session_context(key, message)
+        content = "Cleared. The next normal message starts a fresh Codex thread."
+        post = await self._post_control_response(message, content)
+        self.storage.log_control_turn(
+            key,
+            message,
+            command="clear",
+            post=post,
+            summary={"decision": "cleared", "next_thread": "fresh on next normal message"},
+        )
+        self.storage.mark_processed(key, [message.message_id])
+
+    async def _run_status_command(self, key: SessionKey, message: NormalizedMessage) -> None:
+        content, summary = self._status_response(key, message)
+        post = await self._post_control_response(message, content)
+        self.storage.log_control_turn(
+            key,
+            message,
+            command="status",
+            post=post,
+            summary=summary,
+        )
+        self.storage.mark_processed(key, [message.message_id])
+
+    async def _post_control_response(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
+        if self.config.post_replies:
+            return self._post_summary(await self.zulip.post_reply(message, content), dry_run=False)
+        return {"status": "dry_run", "dry_run": True, "message_to_post": content}
+
+    def _status_response(
+        self,
+        key: SessionKey,
+        status_message: NormalizedMessage,
+    ) -> tuple[str, dict[str, Any]]:
+        metadata = self.storage.load_metadata(key)
+        turns = self.storage.read_turns(key)
+        messages_by_id = self._message_records_by_id(key)
+        errors = self._status_errors(key, metadata)
+        latest_turn = self._latest_model_turn(turns, metadata)
+        latest_error = errors[-1] if errors else None
+
+        lines = ["**Sili status**", ""]
+        summary: dict[str, Any] = {}
+        if latest_turn is not None:
+            decision = latest_turn.get("decision") if isinstance(latest_turn.get("decision"), dict) else {}
+            reply_kind = str(decision.get("reply_kind") or "silent")
+            confidence = self._format_confidence(decision.get("confidence"))
+            lines.append(f"- Decision: {reply_kind}{confidence}")
+            summary["decision"] = reply_kind
+            summary["confidence"] = decision.get("confidence")
+
+            posted = self._posted_text(latest_turn)
+            if posted:
+                lines.append(f"- Posted: {self._quote_excerpt(posted)}")
+                summary["posted"] = True
+            else:
+                why = "chose not to reply" if reply_kind == "silent" else "no visible reply"
+                why += "; no runtime error" if latest_error is None else f"; latest error on {self._error_surface(latest_error)}"
+                lines.append(f"- Why: {why}")
+        elif latest_error is not None:
+            lines.append("- Decision: failed before reply")
+            lines.append("- Why: reply failed before a decision was logged")
+            summary["decision"] = "failed before reply"
+        elif metadata.cleared_at_message_id is not None:
+            lines.append("- Decision: cleared")
+            lines.append("- Why: next normal message starts fresh")
+            summary["decision"] = "cleared"
+        else:
+            lines.append("- Decision: none")
+            lines.append("- Why: no normal turn yet")
+            summary["decision"] = "none"
+
+        message_line = self._status_message_line(latest_turn, latest_error, metadata, status_message, messages_by_id)
+        lines.append(f"- Message: {message_line}")
+        error_line = self._status_error_line(errors)
+        lines.append(f"- Errors: {error_line}")
+        summary["errors"] = error_line
+        return "\n".join(lines), summary
+
+    def _message_records_by_id(self, key: SessionKey) -> dict[int, dict[str, Any]]:
+        records: dict[int, dict[str, Any]] = {}
+        for record in self.storage.read_messages(key):
+            message_id = self._record_message_id(record)
+            if message_id is not None:
+                records[message_id] = record
+        return records
+
+    def _latest_model_turn(
+        self,
+        turns: list[dict[str, Any]],
+        metadata: SessionMetadata,
+    ) -> dict[str, Any] | None:
+        for turn in reversed(turns):
+            if turn.get("kind") == "control":
+                continue
+            if not isinstance(turn.get("decision"), dict):
+                continue
+            if self._record_after_clear(turn, metadata):
+                return turn
+        return None
+
+    def _status_errors(self, key: SessionKey, metadata: SessionMetadata) -> list[dict[str, Any]]:
+        return [
+            error
+            for error in self.storage.read_errors_for_session(key)
+            if error.get("kind") != "ignored_event" and self._record_after_clear(error, metadata)
+        ]
+
+    def _record_after_clear(self, record: dict[str, Any], metadata: SessionMetadata) -> bool:
+        clear_message_id = metadata.cleared_at_message_id
+        if clear_message_id is None:
+            return True
+        record_ids = self._record_message_ids(record)
+        if record_ids:
+            return max(record_ids) >= clear_message_id
+        if metadata.cleared_at and record.get("created_at"):
+            return str(record.get("created_at")) >= metadata.cleared_at
+        return False
+
+    def _status_message_line(
+        self,
+        latest_turn: dict[str, Any] | None,
+        latest_error: dict[str, Any] | None,
+        metadata: SessionMetadata,
+        status_message: NormalizedMessage,
+        messages_by_id: dict[int, dict[str, Any]],
+    ) -> str:
+        source: dict[str, Any] | NormalizedMessage | None = None
+        if latest_turn is not None:
+            source = self._message_record_for_ids(self._record_message_ids(latest_turn), messages_by_id)
+        elif latest_error is not None:
+            source = self._message_record_for_ids(self._record_message_ids(latest_error), messages_by_id)
+        elif metadata.cleared_at_message_id is not None:
+            source = messages_by_id.get(metadata.cleared_at_message_id)
+        if source is None and metadata.cleared_at_message_id is None:
+            source = status_message
+        if source is None:
+            return "none"
+        return self._format_status_message(source)
+
+    def _message_record_for_ids(
+        self,
+        message_ids: list[int],
+        messages_by_id: dict[int, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        for message_id in message_ids:
+            record = messages_by_id.get(message_id)
+            if record is not None:
+                return record
+        return None
+
+    def _format_status_message(self, source: dict[str, Any] | NormalizedMessage) -> str:
+        if isinstance(source, NormalizedMessage):
+            sender = source.sender_full_name or source.sender_email or "unknown"
+            content = source.content
+        else:
+            sender = str(source.get("sender_full_name") or source.get("sender_email") or "unknown")
+            content = str(source.get("content") or "")
+        return f"{sender}: {self._quote_excerpt(content)}"
+
+    def _status_error_line(self, errors: list[dict[str, Any]]) -> str:
+        if not errors:
+            return "none"
+        recent = errors[-2:]
+        parts = [f"{self._error_surface(error)}: {self._error_text(error)}" for error in recent]
+        remaining = len(errors) - len(recent)
+        if remaining > 0:
+            parts.append(f"+{remaining} more")
+        return "; ".join(parts)
+
+    def _error_surface(self, error: dict[str, Any]) -> str:
+        worker = str(error.get("worker") or "").strip().casefold()
+        if worker in {"memory", "skill", "schedule"}:
+            return worker
+        kind = str(error.get("kind") or "").strip().casefold()
+        event = str(error.get("event") or "").strip().casefold()
+        if "scheduled" in kind or "scheduled" in event:
+            return "scheduled_job"
+        if kind in {"turn_exception", "codex_thread_restarted"}:
+            return "reply"
+        if kind == "worker_exception":
+            return "runtime"
+        return "runtime"
+
+    def _error_text(self, error: dict[str, Any]) -> str:
+        value = str(error.get("error") or error.get("reason") or error.get("kind") or error.get("event") or "error")
+        return self._compact_text(value, limit=120)
+
+    def _posted_text(self, turn: dict[str, Any]) -> str:
+        post = turn.get("post") if isinstance(turn.get("post"), dict) else {}
+        message_to_post = str(post.get("message_to_post") or "").strip()
+        if message_to_post:
+            return message_to_post
+        decision = turn.get("decision") if isinstance(turn.get("decision"), dict) else {}
+        return str(decision.get("message_to_post") or "").strip()
+
+    def _quote_excerpt(self, value: str) -> str:
+        text = self._compact_text(value, limit=140)
+        return f'"{text}"'
+
+    def _compact_text(self, value: str, *, limit: int) -> str:
+        text = re.sub(r"\s+", " ", value).strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 1)].rstrip() + "..."
+
+    def _format_confidence(self, value: Any) -> str:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return ""
+        return f" ({confidence:.2f})"
+
+    def _record_message_ids(self, record: dict[str, Any]) -> list[int]:
+        raw_ids = record.get("message_ids")
+        values = raw_ids if isinstance(raw_ids, list) else [record.get("message_id")]
+        ids: list[int] = []
+        for value in values:
+            try:
+                ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return ids
+
+    def _record_message_id(self, record: dict[str, Any]) -> int | None:
+        try:
+            return int(record["message_id"])
+        except (KeyError, TypeError, ValueError):
+            return None
 
     async def _run_turn(self, key: SessionKey, messages: list[NormalizedMessage]) -> None:
         if not messages:
