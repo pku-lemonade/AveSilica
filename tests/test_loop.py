@@ -448,6 +448,54 @@ class MissingThreadCodex(ForkingCodexMixin):
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"recovered-thread-{self.calls}")
 
 
+class MissingReplyThreadCodex(ForkingCodexMixin):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.ensure_thread_ids: list[str | None] = []
+        self.ensure_developer_instructions: list[str | None] = []
+        self.reply_thread_ids: list[str | None] = []
+        self.reply_developer_instructions: list[str | None] = []
+
+    async def ensure_thread(
+        self,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        self.ensure_thread_ids.append(thread_id)
+        self.ensure_developer_instructions.append(developer_instructions)
+        return CodexRunResult(raw_text="", thread_id="missing-thread")
+
+    async def run_worker_fork(
+        self,
+        parent_thread_id: str,
+        worker_spec: CodexWorkerSpec,
+    ) -> CodexRunResult:
+        raise RuntimeError("JSON-RPC error -32600: no rollout found for thread id missing-thread")
+
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
+    ) -> CodexRunResult:
+        self.reply_thread_ids.append(thread_id)
+        self.reply_developer_instructions.append(developer_instructions)
+        if thread_id == "missing-thread":
+            raise RuntimeError("JSON-RPC error -32600: no rollout found for thread id missing-thread")
+        self.calls += 1
+        payload = {
+            "should_reply": True,
+            "reply_kind": "chat",
+            "message_to_post": "Recovered reply",
+            "memory_ops": [],
+            "confidence": 0.9,
+        }
+        return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"recovered-reply-{self.calls}")
+
+
 class FakePoster:
     def __init__(self, memory_file: Path | None = None) -> None:
         self.posts: list[dict[str, str]] = []
@@ -979,6 +1027,43 @@ def test_missing_codex_rollout_restarts_marked_reply_thread(tmp_path):
         assert codex.developer_instructions[0] is None
         assert codex.developer_instructions[1] is not None
         assert metadata.codex_thread_id == "recovered-thread-1"
+        assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
+        assert metadata.last_processed_message_id == 1
+        assert any(record.get("kind") == "codex_thread_restarted" for record in error_records)
+
+    asyncio.run(scenario())
+
+
+def test_missing_codex_rollout_during_reply_restarts_reply_thread(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = MissingReplyThreadCodex()
+        storage = WorkspaceStorage(tmp_path)
+        message = _private_message(1)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+
+        await bot._handle_message(message)
+
+        metadata = storage.load_metadata(message.session_key)
+        error_records = [
+            json.loads(line)
+            for path in (tmp_path / "records" / "errors").glob("*.jsonl")
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert codex.ensure_thread_ids == [None]
+        assert codex.reply_thread_ids == ["missing-thread", None]
+        assert codex.reply_developer_instructions[0] is None
+        assert codex.reply_developer_instructions[1] is not None
+        assert poster.posts == [{"topic": "private", "content": "Recovered reply"}]
+        assert metadata.codex_thread_id == "recovered-reply-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
         assert metadata.last_processed_message_id == 1
         assert any(record.get("kind") == "codex_thread_restarted" for record in error_records)

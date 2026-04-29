@@ -685,12 +685,32 @@ class AgentLoop:
                 ),
                 template_file=REPLY_TURN_USER_PROMPT_FILE,
             )
-            reply_result = await self.codex.run_decision(
-                reply_prompt,
-                parent_thread_id,
-                developer_instructions=None,
-                output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
-            )
+            try:
+                reply_result = await self.codex.run_decision(
+                    reply_prompt,
+                    parent_thread_id,
+                    developer_instructions=None,
+                    output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                )
+            except Exception as exc:
+                if parent_thread_id is None or not self._is_missing_codex_rollout_error(exc):
+                    raise
+                self.storage.log_error(
+                    key,
+                    {
+                        "kind": "codex_thread_restarted",
+                        "thread_id": parent_thread_id,
+                        "error": repr(exc),
+                        "message_ids": [message.message_id for message in messages],
+                    },
+                )
+                self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
+                reply_result = await self.codex.run_decision(
+                    reply_prompt,
+                    None,
+                    developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
+                    output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                )
             if reply_result.thread_id:
                 self.storage.set_codex_thread_state(
                     key,
