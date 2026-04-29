@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from dataclasses import dataclass
@@ -16,6 +17,21 @@ class CodexRunResult:
     raw_result: Any = None
 
 
+@dataclass(frozen=True)
+class CodexWorkerSpec:
+    kind: str
+    prompt: str
+    developer_instructions: str
+    output_schema_path: Path
+
+
+@dataclass(frozen=True)
+class CodexTurnWithForksResult:
+    main: CodexRunResult
+    workers: dict[str, CodexRunResult]
+    worker_errors: dict[str, str]
+
+
 class CodexAdapter(Protocol):
     async def run_decision(
         self,
@@ -23,7 +39,19 @@ class CodexAdapter(Protocol):
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
+        ...
+
+    async def run_turn_with_forks(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None,
+        main_output_schema_path: Path,
+        worker_specs: list[CodexWorkerSpec],
+    ) -> CodexTurnWithForksResult:
         ...
 
 
@@ -51,6 +79,7 @@ class CodexSdkAdapter:
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         try:
             from codex_app_server import AppServerConfig, AsyncCodex  # type: ignore[import-not-found]
@@ -70,11 +99,98 @@ class CodexSdkAdapter:
                     thread_kwargs["developer_instructions"] = developer_instructions
                 thread = await codex.thread_start(**thread_kwargs)
 
-            result = await thread.run(prompt, **self._run_kwargs())
+            result = await thread.run(prompt, **self._run_kwargs(output_schema_path=output_schema_path))
 
             raw_text = str(getattr(result, "final_response", "") or "")
             resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "") or None
             return CodexRunResult(raw_text=raw_text, thread_id=resolved_thread_id, raw_result=result)
+
+    async def run_turn_with_forks(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None,
+        main_output_schema_path: Path,
+        worker_specs: list[CodexWorkerSpec],
+    ) -> CodexTurnWithForksResult:
+        try:
+            from codex_app_server import AppServerConfig, AsyncCodex  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "Codex Python SDK is not installed. Install the optional SDK dependency "
+                "or provide a custom CodexAdapter."
+            ) from exc
+
+        self.cwd.mkdir(parents=True, exist_ok=True)
+        async with AsyncCodex(config=AppServerConfig(codex_bin=self._codex_bin(), cwd=str(self.cwd))) as codex:
+            thread_kwargs = self._thread_kwargs()
+            if thread_id:
+                parent = await codex.thread_resume(thread_id, **thread_kwargs)
+            else:
+                if developer_instructions:
+                    thread_kwargs["developer_instructions"] = developer_instructions
+                parent = await codex.thread_start(**thread_kwargs)
+
+            parent_id = str(getattr(parent, "id", "") or thread_id or "") or None
+            if not parent_id:
+                raise RuntimeError("Codex parent thread did not provide a thread id")
+
+            forks: dict[str, Any] = {}
+            for spec in worker_specs:
+                fork_kwargs = {
+                    **self._thread_kwargs(),
+                    "developer_instructions": spec.developer_instructions,
+                    "ephemeral": True,
+                    "exclude_turns": True,
+                }
+                forks[spec.kind] = await codex.thread_fork(parent_id, **fork_kwargs)
+
+            main_task = asyncio.create_task(
+                parent.run(
+                    prompt,
+                    **self._run_kwargs(output_schema_path=main_output_schema_path),
+                )
+            )
+            worker_tasks = {
+                spec.kind: asyncio.create_task(
+                    forks[spec.kind].run(
+                        spec.prompt,
+                        **self._run_kwargs(output_schema_path=spec.output_schema_path),
+                    )
+                )
+                for spec in worker_specs
+            }
+
+            all_tasks = [main_task, *worker_tasks.values()]
+            results = await asyncio.gather(*all_tasks, return_exceptions=True)
+            main_result = results[0]
+            if isinstance(main_result, Exception):
+                raise main_result
+
+            workers: dict[str, CodexRunResult] = {}
+            worker_errors: dict[str, str] = {}
+            for kind, task in worker_tasks.items():
+                error = task.exception()
+                if error is not None:
+                    worker_errors[kind] = str(error)
+                    continue
+                result = task.result()
+                workers[kind] = CodexRunResult(
+                    raw_text=str(getattr(result, "final_response", "") or ""),
+                    thread_id=str(getattr(forks[kind], "id", "") or "") or None,
+                    raw_result=result,
+                )
+
+            return CodexTurnWithForksResult(
+                main=CodexRunResult(
+                    raw_text=str(getattr(main_result, "final_response", "") or ""),
+                    thread_id=parent_id,
+                    raw_result=main_result,
+                ),
+                workers=workers,
+                worker_errors=worker_errors,
+            )
 
     def _thread_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -86,14 +202,15 @@ class CodexSdkAdapter:
             kwargs["sandbox"] = self.sandbox
         return kwargs
 
-    def _run_kwargs(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"output_schema": self._output_schema()}
+    def _run_kwargs(self, *, output_schema_path: Path | None = None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"output_schema": self._output_schema(output_schema_path=output_schema_path)}
         if self.reasoning_effort:
             kwargs["effort"] = self.reasoning_effort
         return kwargs
 
-    def _output_schema(self) -> dict[str, Any]:
-        path = self.output_schema_path or (self.cwd / DECISION_SCHEMA_FILE)
+    def _output_schema(self, *, output_schema_path: Path | None = None) -> dict[str, Any]:
+        path = output_schema_path or self.output_schema_path or (self.cwd / DECISION_SCHEMA_FILE)
+        path = path.expanduser().resolve() if not path.is_absolute() else path
         if not path.exists():
             raise FileNotFoundError(f"decision schema file missing: {path}")
         schema = json.loads(path.read_text(encoding="utf-8"))

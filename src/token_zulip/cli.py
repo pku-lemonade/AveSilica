@@ -156,7 +156,6 @@ def _render_prompt(args: argparse.Namespace) -> int:
 
     prompt = PromptBuilder(config.workspace_dir).build(
         PromptParts(
-            recent_context=[],
             current_messages=[message],
         )
     )

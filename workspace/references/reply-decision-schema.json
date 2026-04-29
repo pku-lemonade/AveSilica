@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "should_reply",
+    "reply_kind",
+    "message_to_post",
+    "confidence"
+  ],
+  "properties": {
+    "should_reply": {
+      "type": "boolean"
+    },
+    "reply_kind": {
+      "type": "string",
+      "enum": [
+        "chat",
+        "draft_plan",
+        "question",
+        "report",
+        "silent"
+      ]
+    },
+    "message_to_post": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

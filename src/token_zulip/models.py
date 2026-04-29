@@ -433,15 +433,122 @@ class ScheduleOperation:
 
 
 @dataclass(frozen=True)
-class AgentDecision:
+class ReplyDecision:
     should_reply: bool
     reply_kind: str
     message_to_post: str
+    confidence: float = 0.0
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def silent(cls, raw: dict[str, Any] | None = None) -> "ReplyDecision":
+        return cls(
+            should_reply=False,
+            reply_kind="silent",
+            message_to_post="",
+            confidence=0.0,
+            raw=raw or {},
+        )
+
+    @classmethod
+    def from_json_text(cls, text: str) -> "ReplyDecision":
+        payload = _extract_json_object(text)
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            raise ValueError("decision JSON must be an object")
+
+        reply_kind = str(data.get("reply_kind") or "silent")
+        if reply_kind not in REPLY_KINDS:
+            raise ValueError(f"invalid reply_kind: {reply_kind!r}")
+
+        confidence = float(data.get("confidence") or 0.0)
+        confidence = max(0.0, min(1.0, confidence))
+
+        should_reply = bool(data.get("should_reply"))
+        message_to_post = str(data.get("message_to_post") or "")
+        if reply_kind == "silent":
+            should_reply = False
+            message_to_post = ""
+
+        return cls(
+            should_reply=should_reply,
+            reply_kind=reply_kind,
+            message_to_post=message_to_post,
+            confidence=confidence,
+            raw=data,
+        )
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "should_reply": self.should_reply,
+            "reply_kind": self.reply_kind,
+            "message_to_post": self.message_to_post,
+            "confidence": self.confidence,
+        }
+
+
+@dataclass(frozen=True)
+class MemoryDecision:
+    memory_ops: list[MemoryOperation] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_json_text(cls, text: str) -> "MemoryDecision":
+        payload = _extract_json_object(text)
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            raise ValueError("memory decision JSON must be an object")
+        ops = [
+            MemoryOperation.from_mapping(item)
+            for item in data.get("memory_ops", [])
+            if isinstance(item, dict)
+        ]
+        return cls(memory_ops=ops, raw=data)
+
+
+@dataclass(frozen=True)
+class SkillDecision:
+    skill_ops: list[SkillOperation] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_json_text(cls, text: str) -> "SkillDecision":
+        payload = _extract_json_object(text)
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            raise ValueError("skill decision JSON must be an object")
+        ops = [
+            SkillOperation.from_mapping(item)
+            for item in data.get("skill_ops", [])
+            if isinstance(item, dict)
+        ]
+        return cls(skill_ops=ops, raw=data)
+
+
+@dataclass(frozen=True)
+class ScheduleDecision:
+    schedule_ops: list[ScheduleOperation] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_json_text(cls, text: str) -> "ScheduleDecision":
+        payload = _extract_json_object(text)
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            raise ValueError("schedule decision JSON must be an object")
+        ops = [
+            ScheduleOperation.from_mapping(item)
+            for item in data.get("schedule_ops", [])
+            if isinstance(item, dict)
+        ]
+        return cls(schedule_ops=ops, raw=data)
+
+
+@dataclass(frozen=True)
+class AgentDecision(ReplyDecision):
     memory_ops: list[MemoryOperation] = field(default_factory=list)
     schedule_ops: list[ScheduleOperation] = field(default_factory=list)
     skill_ops: list[SkillOperation] = field(default_factory=list)
-    confidence: float = 0.0
-    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def silent(cls, raw: dict[str, Any] | None = None) -> "AgentDecision":
@@ -460,56 +567,47 @@ class AgentDecision:
         if not isinstance(data, dict):
             raise ValueError("decision JSON must be an object")
 
-        reply_kind = str(data.get("reply_kind") or "silent")
-        if reply_kind not in REPLY_KINDS:
-            raise ValueError(f"invalid reply_kind: {reply_kind!r}")
-
-        confidence = float(data.get("confidence") or 0.0)
-        confidence = max(0.0, min(1.0, confidence))
-
-        memory_ops = [
-            MemoryOperation.from_mapping(item)
-            for item in data.get("memory_ops", [])
-            if isinstance(item, dict)
-        ]
-        schedule_ops = [
-            ScheduleOperation.from_mapping(item)
-            for item in data.get("schedule_ops", [])
-            if isinstance(item, dict)
-        ]
-        skill_ops = [
-            SkillOperation.from_mapping(item)
-            for item in data.get("skill_ops", [])
-            if isinstance(item, dict)
-        ]
-
-        should_reply = bool(data.get("should_reply"))
-        message_to_post = str(data.get("message_to_post") or "")
-        if reply_kind == "silent":
-            should_reply = False
-            message_to_post = ""
-
+        reply = ReplyDecision.from_json_text(payload)
+        memory = MemoryDecision.from_json_text(payload)
+        schedule = ScheduleDecision.from_json_text(payload)
+        skill = SkillDecision.from_json_text(payload)
         return cls(
-            should_reply=should_reply,
-            reply_kind=reply_kind,
-            message_to_post=message_to_post,
-            memory_ops=memory_ops,
-            schedule_ops=schedule_ops,
-            skill_ops=skill_ops,
-            confidence=confidence,
+            should_reply=reply.should_reply,
+            reply_kind=reply.reply_kind,
+            message_to_post=reply.message_to_post,
+            memory_ops=memory.memory_ops,
+            schedule_ops=schedule.schedule_ops,
+            skill_ops=skill.skill_ops,
+            confidence=reply.confidence,
             raw=data,
         )
 
+    @classmethod
+    def from_parts(
+        cls,
+        reply: ReplyDecision,
+        *,
+        memory_ops: list[MemoryOperation] | None = None,
+        schedule_ops: list[ScheduleOperation] | None = None,
+        skill_ops: list[SkillOperation] | None = None,
+    ) -> "AgentDecision":
+        return cls(
+            should_reply=reply.should_reply,
+            reply_kind=reply.reply_kind,
+            message_to_post=reply.message_to_post,
+            memory_ops=memory_ops or [],
+            schedule_ops=schedule_ops or [],
+            skill_ops=skill_ops or [],
+            confidence=reply.confidence,
+            raw=reply.raw,
+        )
+
     def to_record(self) -> dict[str, Any]:
-        return {
-            "should_reply": self.should_reply,
-            "reply_kind": self.reply_kind,
-            "message_to_post": self.message_to_post,
-            "memory_ops": [item.to_record() for item in self.memory_ops],
-            "schedule_ops": [item.to_record() for item in self.schedule_ops],
-            "skill_ops": [item.to_record() for item in self.skill_ops],
-            "confidence": self.confidence,
-        }
+        record = super().to_record()
+        record["memory_ops"] = [item.to_record() for item in self.memory_ops]
+        record["schedule_ops"] = [item.to_record() for item in self.schedule_ops]
+        record["skill_ops"] = [item.to_record() for item in self.skill_ops]
+        return record
 
 
 def _extract_json_object(text: str) -> str:

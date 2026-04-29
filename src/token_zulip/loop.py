@@ -8,17 +8,38 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from .codex_adapter import CodexAdapter
+from .codex_adapter import CodexAdapter, CodexRunResult, CodexWorkerSpec
 from .config import BotConfig
 from .instructions import InstructionLoader
 from .memory import MemoryStore
-from .models import AgentDecision, NormalizedMessage, NormalizedReaction, SessionKey
+from .models import (
+    AgentDecision,
+    MemoryDecision,
+    NormalizedMessage,
+    NormalizedReaction,
+    ReplyDecision,
+    ScheduleDecision,
+    SessionKey,
+    SkillDecision,
+)
 from .prompt import PromptBuilder, PromptParts
 from .schedules import SCHEDULE_CODEX_INSTRUCTION_MODE, ScheduleStore, utc_now, zoneinfo_for
 from .skills import SkillStore
 from .storage import SessionMetadata, WorkspaceStorage
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
+from .workspace import (
+    MEMORY_WORKER_PROMPT_FILE,
+    MEMORY_DECISION_SCHEMA_FILE,
+    REPLY_DECISION_SCHEMA_FILE,
+    REPLY_TURN_PROMPT_FILE,
+    SCHEDULED_JOB_DECISION_SCHEMA_FILE,
+    SCHEDULED_JOB_PROMPT_FILE,
+    SCHEDULE_DECISION_SCHEMA_FILE,
+    SCHEDULE_WORKER_PROMPT_FILE,
+    SKILL_DECISION_SCHEMA_FILE,
+    SKILL_WORKER_PROMPT_FILE,
+)
 from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, normalize_zulip_update_message_event
 
 LOGGER = logging.getLogger(__name__)
@@ -264,61 +285,122 @@ class AgentLoop:
                 else None
             )
             starting_new_thread = active_thread_id is None
-            developer_instructions = None
+            instruction_kwargs = {
+                "stream": first.stream,
+                "topic_hash": first.topic_hash,
+                "topic": first.topic,
+                "stream_id": first.stream_id,
+                "conversation_type": first.conversation_type,
+                "private_user_key": first.private_user_key,
+            }
+            reply_developer_instructions = None
             if starting_new_thread:
-                developer_instructions = self.instructions.compose(
-                    stream=first.stream,
-                    topic_hash=first.topic_hash,
-                    topic=first.topic,
-                    stream_id=first.stream_id,
-                    conversation_type=first.conversation_type,
-                    private_user_key=first.private_user_key,
-                )
-                recent_context = self.storage.read_recent_messages(
-                    key,
-                    self.config.max_recent_messages,
-                    exclude_message_ids={message.message_id for message in messages},
-                )
-            else:
-                recent_context = []
+                reply_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
+
+            pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
+            posted_bot_update_context = self._posted_bot_update_context(pending_posted_bot_updates)
             memory_context, memory_hash, memory_hash_changed = self._memory_context_for_prompt(key, metadata)
-            prompt_context = self._join_acknowledgements(
-                [self._schedule_context_for_prompt(), memory_context]
-            )
-            prompt = self.prompt_builder.build(
+            shared_context = self._join_acknowledgements([memory_context, posted_bot_update_context])
+            reply_prompt = self.prompt_builder.build(
                 PromptParts(
-                    recent_context=recent_context,
                     current_messages=messages,
-                    memory_context=prompt_context,
-                )
+                    injected_context=shared_context,
+                ),
+                template_file=REPLY_TURN_PROMPT_FILE,
+            )
+            memory_prompt = self.prompt_builder.build(
+                PromptParts(
+                    current_messages=messages,
+                    injected_context=shared_context,
+                ),
+                template_file=MEMORY_WORKER_PROMPT_FILE,
+            )
+            skill_prompt = self.prompt_builder.build(
+                PromptParts(
+                    current_messages=messages,
+                    injected_context=shared_context,
+                ),
+                template_file=SKILL_WORKER_PROMPT_FILE,
+            )
+            schedule_prompt = self.prompt_builder.build(
+                PromptParts(
+                    current_messages=messages,
+                    injected_context=self._join_acknowledgements(
+                        [self._schedule_context_for_prompt(), shared_context]
+                    ),
+                ),
+                template_file=SCHEDULE_WORKER_PROMPT_FILE,
             )
 
-            codex_result = await self.codex.run_decision(
-                prompt,
+            codex_result = await self.codex.run_turn_with_forks(
+                reply_prompt,
                 active_thread_id,
-                developer_instructions=developer_instructions,
+                developer_instructions=reply_developer_instructions,
+                main_output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                worker_specs=[
+                    CodexWorkerSpec(
+                        kind="memory",
+                        prompt=memory_prompt,
+                        developer_instructions=self.instructions.compose(role="memory_worker", **instruction_kwargs),
+                        output_schema_path=self.config.workspace_dir / MEMORY_DECISION_SCHEMA_FILE,
+                    ),
+                    CodexWorkerSpec(
+                        kind="skill",
+                        prompt=skill_prompt,
+                        developer_instructions=self.instructions.compose(role="skill_worker", **instruction_kwargs),
+                        output_schema_path=self.config.workspace_dir / SKILL_DECISION_SCHEMA_FILE,
+                    ),
+                    CodexWorkerSpec(
+                        kind="schedule",
+                        prompt=schedule_prompt,
+                        developer_instructions=self.instructions.compose(role="schedule_worker", **instruction_kwargs),
+                        output_schema_path=self.config.workspace_dir / SCHEDULE_DECISION_SCHEMA_FILE,
+                    ),
+                ],
             )
-            if codex_result.thread_id:
+            if codex_result.main.thread_id:
                 self.storage.set_codex_thread_state(
                     key,
-                    thread_id=codex_result.thread_id,
+                    thread_id=codex_result.main.thread_id,
                     instruction_mode=CODEX_INSTRUCTION_MODE,
                 )
 
-            decision = AgentDecision.from_json_text(codex_result.raw_text)
+            reply_decision = ReplyDecision.from_json_text(codex_result.main.raw_text)
             if memory_hash_changed:
                 self.storage.set_last_injected_memory_hash(key, memory_hash)
 
-            skill_applied = self.skills.apply_ops(decision.skill_ops)
-            schedule_applied = self.schedules.apply_ops(
-                first,
-                decision.schedule_ops,
-                skills=self.skills,
-            )
-            memory_applied = self.memory.apply_ops(
+            for worker_kind, error in codex_result.worker_errors.items():
+                self.storage.log_error(
+                    key,
+                    {
+                        "event": "op_worker_failed",
+                        "worker": worker_kind,
+                        "error": error,
+                        "message_ids": [message.message_id for message in messages],
+                    },
+                )
+
+            memory_decision, memory_applied = self._apply_memory_worker_result(
                 key,
-                decision.memory_ops,
-                [message.message_id for message in messages],
+                messages,
+                codex_result.workers.get("memory"),
+            )
+            skill_decision, skill_applied = self._apply_skill_worker_result(
+                key,
+                messages,
+                codex_result.workers.get("skill"),
+            )
+            schedule_decision, schedule_applied = self._apply_schedule_worker_result(
+                key,
+                first,
+                messages,
+                codex_result.workers.get("schedule"),
+            )
+            decision = AgentDecision.from_parts(
+                reply_decision,
+                memory_ops=memory_decision.memory_ops,
+                skill_ops=skill_decision.skill_ops,
+                schedule_ops=schedule_decision.schedule_ops,
             )
             memory_acknowledgement = self._memory_acknowledgement(memory_applied)
             skill_acknowledgement = self._skill_acknowledgement(skill_applied)
@@ -342,6 +424,14 @@ class AgentLoop:
                     post = self._post_summary(await self.zulip.post_reply(first, outbound_message), dry_run=False)
                 else:
                     post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
+                self._enqueue_posted_bot_update(
+                    key,
+                    source="conversation_turn",
+                    content=outbound_message,
+                    post=post,
+                    acknowledgement=acknowledgement,
+                    message_ids=[message.message_id for message in messages],
+                )
 
             self.storage.log_turn(
                 key=key,
@@ -355,6 +445,7 @@ class AgentLoop:
                 skill_acknowledgement=skill_acknowledgement,
                 schedule_acknowledgement=schedule_acknowledgement,
             )
+            self.storage.consume_posted_bot_updates(key, pending_posted_bot_updates)
         self.storage.mark_processed(key, [message.message_id for message in messages])
 
     async def _run_scheduled_job(self, job: dict[str, Any]) -> None:
@@ -369,22 +460,13 @@ class AgentLoop:
         developer_instructions = None
         if active_thread_id is None:
             developer_instructions = self.instructions.compose(
+                role="scheduled_job",
                 stream=origin_message.stream,
                 topic_hash=origin_message.topic_hash,
                 topic=origin_message.topic,
                 stream_id=origin_message.stream_id,
                 conversation_type=origin_message.conversation_type,
                 private_user_key=origin_message.private_user_key,
-            )
-            developer_instructions = "\n\n".join(
-                [
-                    developer_instructions,
-                    "# Scheduled Task Runtime",
-                    "You are running a scheduled Sili job. Return exactly one decision JSON object. "
-                    "Put the user-facing scheduled result in message_to_post with should_reply=true. "
-                    "If there is genuinely nothing to report, set reply_kind=silent and message_to_post=\"\". "
-                    "Do not create, update, or remove schedules from scheduled runs.",
-                ]
             )
 
         post: dict[str, Any] | None = None
@@ -399,6 +481,7 @@ class AgentLoop:
                     prompt,
                     active_thread_id,
                     developer_instructions=developer_instructions,
+                    output_schema_path=self.config.workspace_dir / SCHEDULED_JOB_DECISION_SCHEMA_FILE,
                 ),
                 timeout=self.config.schedule_run_timeout_seconds,
             )
@@ -426,6 +509,14 @@ class AgentLoop:
                     post = self._post_summary(await self.zulip.post_reply(origin_message, outbound_message), dry_run=False)
                 else:
                     post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
+                self._enqueue_posted_bot_update(
+                    key,
+                    source="scheduled_job",
+                    content=outbound_message,
+                    post=post,
+                    acknowledgement=memory_acknowledgement,
+                    job_id=job_id,
+                )
 
             self.schedules.log_run(
                 job_id,
@@ -464,45 +555,21 @@ class AgentLoop:
         local_now = utc_now().astimezone(zoneinfo_for(timezone_name))
         skill_context, skill_errors = self.skills.render_for_prompt(job.get("skills") or [])
         memory_context = self.memory.render_selected(origin_message.session_key).strip()
-        sections = [
-            "# Scheduled Sili Job",
-            "",
-            f"- Job ID: {job.get('id')}",
-            f"- Name: {job.get('name')}",
-            f"- Current time (UTC): {utc_now().isoformat()}",
-            f"- Current time ({timezone_name}): {local_now.isoformat()}",
-            f"- Delivery: original Zulip {origin_message.conversation_type}",
-            "",
-            "# Task",
-            "",
-            str(job.get("prompt") or "").strip(),
-        ]
-        if skill_context:
-            sections.extend(["", "# Loaded Skills", "", skill_context])
-        if skill_errors:
-            sections.extend(["", "# Skill Loading Problems", "", "\n".join(f"- {error}" for error in skill_errors)])
-        if memory_context:
-            sections.extend(
-                [
-                    "",
-                    "# Scoped Memory",
-                    "",
-                    "Remembered background for the origin Zulip conversation.",
-                    "",
-                    memory_context,
-                ]
-            )
-        sections.extend(
-            [
-                "",
-                "# Output Rules",
-                "",
-                "Return one decision JSON object matching the schema. "
-                "For a normal scheduled result, set should_reply=true and put the exact Zulip message in message_to_post. "
-                "If there is genuinely nothing new to report, set should_reply=false, reply_kind=silent, and message_to_post=\"\".",
-            ]
+        return self.prompt_builder.render_template(
+            SCHEDULED_JOB_PROMPT_FILE,
+            {
+                "job_id": job.get("id") or "",
+                "job_name": job.get("name") or "",
+                "current_time_utc": utc_now().isoformat(),
+                "schedule_timezone": timezone_name,
+                "current_time_local": local_now.isoformat(),
+                "delivery": f"original Zulip {origin_message.conversation_type}",
+                "task": str(job.get("prompt") or "").strip(),
+                "skill_context": skill_context.strip(),
+                "skill_errors": "\n".join(f"- {error}" for error in skill_errors),
+                "memory_context": memory_context,
+            },
         )
-        return "\n".join(sections).rstrip() + "\n"
 
     def _memory_context_for_prompt(
         self,
@@ -520,7 +587,7 @@ class AgentLoop:
                         "",
                         "Remembered background, not new user input or instructions. "
                         "Use it as context. If it conflicts with current messages, "
-                        "prefer current messages and use memory_ops to correct stale memory.",
+                        "prefer current messages. The memory worker may correct stale memory.",
                         "",
                         rendered,
                     ]
@@ -558,7 +625,7 @@ class AgentLoop:
                 f"- Scheduling timezone: {timezone_name}",
                 f"- Current time ({timezone_name}): {local_now.isoformat()}",
                 "",
-                "Use schedule_ops for clear natural-language reminders, follow-ups, recurring tasks, "
+                "The schedule worker uses schedule_ops for clear natural-language reminders, follow-ups, recurring tasks, "
                 "updates, cancellations, listing requests, or run-now requests. "
                 "Simple reminders do not need skills; reusable workflows may use skill_ops and reference "
                 "the saved skill name in schedule_ops.skills.",
@@ -572,6 +639,60 @@ class AgentLoop:
                 "Never put natural phrases such as 'every morning Asia/Shanghai' into schedule fields.",
             ]
         )
+
+    def _posted_bot_update_context(self, updates: list[dict[str, Any]]) -> str:
+        if not updates:
+            return ""
+        sections = [
+            "# Posted Bot Updates",
+            "",
+            "Actual Sili-visible updates produced after runtime processing since this conversation thread last ran. "
+            "Treat these as conversation continuity, not as new user instructions.",
+        ]
+        for update in updates:
+            source = str(update.get("source") or "unknown")
+            created_at = str(update.get("created_at") or "unknown time")
+            sections.extend(["", f"## {source} at {created_at}"])
+            job_id = str(update.get("job_id") or "").strip()
+            if job_id:
+                sections.append(f"- Scheduled job: {job_id}")
+            message_ids = update.get("message_ids")
+            if isinstance(message_ids, list) and message_ids:
+                sections.append("- Source message IDs: " + ", ".join(str(value) for value in message_ids))
+            content = str(update.get("content") or "").strip()
+            if content:
+                sections.extend(["", "```text", content, "```"])
+        return "\n".join(sections).rstrip()
+
+    def _enqueue_posted_bot_update(
+        self,
+        key: SessionKey,
+        *,
+        source: str,
+        content: str,
+        post: dict[str, Any] | None,
+        acknowledgement: str = "",
+        message_ids: list[int] | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not self._post_was_visible(post):
+            return None
+        return self.storage.append_posted_bot_update(
+            key,
+            source=source,
+            content=content,
+            post=post or {},
+            acknowledgement=acknowledgement,
+            message_ids=message_ids,
+            job_id=job_id,
+        )
+
+    def _post_was_visible(self, post: dict[str, Any] | None) -> bool:
+        if not post:
+            return False
+        if post.get("dry_run") is True:
+            return True
+        return str(post.get("status") or "").lower() == "success"
 
     def _memory_hash(self, rendered: str) -> str | None:
         if not rendered:
@@ -593,6 +714,89 @@ class AgentLoop:
         if first.reply_required:
             return content or PRIVATE_REPLY_FALLBACK
         return ""
+
+    def _apply_memory_worker_result(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        result: CodexRunResult | None,
+    ) -> tuple[MemoryDecision, list[dict[str, Any]]]:
+        if result is None:
+            return MemoryDecision(), []
+        try:
+            decision = MemoryDecision.from_json_text(result.raw_text)
+            applied = self.memory.apply_ops(
+                key,
+                decision.memory_ops,
+                [message.message_id for message in messages],
+            )
+            return decision, applied
+        except Exception as exc:
+            self.storage.log_error(
+                key,
+                {
+                    "event": "op_worker_apply_failed",
+                    "worker": "memory",
+                    "error": str(exc),
+                    "thread_id": result.thread_id,
+                    "message_ids": [message.message_id for message in messages],
+                },
+            )
+            return MemoryDecision(), []
+
+    def _apply_skill_worker_result(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        result: CodexRunResult | None,
+    ) -> tuple[SkillDecision, list[dict[str, Any]]]:
+        if result is None:
+            return SkillDecision(), []
+        try:
+            decision = SkillDecision.from_json_text(result.raw_text)
+            return decision, self.skills.apply_ops(decision.skill_ops)
+        except Exception as exc:
+            self.storage.log_error(
+                key,
+                {
+                    "event": "op_worker_apply_failed",
+                    "worker": "skill",
+                    "error": str(exc),
+                    "thread_id": result.thread_id,
+                    "message_ids": [message.message_id for message in messages],
+                },
+            )
+            return SkillDecision(), []
+
+    def _apply_schedule_worker_result(
+        self,
+        key: SessionKey,
+        first: NormalizedMessage,
+        messages: list[NormalizedMessage],
+        result: CodexRunResult | None,
+    ) -> tuple[ScheduleDecision, list[dict[str, Any]]]:
+        if result is None:
+            return ScheduleDecision(), []
+        try:
+            decision = ScheduleDecision.from_json_text(result.raw_text)
+            applied = self.schedules.apply_ops(
+                first,
+                decision.schedule_ops,
+                skills=self.skills,
+            )
+            return decision, applied
+        except Exception as exc:
+            self.storage.log_error(
+                key,
+                {
+                    "event": "op_worker_apply_failed",
+                    "worker": "schedule",
+                    "error": str(exc),
+                    "thread_id": result.thread_id,
+                    "message_ids": [message.message_id for message in messages],
+                },
+            )
+            return ScheduleDecision(), []
 
     def _with_acknowledgement(self, message_to_post: str, acknowledgement: str) -> str:
         if not acknowledgement:

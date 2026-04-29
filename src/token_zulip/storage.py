@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from .models import (
 
 REACTION_EVENTS_CAP = 20
 ENTRY_DELIMITER = "\n§\n"
+POSTED_BOT_UPDATES_FILENAME = "posted_bot_updates.jsonl"
 
 
 @dataclass
@@ -386,6 +388,54 @@ class WorkspaceStorage:
         metadata = self.load_metadata(key)
         metadata.last_injected_memory_hash = memory_hash
         self.save_metadata(metadata)
+
+    def append_posted_bot_update(
+        self,
+        key: SessionKey,
+        *,
+        source: str,
+        content: str,
+        post: dict[str, Any],
+        acknowledgement: str = "",
+        message_ids: list[int] | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        final_content = content.strip()
+        if not final_content:
+            return None
+        record: dict[str, Any] = {
+            "id": uuid.uuid4().hex,
+            "created_at": utc_now_iso(),
+            "source": source,
+            "content": final_content,
+            "post": post,
+        }
+        if acknowledgement.strip():
+            record["acknowledgement"] = acknowledgement.strip()
+        if message_ids:
+            record["message_ids"] = list(message_ids)
+        if job_id:
+            record["job_id"] = job_id
+        self._append_jsonl(self.session_path(key, POSTED_BOT_UPDATES_FILENAME), record)
+        return record
+
+    def read_pending_posted_bot_updates(self, key: SessionKey, limit: int = 20) -> list[dict[str, Any]]:
+        records = self._read_jsonl(self.session_path(key, POSTED_BOT_UPDATES_FILENAME))
+        if limit <= 0:
+            return records
+        return records[:limit]
+
+    def consume_posted_bot_updates(self, key: SessionKey, updates: list[dict[str, Any]]) -> None:
+        consumed_ids = {str(update.get("id")) for update in updates if update.get("id") is not None}
+        if not consumed_ids:
+            return
+        path = self.session_path(key, POSTED_BOT_UPDATES_FILENAME)
+        remaining = [
+            record
+            for record in self._read_jsonl(path)
+            if str(record.get("id")) not in consumed_ids
+        ]
+        self._write_jsonl(path, remaining)
 
     def mark_processed(self, key: SessionKey, message_ids: list[int]) -> None:
         if not message_ids:

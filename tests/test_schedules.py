@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from token_zulip.codex_adapter import CodexRunResult
+from token_zulip.codex_adapter import CodexRunResult, CodexTurnWithForksResult, CodexWorkerSpec
 from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
 from token_zulip.loop import AgentLoop
@@ -74,11 +74,40 @@ class PayloadCodex:
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         self.prompts.append(prompt)
         self.thread_ids.append(thread_id)
         self.developer_instructions.append(developer_instructions)
         return CodexRunResult(raw_text=json.dumps(self.payload), thread_id=f"thread-{len(self.prompts)}")
+
+    async def run_turn_with_forks(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None,
+        main_output_schema_path: Path,
+        worker_specs: list[CodexWorkerSpec],
+    ) -> CodexTurnWithForksResult:
+        self.worker_prompts = {spec.kind: spec.prompt for spec in worker_specs}
+        self.worker_developer_instructions = {spec.kind: spec.developer_instructions for spec in worker_specs}
+        main = await self.run_decision(prompt, thread_id, developer_instructions=developer_instructions)
+        workers: dict[str, CodexRunResult] = {}
+        for spec in worker_specs:
+            if spec.kind == "memory":
+                worker_payload = {"memory_ops": self.payload.get("memory_ops", [])}
+            elif spec.kind == "skill":
+                worker_payload = {"skill_ops": self.payload.get("skill_ops", [])}
+            elif spec.kind == "schedule":
+                worker_payload = {"schedule_ops": self.payload.get("schedule_ops", [])}
+            else:
+                worker_payload = {}
+            workers[spec.kind] = CodexRunResult(
+                raw_text=json.dumps(worker_payload),
+                thread_id=f"thread-{len(self.prompts)}-{spec.kind}",
+            )
+        return CodexTurnWithForksResult(main=main, workers=workers, worker_errors={})
 
 
 class FakePoster:
@@ -126,7 +155,7 @@ def test_parse_schedule_spec_supports_decomposed_kinds():
 
 
 def test_active_schema_requires_decomposed_schedule_spec():
-    schema_path = Path(__file__).parent.parent / "workspace" / "references" / "decision-schema.json"
+    schema_path = Path(__file__).parent.parent / "workspace" / "references" / "schedule-decision-schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     schedule_props = schema["properties"]["schedule_ops"]["items"]["properties"]
     required = schema["properties"]["schedule_ops"]["items"]["required"]
@@ -301,9 +330,10 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         }
         codex = PayloadCodex(payload)
         poster = FakePoster()
+        storage = WorkspaceStorage(tmp_path)
         bot = AgentLoop(
             config=_config(tmp_path),
-            storage=WorkspaceStorage(tmp_path),
+            storage=storage,
             instructions=InstructionLoader(tmp_path),
             memory=MemoryStore(tmp_path / "memory"),
             codex=codex,
@@ -316,8 +346,12 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
 
         assert "## Skill: weekly-digest" in codex.prompts[0]
         assert codex.thread_ids == [None]
-        assert "Scheduled Task Runtime" in (codex.developer_instructions[0] or "")
+        assert "Scheduled Job Policy" in (codex.developer_instructions[0] or "")
         assert poster.posts == [{"topic": "Launch", "content": "Digest done."}]
+        pending = storage.read_pending_posted_bot_updates(_message(1).session_key)
+        assert pending[-1]["source"] == "scheduled_job"
+        assert pending[-1]["content"] == "Digest done."
+        assert pending[-1]["job_id"] == created["job_id"]
         job = schedules.load_jobs()[0]
         assert job["codex_thread_id"] == "thread-1"
         assert job["last_status"] == "ok"

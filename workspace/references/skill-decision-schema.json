@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "skill_ops"
+  ],
+  "properties": {
+    "skill_ops": {
+      "description": "Reusable skill file requests. Use an empty array when skills should not change.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "name",
+          "description",
+          "content"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "remove"
+            ]
+          },
+          "name": {
+            "description": "Lowercase letters, digits, and hyphens only.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Skill trigger description for create/update. Empty for remove.",
+            "type": "string"
+          },
+          "content": {
+            "description": "SKILL.md body or full SKILL.md content for create/update. Empty for remove.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

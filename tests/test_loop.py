@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from token_zulip.codex_adapter import CodexRunResult
+from token_zulip.codex_adapter import CodexRunResult, CodexTurnWithForksResult, CodexWorkerSpec
 from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
 from token_zulip.loop import CODEX_INSTRUCTION_MODE, PRIVATE_REPLY_FALLBACK, AgentLoop
@@ -117,7 +117,47 @@ def _update_message_event() -> dict[str, object]:
     }
 
 
-class BlockingCodex:
+def _worker_payload(payload: dict[str, object], kind: str) -> dict[str, object]:
+    if kind == "memory":
+        return {"memory_ops": payload.get("memory_ops", [])}
+    if kind == "skill":
+        return {"skill_ops": payload.get("skill_ops", [])}
+    if kind == "schedule":
+        return {"schedule_ops": payload.get("schedule_ops", [])}
+    return {}
+
+
+class ForkingCodexMixin:
+    worker_payloads: dict[str, dict[str, object]] = {}
+    worker_errors: dict[str, str] = {}
+
+    async def run_turn_with_forks(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None,
+        main_output_schema_path: Path,
+        worker_specs: list[CodexWorkerSpec],
+    ) -> CodexTurnWithForksResult:
+        self.worker_prompts = {spec.kind: spec.prompt for spec in worker_specs}  # type: ignore[attr-defined]
+        self.worker_developer_instructions = {  # type: ignore[attr-defined]
+            spec.kind: spec.developer_instructions for spec in worker_specs
+        }
+        main = await self.run_decision(prompt, thread_id, developer_instructions=developer_instructions)
+        main_payload = json.loads(main.raw_text)
+        workers = {
+            spec.kind: CodexRunResult(
+                raw_text=json.dumps(self.worker_payloads.get(spec.kind) or _worker_payload(main_payload, spec.kind)),
+                thread_id=f"{main.thread_id}-{spec.kind}" if main.thread_id else f"fork-{spec.kind}",
+            )
+            for spec in worker_specs
+            if spec.kind not in self.worker_errors
+        }
+        return CodexTurnWithForksResult(main=main, workers=workers, worker_errors=dict(self.worker_errors))
+
+
+class BlockingCodex(ForkingCodexMixin):
     def __init__(self) -> None:
         self.calls = 0
         self.started = asyncio.Event()
@@ -144,7 +184,7 @@ class BlockingCodex:
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
 
 
-class FailingCodex:
+class FailingCodex(ForkingCodexMixin):
     async def run_decision(
         self,
         prompt: str,
@@ -155,7 +195,15 @@ class FailingCodex:
         raise RuntimeError("codex failed")
 
 
-class MemoryCheckingCodex:
+class MemoryCheckingCodex(ForkingCodexMixin):
+    worker_payloads = {
+        "memory": {
+            "memory_ops": [
+                {"op": "add", "scope": "conversation", "content": "Launch date is Friday", "old_text": ""}
+            ]
+        }
+    }
+
     async def run_decision(
         self,
         prompt: str,
@@ -167,15 +215,20 @@ class MemoryCheckingCodex:
             "should_reply": True,
             "reply_kind": "chat",
             "message_to_post": "Recorded.",
-            "memory_ops": [
-                {"op": "add", "scope": "conversation", "content": "Launch date is Friday", "old_text": ""}
-            ],
             "confidence": 0.8,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
 
 
-class SilentMemoryCodex:
+class SilentMemoryCodex(ForkingCodexMixin):
+    worker_payloads = {
+        "memory": {
+            "memory_ops": [
+                {"op": "add", "scope": "conversation", "content": "Silent memory fact", "old_text": ""}
+            ]
+        }
+    }
+
     async def run_decision(
         self,
         prompt: str,
@@ -187,15 +240,12 @@ class SilentMemoryCodex:
             "should_reply": False,
             "reply_kind": "silent",
             "message_to_post": "",
-            "memory_ops": [
-                {"op": "add", "scope": "conversation", "content": "Silent memory fact", "old_text": ""}
-            ],
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
 
 
-class SilentCodex:
+class SilentCodex(ForkingCodexMixin):
     async def run_decision(
         self,
         prompt: str,
@@ -213,7 +263,7 @@ class SilentCodex:
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
 
 
-class PromptCapturingCodex:
+class PromptCapturingCodex(ForkingCodexMixin):
     def __init__(self) -> None:
         self.prompt = ""
         self.prompts: list[str] = []
@@ -241,9 +291,10 @@ class PromptCapturingCodex:
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
 
 
-class ThreadingCodex:
+class ThreadingCodex(ForkingCodexMixin):
     def __init__(self) -> None:
         self.calls = 0
+        self.prompts: list[str] = []
         self.thread_ids: list[str | None] = []
         self.developer_instructions: list[str | None] = []
 
@@ -255,6 +306,7 @@ class ThreadingCodex:
         developer_instructions: str | None = None,
     ) -> CodexRunResult:
         self.calls += 1
+        self.prompts.append(prompt)
         self.thread_ids.append(thread_id)
         self.developer_instructions.append(developer_instructions)
         payload = {
@@ -603,6 +655,9 @@ def test_dry_run_records_memory_acknowledgement_without_posting(tmp_path):
         assert record["memory_acknowledgement"] == "Memory updated: added conversation memory: Silent memory fact"
         assert record["post"]["dry_run"] is True
         assert record["post"]["message_to_post"] == record["memory_acknowledgement"]
+        pending = storage.read_pending_posted_bot_updates(message.session_key)
+        assert pending[-1]["source"] == "conversation_turn"
+        assert pending[-1]["content"] == record["memory_acknowledgement"]
 
     asyncio.run(scenario())
 
@@ -639,7 +694,7 @@ def test_memory_acknowledgement_formats_applied_add_replace_and_remove(tmp_path)
     )
 
 
-def test_current_message_is_not_duplicated_in_rendered_prompt(tmp_path):
+def test_current_message_is_not_duplicated_and_recent_context_is_not_rendered(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -659,12 +714,13 @@ def test_current_message_is_not_duplicated_in_rendered_prompt(tmp_path):
         await bot._handle_message(current)
 
         assert codex.prompt.count("current request") == 1
-        assert "previous context" in codex.prompt
+        assert "previous context" not in codex.prompt
         assert "Instruction Layers" not in codex.prompt
         assert "Scoped Memory" not in codex.prompt
         assert codex.thread_ids == [None]
         assert codex.developer_instructions[0] is not None
-        assert "Non-Negotiable Runtime Contract" in codex.developer_instructions[0]
+        assert "Codex Thread Contract" in codex.developer_instructions[0]
+        assert "schedule-worker-policy" not in codex.developer_instructions[0]
 
     asyncio.run(scenario())
 
@@ -694,7 +750,7 @@ def test_resumed_thread_gets_no_recent_context_or_developer_instructions(tmp_pat
     asyncio.run(scenario())
 
 
-def test_legacy_thread_without_instruction_marker_starts_fresh_with_bootstrap(tmp_path):
+def test_legacy_thread_without_instruction_marker_starts_fresh_without_recent_context(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -717,7 +773,7 @@ def test_legacy_thread_without_instruction_marker_starts_fresh_with_bootstrap(tm
         metadata = storage.load_metadata(current.session_key)
         assert codex.thread_ids == [None]
         assert codex.developer_instructions[0] is not None
-        assert "legacy context" in codex.prompt
+        assert "legacy context" not in codex.prompt
         assert metadata.codex_thread_id == "thread-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
 
@@ -756,10 +812,45 @@ def test_memory_entries_are_conditionally_injected_into_codex_prompt(tmp_path):
         assert "Scoped Memory" in codex.prompts[0]
         assert "Launch date is Friday" in codex.prompts[0]
         assert "remembered background" in codex.prompts[0].casefold()
-        assert "use memory_ops to correct stale memory" in codex.prompts[0]
+        assert "memory worker may correct stale memory" in codex.prompts[0]
         assert "Launch date is Friday" not in (codex.developer_instructions[0] or "")
         assert "Scoped Memory" not in codex.prompts[1]
         assert storage.load_metadata(message.session_key).last_injected_memory_hash is not None
+
+    asyncio.run(scenario())
+
+
+def test_posted_bot_update_is_injected_once_on_next_turn(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        codex = ThreadingCodex()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+        )
+        first = _message(1, "first request")
+        second = _message(2, "second request")
+
+        await bot._handle_message(first)
+        pending = storage.read_pending_posted_bot_updates(first.session_key)
+        assert len(pending) == 1
+        assert pending[0]["content"] == "Reply 1"
+
+        await bot._handle_message(second)
+
+        assert "Posted Bot Updates" in codex.prompts[1]
+        assert "Reply 1" in codex.prompts[1]
+        assert "Reply 1" in codex.worker_prompts["memory"]
+        assert "Reply 1" in codex.worker_prompts["schedule"]
+        remaining = storage.read_pending_posted_bot_updates(first.session_key)
+        assert len(remaining) == 1
+        assert remaining[0]["content"] == "Reply 2"
 
     asyncio.run(scenario())
 
@@ -998,7 +1089,7 @@ def test_bot_authored_reaction_event_is_ignored(tmp_path):
     asyncio.run(scenario())
 
 
-def test_active_reaction_context_is_rendered_on_next_normal_message(tmp_path):
+def test_active_reaction_on_prior_message_is_not_replayed_as_recent_context(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         storage = WorkspaceStorage(tmp_path)
@@ -1018,7 +1109,7 @@ def test_active_reaction_context_is_rendered_on_next_normal_message(tmp_path):
         await bot.enqueue_event(_reaction_event(1, user_full_name="Bob"))
         await bot._handle_message(current)
 
-        assert "previous context Reactions: Bob 100" in codex.prompt
+        assert "previous context Reactions: Bob 100" not in codex.prompt
         assert "current request" in codex.prompt
 
     asyncio.run(scenario())
@@ -1056,7 +1147,8 @@ def test_update_message_move_event_relocates_records_without_codex_turn(tmp_path
             }
         )
         await bot._handle_message(release)
-        assert "moved context" in codex.prompt
+        assert "moved context" not in codex.prompt
+        assert "new message" in codex.prompt
 
     asyncio.run(scenario())
 

@@ -4,7 +4,34 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import SessionKey, safe_slug, scoped_conversation_dir, scoped_stream_dir
-from .workspace import RUNTIME_CONTRACT_FILE, strip_markdown_comments
+from .workspace import CODEX_THREAD_CONTRACT_FILE, strip_markdown_comments
+
+
+ROLE_POLICY_FILES: dict[str, tuple[str, ...]] = {
+    "reply": (
+        "AGENTS.md",
+        "references/reply-thread-policy.md",
+        "memory/AGENTS.md",
+    ),
+    "memory_worker": (
+        "references/memory-worker-policy.md",
+        "memory/AGENTS.md",
+    ),
+    "skill_worker": (
+        "references/skill-worker-policy.md",
+        "memory/AGENTS.md",
+    ),
+    "schedule_worker": (
+        "references/schedule-worker-policy.md",
+        "memory/AGENTS.md",
+    ),
+    "scheduled_job": (
+        "AGENTS.md",
+        "references/scheduled-job-policy.md",
+        "references/memory-worker-policy.md",
+        "memory/AGENTS.md",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -24,6 +51,7 @@ class InstructionLoader:
         stream: str,
         topic_hash: str,
         *,
+        role: str = "reply",
         topic: str | None = None,
         stream_id: int | None = None,
         conversation_type: str = "stream",
@@ -32,6 +60,7 @@ class InstructionLoader:
         sources = self.sources(
             stream=stream,
             topic_hash=topic_hash,
+            role=role,
             topic=topic,
             stream_id=stream_id,
             conversation_type=conversation_type,
@@ -58,30 +87,30 @@ class InstructionLoader:
         stream: str,
         topic_hash: str,
         *,
+        role: str = "reply",
         topic: str | None = None,
         stream_id: int | None = None,
         conversation_type: str = "stream",
         private_user_key: str | None = None,
     ) -> list[InstructionSource]:
+        if role not in ROLE_POLICY_FILES:
+            raise ValueError(f"unknown instruction role: {role!r}")
         candidates: list[tuple[str, Path]] = [
-            (RUNTIME_CONTRACT_FILE, self.root / RUNTIME_CONTRACT_FILE),
-            ("AGENTS.md", self.root / "AGENTS.md"),
-            ("references/participation.md", self.root / "references" / "participation.md"),
-            ("references/memory-policy.md", self.root / "references" / "memory-policy.md"),
-            ("memory/AGENTS.md", self.root / "memory" / "AGENTS.md"),
+            (CODEX_THREAD_CONTRACT_FILE, self.root / CODEX_THREAD_CONTRACT_FILE),
         ]
+        candidates.extend((relative, self.root / relative) for relative in ROLE_POLICY_FILES[role])
         candidates.extend(self._local_candidates(stream, topic_hash, topic, stream_id, conversation_type, private_user_key))
 
         sources: list[InstructionSource] = []
         for index, (label, path) in enumerate(candidates):
             if not path.exists():
                 if index == 0:
-                    raise FileNotFoundError(f"runtime contract file missing: {path}")
+                    raise FileNotFoundError(f"Codex thread contract file missing: {path}")
                 continue
             content = path.read_text(encoding="utf-8")
             if not strip_markdown_comments(content):
                 if index == 0:
-                    raise ValueError(f"runtime contract file is empty: {path}")
+                    raise ValueError(f"Codex thread contract file is empty: {path}")
                 continue
             sources.append(InstructionSource(label, path, content))
         return sources

@@ -1,4 +1,4 @@
-Zulip conversation update.
+Zulip conversation update for the skill worker.
 
 # Conversation
 
@@ -6,11 +6,7 @@ Zulip conversation update.
 - Reply required: $reply_required
 - Directly addressed: $directly_addressed
 
-$memory_context
-
-# Recent Zulip Context
-
-$recent_context
+$injected_context
 
 # New Zulip Message(s)
 
