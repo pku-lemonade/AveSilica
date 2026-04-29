@@ -379,8 +379,8 @@ def test_zulip_typing_notifier_sends_stream_and_private_requests():
     assert client.requests == [
         {"type": "stream", "op": "start", "stream_id": 7, "topic": "Launch"},
         {"type": "stream", "op": "stop", "stream_id": 7, "topic": "Launch"},
-        {"type": "private", "op": "start", "to": [3]},
-        {"type": "private", "op": "stop", "to": [3]},
+        {"type": "direct", "op": "start", "to": [3]},
+        {"type": "direct", "op": "stop", "to": [3]},
     ]
 
 

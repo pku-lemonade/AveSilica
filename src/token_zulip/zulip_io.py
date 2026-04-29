@@ -470,7 +470,7 @@ class ZulipTypingNotifier:
             if message.sender_id is None:
                 return None
             return {
-                "type": "private",
+                "type": "direct",
                 "op": op,
                 "to": [message.sender_id],
             }
