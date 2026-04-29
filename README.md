@@ -204,7 +204,7 @@ Human conversation says: follow up Friday / remind us / run this weekly
        skills: []
        origin: current Zulip topic/private chat
        next_run_at: UTC ISO timestamp
-  -> Sili posts "Scheduled: ..."
+  -> Sili posts a Markdown acknowledgement with name, trigger, next run, and job id
 ```
 
 Creating a skill-backed scheduled job:
@@ -215,7 +215,7 @@ Human conversation asks for a reusable workflow
   -> SkillStore writes workspace/skills/<name>/SKILL.md
   -> same decision may return schedule_ops.create with skills: ["<name>"]
   -> ScheduleStore validates the skill exists and stores only the skill name
-  -> Sili posts both "Skill saved: ..." and "Scheduled: ..."
+  -> Sili posts both "Skill saved: ..." and a Markdown schedule acknowledgement
 ```
 
 Running a due scheduled job:
@@ -253,7 +253,7 @@ Zulip upload links in raw Markdown are downloaded to the session's `uploads/<mes
 
 When a stream/topic or private-chat session already has a marked Codex thread, TokenZulip resumes that thread and sends only the new Zulip message batch plus any changed scoped memory snapshot. New or legacy unmarked sessions start a fresh Codex thread with composed `developer_instructions` and a capped bootstrap of previous messages. `TOKENZULIP_RECENT_MESSAGES` controls that bootstrap cap and defaults to 100.
 
-Codex returns structured output with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, `schedule_ops`, `skill_ops`, and confidence via the native `output_schema`. The orchestrator validates memory, skill, and schedule operations, persists applied changes, appends deterministic acknowledgements, and then posts any reply.
+Codex returns structured output with `should_reply`, `reply_kind`, `message_to_post`, `memory_ops`, `schedule_ops`, `skill_ops`, and confidence via the native `output_schema`. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. The orchestrator validates memory, skill, and schedule operations, persists applied changes, appends deterministic acknowledgements, and then posts any reply.
 
 When schedules are enabled, the listener also runs a background scheduler. Configure it with `TOKENZULIP_SCHEDULES_ENABLED`, `TOKENZULIP_SCHEDULE_TICK_SECONDS`, `TOKENZULIP_SCHEDULE_TIMEZONE`, and `TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS`. Recurring jobs use separate job-scoped Codex threads so scheduled automation history does not pollute the human Zulip conversation thread.
 

@@ -22,7 +22,7 @@ try:
 except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
-from .models import NormalizedMessage, NormalizedMessageMove, ScheduleOperation, SessionKey, safe_slug, utc_now_iso
+from .models import NormalizedMessage, NormalizedMessageMove, ScheduleOperation, ScheduleSpec, SessionKey, safe_slug, utc_now_iso
 
 
 SCHEDULE_CODEX_INSTRUCTION_MODE = "scheduled-v1"
@@ -95,18 +95,7 @@ def parse_schedule(value: str, timezone_name: str) -> dict[str, Any]:
         }
 
     if "T" in schedule or re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", schedule):
-        text = schedule.replace("Z", "+00:00")
-        if " " in text and "T" not in text:
-            text = text.replace(" ", "T", 1)
-        dt = datetime.fromisoformat(text)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=tz)
-        return {
-            "kind": "once",
-            "run_at": utc_iso(dt),
-            "display": f"once at {dt.astimezone(tz).strftime('%Y-%m-%d %H:%M %Z')}",
-            "timezone": timezone_name,
-        }
+        return _parse_once_at(schedule, timezone_name)
 
     minutes = parse_duration(schedule)
     run_at = utc_now() + timedelta(minutes=minutes)
@@ -116,6 +105,81 @@ def parse_schedule(value: str, timezone_name: str) -> dict[str, Any]:
         "display": f"once in {schedule}",
         "timezone": timezone_name,
     }
+
+
+def parse_schedule_spec(spec: ScheduleSpec, timezone_name: str) -> dict[str, Any]:
+    kind = spec.kind
+    if kind == "unchanged":
+        raise ValueError("schedule_spec is unchanged")
+    if kind == "once_at":
+        return _parse_once_at(spec.run_at, timezone_name)
+    if kind == "once_in":
+        minutes = parse_duration(spec.duration)
+        run_at = utc_now() + timedelta(minutes=minutes)
+        return {
+            "kind": "once",
+            "run_at": utc_iso(run_at),
+            "display": f"once in {spec.duration.strip()}",
+            "timezone": timezone_name,
+        }
+    if kind == "interval":
+        minutes = parse_duration(spec.duration)
+        return {
+            "kind": "interval",
+            "minutes": minutes,
+            "display": f"every {minutes}m",
+            "timezone": timezone_name,
+        }
+    if kind == "cron":
+        cron_expr = spec.cron.strip()
+        if not cron_expr:
+            raise ValueError("cron is required for cron schedule_spec")
+        tz = zoneinfo_for(timezone_name)
+        _validate_cron_expr(cron_expr, tz)
+        return {
+            "kind": "cron",
+            "expr": cron_expr,
+            "display": cron_expr,
+            "timezone": timezone_name,
+        }
+    raise ValueError(f"invalid schedule_spec kind: {kind!r}")
+
+
+def _parse_once_at(value: str, timezone_name: str) -> dict[str, Any]:
+    run_at = value.strip()
+    if not run_at:
+        raise ValueError("run_at is required for once_at schedule_spec")
+    tz = zoneinfo_for(timezone_name)
+    text = run_at.replace("Z", "+00:00")
+    if " " in text and "T" not in text:
+        text = text.replace(" ", "T", 1)
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"invalid ISO timestamp: {run_at!r}") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return {
+        "kind": "once",
+        "run_at": utc_iso(dt),
+        "display": f"once at {_format_local_dt(dt, timezone_name)}",
+        "timezone": timezone_name,
+    }
+
+
+def _format_local_dt(dt: datetime, timezone_name: str) -> str:
+    tz = zoneinfo_for(timezone_name)
+    return f"{dt.astimezone(tz).strftime('%Y-%m-%d %H:%M')} {timezone_name}"
+
+
+def _operation_has_schedule(op: ScheduleOperation) -> bool:
+    return op.schedule_spec.has_schedule() or bool(op.schedule.strip())
+
+
+def _parse_operation_schedule(op: ScheduleOperation, timezone_name: str) -> dict[str, Any]:
+    if op.schedule_spec.has_schedule():
+        return parse_schedule_spec(op.schedule_spec, timezone_name)
+    return parse_schedule(op.schedule, timezone_name)
 
 
 def compute_next_run(schedule: dict[str, Any], timezone_name: str, last_run_at: str | None = None) -> str | None:
@@ -206,10 +270,10 @@ class ScheduleStore:
     ) -> dict[str, Any]:
         if not op.prompt.strip():
             return self._rejected("create", "prompt is required", name=op.name)
-        if not op.schedule.strip():
+        if not _operation_has_schedule(op):
             return self._rejected("create", "schedule is required", name=op.name)
         skill_names = self._validated_skills(op.skills, skills)
-        schedule = parse_schedule(op.schedule, self.timezone_name)
+        schedule = _parse_operation_schedule(op, self.timezone_name)
         next_run_at = compute_next_run(schedule, self.timezone_name)
         if next_run_at is None:
             return self._rejected("create", "schedule has no future run", name=op.name)
@@ -274,8 +338,8 @@ class ScheduleStore:
                 repeat_state = dict(updated.get("repeat") or {})
                 repeat_state["times"] = op.repeat
                 updated["repeat"] = repeat_state
-            if op.schedule.strip():
-                schedule = parse_schedule(op.schedule, self.timezone_name)
+            if _operation_has_schedule(op):
+                schedule = _parse_operation_schedule(op, self.timezone_name)
                 updated["schedule"] = schedule
                 updated["schedule_display"] = schedule.get("display", op.schedule)
                 if updated.get("state") != "paused":
@@ -324,6 +388,7 @@ class ScheduleStore:
         return {
             "action": "resume",
             "status": "applied",
+            "job": self._public_job(updated),
             "job_id": updated["id"],
             "name": updated["name"],
             "next_run_at": updated.get("next_run_at"),
@@ -343,6 +408,7 @@ class ScheduleStore:
         return {
             "action": "run_now",
             "status": "applied",
+            "job": self._public_job(updated),
             "job_id": updated["id"],
             "name": updated["name"],
             "next_run_at": updated.get("next_run_at"),
@@ -579,6 +645,7 @@ class ScheduleStore:
         return {
             "action": op.action,
             "status": "applied",
+            "job": self._public_job(updated),
             "job_id": updated["id"],
             "name": updated["name"],
             "next_run_at": updated.get("next_run_at"),
@@ -636,6 +703,7 @@ class ScheduleStore:
             "id": job.get("id"),
             "name": job.get("name"),
             "schedule": job.get("schedule_display"),
+            "schedule_detail": job.get("schedule") or {},
             "next_run_at": job.get("next_run_at"),
             "last_run_at": job.get("last_run_at"),
             "last_status": job.get("last_status"),

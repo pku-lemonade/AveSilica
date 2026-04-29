@@ -9,8 +9,8 @@ from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
 from token_zulip.loop import AgentLoop
 from token_zulip.memory import MemoryStore
-from token_zulip.models import NormalizedMessage, ScheduleOperation
-from token_zulip.schedules import ScheduleStore, parse_schedule
+from token_zulip.models import NormalizedMessage, ScheduleOperation, ScheduleSpec
+from token_zulip.schedules import ScheduleStore, parse_schedule, parse_schedule_spec
 from token_zulip.skills import SkillStore
 from token_zulip.storage import WorkspaceStorage
 from token_zulip.workspace import initialize_workspace
@@ -110,6 +110,38 @@ def test_parse_schedule_uses_configured_timezone_for_naive_iso():
     assert "Asia" not in schedule["run_at"]
 
 
+def test_parse_schedule_spec_supports_decomposed_kinds():
+    once_at = parse_schedule_spec(ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"), "Asia/Shanghai")
+    once_in = parse_schedule_spec(ScheduleSpec(kind="once_in", duration="30m"), "Asia/Shanghai")
+    interval = parse_schedule_spec(ScheduleSpec(kind="interval", duration="2h"), "Asia/Shanghai")
+    cron = parse_schedule_spec(ScheduleSpec(kind="cron", cron="0 9 * * *"), "Asia/Shanghai")
+
+    assert once_at["kind"] == "once"
+    assert once_at["run_at"] == "2030-01-02T01:00:00+00:00"
+    assert once_in["kind"] == "once"
+    assert interval["kind"] == "interval"
+    assert interval["minutes"] == 120
+    assert cron["kind"] == "cron"
+    assert cron["expr"] == "0 9 * * *"
+
+
+def test_active_schema_requires_decomposed_schedule_spec():
+    schema_path = Path(__file__).parent.parent / "workspace" / "references" / "decision-schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schedule_props = schema["properties"]["schedule_ops"]["items"]["properties"]
+    required = schema["properties"]["schedule_ops"]["items"]["required"]
+
+    assert "schedule" not in schedule_props
+    assert "schedule_spec" in required
+    assert schedule_props["schedule_spec"]["properties"]["kind"]["enum"] == [
+        "unchanged",
+        "once_at",
+        "once_in",
+        "interval",
+        "cron",
+    ]
+
+
 def test_schedule_create_validates_referenced_skills(tmp_path):
     initialize_workspace(tmp_path)
     skills = SkillStore(tmp_path / "skills")
@@ -166,7 +198,12 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
                     "name": "Weekly digest",
                     "match": "",
                     "prompt": "Prepare a digest.",
-                    "schedule": "2030-01-02T09:00:00",
+                    "schedule_spec": {
+                        "kind": "once_at",
+                        "run_at": "2030-01-02T09:00:00",
+                        "duration": "",
+                        "cron": "",
+                    },
                     "repeat": None,
                     "skills": ["weekly-digest"],
                     "confidence": 0.9,
@@ -189,9 +226,42 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert (tmp_path / "skills" / "weekly-digest" / "SKILL.md").exists()
         assert (tmp_path / "schedules" / "jobs.json").exists()
         assert "Skill saved: weekly-digest" in poster.posts[0]["content"]
-        assert "Scheduled: Weekly digest" in poster.posts[0]["content"]
+        assert "**Schedule created**" in poster.posts[0]["content"]
+        assert "- Name: Weekly digest" in poster.posts[0]["content"]
+        assert "- Trigger: once at 2030-01-02 09:00 Asia/Shanghai" in poster.posts[0]["content"]
+        assert "- Next run: 2030-01-02 09:00 Asia/Shanghai" in poster.posts[0]["content"]
 
     asyncio.run(scenario())
+
+
+def test_daily_morning_request_uses_cron_schedule_spec(tmp_path):
+    store = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+    op = ScheduleOperation.from_mapping(
+        {
+            "action": "create",
+            "job_id": "",
+            "name": "Daily paper digest",
+            "match": "",
+            "prompt": "Find one paper and summarize it.",
+            "schedule_spec": {
+                "kind": "cron",
+                "run_at": "",
+                "duration": "",
+                "cron": "0 9 * * *",
+            },
+            "repeat": None,
+            "skills": [],
+            "confidence": 0.9,
+        }
+    )
+
+    result = store.create_job(_message(1), op)
+
+    assert result["status"] == "applied"
+    job = store.load_jobs()[0]
+    assert job["schedule"]["kind"] == "cron"
+    assert job["schedule"]["expr"] == "0 9 * * *"
+    assert job["schedule"]["timezone"] == "Asia/Shanghai"
 
 
 def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):

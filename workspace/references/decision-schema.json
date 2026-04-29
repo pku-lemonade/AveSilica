@@ -82,7 +82,7 @@
           "name",
           "match",
           "prompt",
-          "schedule",
+          "schedule_spec",
           "repeat",
           "skills",
           "confidence"
@@ -114,9 +114,41 @@
             "description": "Self-contained scheduled task prompt for create/update. Empty string when unchanged.",
             "type": "string"
           },
-          "schedule": {
-            "description": "Use ISO timestamp, duration like 30m, interval like every 2h, or cron expression.",
-            "type": "string"
+          "schedule_spec": {
+            "description": "Decomposed schedule. Do not use natural phrases. For no schedule change, use kind unchanged with empty run_at/duration/cron.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "run_at",
+              "duration",
+              "cron"
+            ],
+            "properties": {
+              "kind": {
+                "description": "once_at: one-shot ISO timestamp; once_in: one-shot duration; interval: recurring duration; cron: recurring 5-field cron; unchanged: no schedule change for update/remove/pause/resume/list/run_now.",
+                "type": "string",
+                "enum": [
+                  "unchanged",
+                  "once_at",
+                  "once_in",
+                  "interval",
+                  "cron"
+                ]
+              },
+              "run_at": {
+                "description": "ISO timestamp for once_at, e.g. 2026-04-29T09:00:00. Empty string for other kinds. Naive timestamps use the scheduling timezone.",
+                "type": "string"
+              },
+              "duration": {
+                "description": "Duration for once_in or interval, e.g. 30m, 2h, or 1d. Empty string for other kinds.",
+                "type": "string"
+              },
+              "cron": {
+                "description": "5-field cron for cron kind, e.g. 0 9 * * * for every day at 09:00. Empty string for other kinds.",
+                "type": "string"
+              }
+            }
           },
           "repeat": {
             "description": "Positive repeat count, or null for default/infinite depending on schedule kind.",

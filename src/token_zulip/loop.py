@@ -5,6 +5,7 @@ import hashlib
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from .codex_adapter import CodexAdapter
@@ -561,6 +562,14 @@ class AgentLoop:
                 "updates, cancellations, listing requests, or run-now requests. "
                 "Simple reminders do not need skills; reusable workflows may use skill_ops and reference "
                 "the saved skill name in schedule_ops.skills.",
+                "",
+                "Use schedule_spec instead of natural schedule strings. Valid examples:",
+                '- "tomorrow at 09:00" -> {"kind":"once_at","run_at":"YYYY-MM-DDT09:00:00","duration":"","cron":""}',
+                '- "in 30 minutes" -> {"kind":"once_in","run_at":"","duration":"30m","cron":""}',
+                '- "every 2 hours" -> {"kind":"interval","run_at":"","duration":"2h","cron":""}',
+                '- "every morning at 9" -> {"kind":"cron","run_at":"","duration":"","cron":"0 9 * * *"}',
+                'For update/remove/pause/resume/list/run_now without a schedule change, use {"kind":"unchanged","run_at":"","duration":"","cron":""}.',
+                "Never put natural phrases such as 'every morning Asia/Shanghai' into schedule fields.",
             ]
         )
 
@@ -622,45 +631,113 @@ class AgentLoop:
             if action == "list" and status == "applied":
                 jobs = result.get("jobs") if isinstance(result.get("jobs"), list) else []
                 if not jobs:
-                    changes.append("Scheduled tasks here: none")
+                    changes.append("**Scheduled tasks here**\n- None")
                 else:
-                    lines = ["Scheduled tasks here:"]
+                    lines = ["**Scheduled tasks here**"]
                     for item in jobs:
                         if not isinstance(item, dict):
                             continue
                         state = str(item.get("state") or ("active" if item.get("enabled", True) else "inactive"))
+                        item_name = str(item.get("name") or item.get("id") or "unnamed schedule")
+                        item_id = str(item.get("id") or "")
+                        id_suffix = f" (`{item_id}`)" if item_id else ""
                         lines.append(
-                            f"- {item.get('name') or item.get('id')}: {item.get('schedule') or 'unscheduled'} "
-                            f"({state}, next: {item.get('next_run_at') or 'none'})"
+                            f"- **{item_name}**{id_suffix}: {self._schedule_trigger_label(item)}; "
+                            f"{state}; next {self._format_schedule_time(item.get('next_run_at'))}"
                         )
                     changes.append("\n".join(lines))
                 continue
             if status == "applied":
-                if action == "create":
-                    changes.append(
-                        f"Scheduled: {display_name or result.get('job_id')} "
-                        f"({result.get('schedule') or job.get('schedule')}, next: {result.get('next_run_at') or job.get('next_run_at')})"
-                    )
-                elif action == "update":
-                    changes.append(
-                        f"Updated schedule: {display_name or result.get('job_id')} "
-                        f"(next: {result.get('next_run_at') or job.get('next_run_at') or 'none'})"
-                    )
-                elif action == "remove":
-                    changes.append(f"Removed schedule: {display_name or result.get('job_id')}")
-                elif action == "pause":
-                    changes.append(f"Paused schedule: {display_name or result.get('job_id')}")
-                elif action == "resume":
-                    changes.append(
-                        f"Resumed schedule: {display_name or result.get('job_id')} "
-                        f"(next: {result.get('next_run_at') or 'none'})"
-                    )
-                elif action == "run_now":
-                    changes.append(f"Queued schedule to run now: {display_name or result.get('job_id')}")
+                changes.append(self._schedule_applied_acknowledgement(action, result, job, display_name))
             elif status == "rejected":
                 target = f" {display_name}" if display_name else ""
-                changes.append(f"Schedule{target} not changed: {reason or 'rejected'}")
-        return "\n".join(changes)
+                lines = ["**Schedule not changed**"]
+                if target:
+                    lines.append(f"- Target:{target}")
+                lines.append(f"- Reason: {reason or 'rejected'}")
+                changes.append("\n".join(lines))
+        return "\n\n".join(changes)
+
+    def _schedule_applied_acknowledgement(
+        self,
+        action: str,
+        result: dict[str, Any],
+        job: dict[str, Any],
+        display_name: str,
+    ) -> str:
+        title = {
+            "create": "Schedule created",
+            "update": "Schedule updated",
+            "remove": "Schedule removed",
+            "pause": "Schedule paused",
+            "resume": "Schedule resumed",
+            "run_now": "Schedule queued",
+        }.get(action, "Schedule updated")
+        job_id = str(result.get("job_id") or job.get("id") or "")
+        name = display_name or job_id or "unnamed schedule"
+        lines = [f"**{title}**", f"- Name: {name}"]
+        if action == "pause":
+            lines.append("- State: paused")
+        elif action in {"create", "update", "resume", "run_now"}:
+            lines.append(f"- Trigger: {self._schedule_trigger_label(job or result)}")
+            next_run_at = result.get("next_run_at") or job.get("next_run_at")
+            lines.append(f"- Next run: {self._format_schedule_time(next_run_at)}")
+        if job_id:
+            lines.append(f"- Job ID: `{job_id}`")
+        return "\n".join(lines)
+
+    def _schedule_trigger_label(self, job: dict[str, Any]) -> str:
+        detail = job.get("schedule_detail")
+        if not isinstance(detail, dict):
+            detail = job.get("schedule") if isinstance(job.get("schedule"), dict) else {}
+        if detail:
+            described = self._describe_schedule_detail(detail)
+            if described:
+                return described
+        schedule = str(job.get("schedule") or "").strip()
+        return schedule or "unscheduled"
+
+    def _describe_schedule_detail(self, schedule: dict[str, Any]) -> str:
+        timezone_name = str(schedule.get("timezone") or self.config.schedule_timezone)
+        kind = str(schedule.get("kind") or "")
+        if kind == "once":
+            return f"once at {self._format_schedule_time(schedule.get('run_at'), timezone_name=timezone_name)}"
+        if kind == "interval":
+            return f"every {self._duration_label(int(schedule.get('minutes') or 0))}"
+        if kind == "cron":
+            expr = str(schedule.get("expr") or "").strip()
+            return self._cron_label(expr, timezone_name)
+        return ""
+
+    def _duration_label(self, minutes: int) -> str:
+        if minutes > 0 and minutes % 1440 == 0:
+            days = minutes // 1440
+            return f"{days}d"
+        if minutes > 0 and minutes % 60 == 0:
+            hours = minutes // 60
+            return f"{hours}h"
+        return f"{minutes}m"
+
+    def _cron_label(self, expr: str, timezone_name: str) -> str:
+        parts = expr.split()
+        if len(parts) >= 5:
+            minute, hour, day, month, weekday = parts[:5]
+            if day == "*" and month == "*" and weekday == "*" and minute.isdigit() and hour.isdigit():
+                return f"every day at {int(hour):02d}:{int(minute):02d} {timezone_name}"
+        return f"{expr} ({timezone_name})" if expr else f"cron ({timezone_name})"
+
+    def _format_schedule_time(self, value: object, *, timezone_name: str | None = None) -> str:
+        if not value:
+            return "none"
+        tz_name = timezone_name or self.config.schedule_timezone
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=zoneinfo_for(tz_name))
+            local_dt = dt.astimezone(zoneinfo_for(tz_name))
+            return f"{local_dt.strftime('%Y-%m-%d %H:%M')} {tz_name}"
+        except (TypeError, ValueError):
+            return str(value)
 
     def _memory_acknowledgement(self, memory_applied: list[dict[str, Any]]) -> str:
         changes = [

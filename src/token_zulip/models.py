@@ -15,6 +15,7 @@ REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
 MEMORY_OPS = {"add", "remove", "replace"}
 MEMORY_SCOPES = {"channel", "conversation", "global"}
 SCHEDULE_OPS = {"create", "update", "remove", "pause", "resume", "list", "run_now"}
+SCHEDULE_SPEC_KINDS = {"unchanged", "once_at", "once_in", "interval", "cron"}
 SKILL_OPS = {"create", "update", "remove"}
 CONVERSATION_TYPES = {"stream", "private"}
 TOPIC_HASH_LENGTH = 6
@@ -328,6 +329,41 @@ class SkillOperation:
 
 
 @dataclass(frozen=True)
+class ScheduleSpec:
+    kind: str = "unchanged"
+    run_at: str = ""
+    duration: str = ""
+    cron: str = ""
+
+    @classmethod
+    def from_mapping(cls, value: dict[str, Any] | None) -> "ScheduleSpec":
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise ValueError("schedule_spec must be an object")
+        kind = str(value.get("kind") or "unchanged").strip().lower()
+        if kind not in SCHEDULE_SPEC_KINDS:
+            raise ValueError(f"invalid schedule_spec kind: {kind!r}")
+        return cls(
+            kind=kind,
+            run_at=str(value.get("run_at") or ""),
+            duration=str(value.get("duration") or ""),
+            cron=str(value.get("cron") or ""),
+        )
+
+    def has_schedule(self) -> bool:
+        return self.kind != "unchanged"
+
+    def to_record(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "run_at": self.run_at,
+            "duration": self.duration,
+            "cron": self.cron,
+        }
+
+
+@dataclass(frozen=True)
 class ScheduleOperation:
     action: str
     job_id: str = ""
@@ -335,6 +371,7 @@ class ScheduleOperation:
     match: str = ""
     prompt: str = ""
     schedule: str = ""
+    schedule_spec: ScheduleSpec = field(default_factory=ScheduleSpec)
     repeat: int | None = None
     skills: tuple[str, ...] = ()
     confidence: float = 0.0
@@ -374,6 +411,7 @@ class ScheduleOperation:
             match=str(value.get("match") or ""),
             prompt=str(value.get("prompt") or ""),
             schedule=str(value.get("schedule") or ""),
+            schedule_spec=ScheduleSpec.from_mapping(value.get("schedule_spec")),
             repeat=repeat,
             skills=skills,
             confidence=confidence,
@@ -387,6 +425,7 @@ class ScheduleOperation:
             "match": self.match,
             "prompt": self.prompt,
             "schedule": self.schedule,
+            "schedule_spec": self.schedule_spec.to_record(),
             "repeat": self.repeat,
             "skills": list(self.skills),
             "confidence": self.confidence,
