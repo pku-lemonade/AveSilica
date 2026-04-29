@@ -109,6 +109,26 @@ class PayloadCodex:
             )
         return CodexTurnWithForksResult(main=main, workers=workers, worker_errors={})
 
+    async def run_worker_fork(
+        self,
+        parent_thread_id: str,
+        worker_spec: CodexWorkerSpec,
+    ) -> CodexRunResult:
+        self.worker_prompts[worker_spec.kind] = worker_spec.prompt
+        self.worker_developer_instructions[worker_spec.kind] = worker_spec.developer_instructions
+        if worker_spec.kind == "schedule":
+            worker_payload = {"schedule_ops": self.payload.get("schedule_ops", [])}
+        elif worker_spec.kind == "memory":
+            worker_payload = {"memory_ops": self.payload.get("memory_ops", [])}
+        elif worker_spec.kind == "skill":
+            worker_payload = {"skill_ops": self.payload.get("skill_ops", [])}
+        else:
+            worker_payload = {}
+        return CodexRunResult(
+            raw_text=json.dumps(worker_payload),
+            thread_id=f"{parent_thread_id}-{worker_spec.kind}",
+        )
+
 
 class FakePoster:
     def __init__(self) -> None:
@@ -259,6 +279,106 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert "- Name: Weekly digest" in poster.posts[0]["content"]
         assert "- Trigger: once at 2030-01-02 09:00 Asia/Shanghai" in poster.posts[0]["content"]
         assert "- Next run: 2030-01-02 09:00 Asia/Shanghai" in poster.posts[0]["content"]
+        schedule_prompt = bot.codex.worker_prompts["schedule"]
+        assert "Skill Availability" in schedule_prompt
+        assert "`weekly-digest`: Use for weekly digests." in schedule_prompt
+        assert "Summarize the topic concisely." not in schedule_prompt
+
+    asyncio.run(scenario())
+
+
+def test_schedule_worker_runs_without_skill_output_for_prompt_only_job(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        payload = {
+            **_silent_payload(),
+            "schedule_ops": [
+                {
+                    "action": "create",
+                    "job_id": "",
+                    "name": "Standalone reminder",
+                    "match": "",
+                    "prompt": "Remind the topic.",
+                    "schedule_spec": {
+                        "kind": "once_at",
+                        "run_at": "2030-01-02T09:00:00",
+                        "duration": "",
+                        "cron": "",
+                    },
+                    "repeat": None,
+                    "skills": [],
+                    "confidence": 0.9,
+                }
+            ],
+        }
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PayloadCodex(payload),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1))
+
+        assert "**Schedule created**" in poster.posts[0]["content"]
+        assert "- Name: Standalone reminder" in poster.posts[0]["content"]
+        assert "## Available Skills\n- None" in bot.codex.worker_prompts["schedule"]
+        assert ScheduleStore(tmp_path, timezone_name="Asia/Shanghai").load_jobs()[0]["skills"] == []
+
+    asyncio.run(scenario())
+
+
+def test_schedule_rejects_skill_reference_when_same_turn_skill_is_rejected(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        payload = {
+            **_silent_payload(),
+            "skill_ops": [
+                {
+                    "action": "create",
+                    "name": "weekly-digest",
+                    "description": "",
+                    "content": "Summarize the topic concisely.",
+                }
+            ],
+            "schedule_ops": [
+                {
+                    "action": "create",
+                    "job_id": "",
+                    "name": "Weekly digest",
+                    "match": "",
+                    "prompt": "Prepare a digest.",
+                    "schedule_spec": {
+                        "kind": "once_at",
+                        "run_at": "2030-01-02T09:00:00",
+                        "duration": "",
+                        "cron": "",
+                    },
+                    "repeat": None,
+                    "skills": ["weekly-digest"],
+                    "confidence": 0.9,
+                }
+            ],
+        }
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PayloadCodex(payload),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1))
+
+        assert "Skill weekly-digest not changed: description is required" in poster.posts[0]["content"]
+        assert "**Schedule not changed**" in poster.posts[0]["content"]
+        assert "- Reason: skill not found: weekly-digest" in poster.posts[0]["content"]
+        assert "rejected create `weekly-digest`: description is required" in bot.codex.worker_prompts["schedule"]
 
     asyncio.run(scenario())
 

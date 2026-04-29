@@ -146,6 +146,7 @@ class ForkingCodexMixin:
         }
         main = await self.run_decision(prompt, thread_id, developer_instructions=developer_instructions)
         main_payload = json.loads(main.raw_text)
+        self._last_main_payload = main_payload  # type: ignore[attr-defined]
         workers = {
             spec.kind: CodexRunResult(
                 raw_text=json.dumps(self.worker_payloads.get(spec.kind) or _worker_payload(main_payload, spec.kind)),
@@ -154,7 +155,31 @@ class ForkingCodexMixin:
             for spec in worker_specs
             if spec.kind not in self.worker_errors
         }
-        return CodexTurnWithForksResult(main=main, workers=workers, worker_errors=dict(self.worker_errors))
+        worker_kinds = {spec.kind for spec in worker_specs}
+        worker_errors = {kind: error for kind, error in self.worker_errors.items() if kind in worker_kinds}
+        return CodexTurnWithForksResult(main=main, workers=workers, worker_errors=worker_errors)
+
+    async def run_worker_fork(
+        self,
+        parent_thread_id: str,
+        worker_spec: CodexWorkerSpec,
+    ) -> CodexRunResult:
+        if not hasattr(self, "worker_prompts"):
+            self.worker_prompts = {}  # type: ignore[attr-defined]
+        if not hasattr(self, "worker_developer_instructions"):
+            self.worker_developer_instructions = {}  # type: ignore[attr-defined]
+        self.worker_prompts[worker_spec.kind] = worker_spec.prompt  # type: ignore[attr-defined]
+        self.worker_developer_instructions[worker_spec.kind] = worker_spec.developer_instructions  # type: ignore[attr-defined]
+        if worker_spec.kind in self.worker_errors:
+            raise RuntimeError(self.worker_errors[worker_spec.kind])
+        payload = self.worker_payloads.get(worker_spec.kind) or _worker_payload(
+            getattr(self, "_last_main_payload", {}),
+            worker_spec.kind,
+        )
+        return CodexRunResult(
+            raw_text=json.dumps(payload),
+            thread_id=f"{parent_thread_id}-{worker_spec.kind}",
+        )
 
 
 class BlockingCodex(ForkingCodexMixin):

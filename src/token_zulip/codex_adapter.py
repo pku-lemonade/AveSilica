@@ -54,6 +54,13 @@ class CodexAdapter(Protocol):
     ) -> CodexTurnWithForksResult:
         ...
 
+    async def run_worker_fork(
+        self,
+        parent_thread_id: str,
+        worker_spec: CodexWorkerSpec,
+    ) -> CodexRunResult:
+        ...
+
 
 class CodexSdkAdapter:
     def __init__(
@@ -190,6 +197,42 @@ class CodexSdkAdapter:
                 ),
                 workers=workers,
                 worker_errors=worker_errors,
+            )
+
+    async def run_worker_fork(
+        self,
+        parent_thread_id: str,
+        worker_spec: CodexWorkerSpec,
+    ) -> CodexRunResult:
+        try:
+            from codex_app_server import AppServerConfig, AsyncCodex  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "Codex Python SDK is not installed. Install the optional SDK dependency "
+                "or provide a custom CodexAdapter."
+            ) from exc
+
+        parent_id = parent_thread_id.strip()
+        if not parent_id:
+            raise RuntimeError("Codex parent thread id is required for worker fork")
+
+        self.cwd.mkdir(parents=True, exist_ok=True)
+        async with AsyncCodex(config=AppServerConfig(codex_bin=self._codex_bin(), cwd=str(self.cwd))) as codex:
+            fork_kwargs = {
+                **self._thread_kwargs(),
+                "developer_instructions": worker_spec.developer_instructions,
+                "ephemeral": True,
+                "exclude_turns": True,
+            }
+            fork = await codex.thread_fork(parent_id, **fork_kwargs)
+            result = await fork.run(
+                worker_spec.prompt,
+                **self._run_kwargs(output_schema_path=worker_spec.output_schema_path),
+            )
+            return CodexRunResult(
+                raw_text=str(getattr(result, "final_response", "") or ""),
+                thread_id=str(getattr(fork, "id", "") or "") or None,
+                raw_result=result,
             )
 
     def _thread_kwargs(self) -> dict[str, Any]:

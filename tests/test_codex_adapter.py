@@ -146,3 +146,30 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
     ]
     assert FakeAsyncCodex.last.forks[0].run_kwargs["output_schema"]
     assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "memory prompt"
+
+    worker = asyncio.run(
+        adapter.run_worker_fork(
+            "thread-1",
+            CodexWorkerSpec(
+                kind="schedule",
+                prompt="schedule prompt",
+                developer_instructions="schedule instructions",
+                output_schema_path=tmp_path / "references" / "schedule-decision-schema.json",
+            ),
+        )
+    )
+
+    assert worker.thread_id == "fork-1"
+    assert FakeAsyncCodex.last.fork_kwargs == [
+        {
+            "thread_id": "thread-1",
+            "model": "gpt-test",
+            "cwd": str(tmp_path),
+            "approval_policy": "never",
+            "sandbox": "danger-full-access",
+            "developer_instructions": "schedule instructions",
+            "ephemeral": True,
+            "exclude_turns": True,
+        }
+    ]
+    assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "schedule prompt"

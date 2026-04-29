@@ -322,15 +322,6 @@ class AgentLoop:
                 ),
                 template_file=SKILL_WORKER_PROMPT_FILE,
             )
-            schedule_prompt = self.prompt_builder.build(
-                PromptParts(
-                    current_messages=messages,
-                    injected_context=self._join_acknowledgements(
-                        [self._schedule_context_for_prompt(), shared_context]
-                    ),
-                ),
-                template_file=SCHEDULE_WORKER_PROMPT_FILE,
-            )
 
             codex_result = await self.codex.run_turn_with_forks(
                 reply_prompt,
@@ -349,12 +340,6 @@ class AgentLoop:
                         prompt=skill_prompt,
                         developer_instructions=self.instructions.compose(role="skill_worker", **instruction_kwargs),
                         output_schema_path=self.config.workspace_dir / SKILL_DECISION_SCHEMA_FILE,
-                    ),
-                    CodexWorkerSpec(
-                        kind="schedule",
-                        prompt=schedule_prompt,
-                        developer_instructions=self.instructions.compose(role="schedule_worker", **instruction_kwargs),
-                        output_schema_path=self.config.workspace_dir / SCHEDULE_DECISION_SCHEMA_FILE,
                     ),
                 ],
             )
@@ -390,11 +375,36 @@ class AgentLoop:
                 messages,
                 codex_result.workers.get("skill"),
             )
+            schedule_context = self._join_acknowledgements(
+                [
+                    self._schedule_context_for_prompt(),
+                    self._skill_availability_context(skill_applied),
+                    shared_context,
+                ]
+            )
+            schedule_prompt = self.prompt_builder.build(
+                PromptParts(
+                    current_messages=messages,
+                    injected_context=schedule_context,
+                ),
+                template_file=SCHEDULE_WORKER_PROMPT_FILE,
+            )
+            schedule_result = await self._run_schedule_worker(
+                key,
+                messages,
+                codex_result.main.thread_id,
+                CodexWorkerSpec(
+                    kind="schedule",
+                    prompt=schedule_prompt,
+                    developer_instructions=self.instructions.compose(role="schedule_worker", **instruction_kwargs),
+                    output_schema_path=self.config.workspace_dir / SCHEDULE_DECISION_SCHEMA_FILE,
+                ),
+            )
             schedule_decision, schedule_applied = self._apply_schedule_worker_result(
                 key,
                 first,
                 messages,
-                codex_result.workers.get("schedule"),
+                schedule_result,
             )
             decision = AgentDecision.from_parts(
                 reply_decision,
@@ -614,8 +624,8 @@ class AgentLoop:
                 "",
                 "The schedule worker uses schedule_ops for clear natural-language reminders, follow-ups, recurring tasks, "
                 "updates, cancellations, listing requests, or run-now requests. "
-                "Simple reminders do not need skills; reusable workflows may use skill_ops and reference "
-                "the saved skill name in schedule_ops.skills.",
+                "Simple reminders do not need skills. Reusable workflows may reference only skill names listed "
+                "in the Skill Availability context.",
                 "",
                 "Use schedule_spec instead of natural schedule strings. Valid examples:",
                 '- "tomorrow at 09:00" -> {"kind":"once_at","run_at":"YYYY-MM-DDT09:00:00","duration":"","cron":""}',
@@ -626,6 +636,71 @@ class AgentLoop:
                 "Never put natural phrases such as 'every morning Asia/Shanghai' into schedule fields.",
             ]
         )
+
+    def _skill_availability_context(self, skill_applied: list[dict[str, Any]]) -> str:
+        sections = [
+            "# Skill Availability",
+            "",
+            "The schedule worker may reference only these available skill names. "
+            "If no listed skill fits a self-contained task, create a prompt-only scheduled job with `skills: []`.",
+        ]
+        summaries = self.skills.list_summaries()
+        if summaries:
+            sections.extend(["", "## Available Skills"])
+            for summary in summaries:
+                name = summary.get("name", "").strip()
+                description = summary.get("description", "").strip()
+                if not name:
+                    continue
+                suffix = f": {description}" if description else ""
+                sections.append(f"- `{name}`{suffix}")
+        else:
+            sections.extend(["", "## Available Skills", "- None"])
+
+        sections.extend(["", "## Skill Changes This Turn"])
+        if not skill_applied:
+            sections.append("- None")
+        for result in skill_applied:
+            status = str(result.get("status") or "unknown")
+            action = str(result.get("action") or "unknown")
+            name = str(result.get("name") or "").strip()
+            reason = str(result.get("reason") or "").strip()
+            target = f" `{name}`" if name else ""
+            detail = f": {reason}" if reason else ""
+            sections.append(f"- {status} {action}{target}{detail}")
+        return "\n".join(sections).rstrip()
+
+    async def _run_schedule_worker(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        parent_thread_id: str | None,
+        worker_spec: CodexWorkerSpec,
+    ) -> CodexRunResult | None:
+        if not parent_thread_id:
+            self.storage.log_error(
+                key,
+                {
+                    "event": "op_worker_failed",
+                    "worker": worker_spec.kind,
+                    "error": "missing parent thread id",
+                    "message_ids": [message.message_id for message in messages],
+                },
+            )
+            return None
+        try:
+            return await self.codex.run_worker_fork(parent_thread_id, worker_spec)
+        except Exception as exc:
+            self.storage.log_error(
+                key,
+                {
+                    "event": "op_worker_failed",
+                    "worker": worker_spec.kind,
+                    "error": str(exc),
+                    "message_ids": [message.message_id for message in messages],
+                },
+            )
+            return None
 
     def _posted_bot_update_context(self, updates: list[dict[str, Any]]) -> str:
         if not updates:

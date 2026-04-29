@@ -190,9 +190,11 @@ Zulip event
     v
 persistent reply/session thread
     |
-    |-- fork_context=true --> memory worker thread   --> memory_ops code path
-    |-- fork_context=true --> skill worker thread    --> skill_ops code path
-    `-- fork_context=true --> schedule worker thread --> schedule_ops code path
+    |-- fork_context=true --> memory worker thread --> memory_ops code path
+    |-- fork_context=true --> skill worker thread  --> skill_ops code path
+    |
+    `-- after skill persistence:
+        fork_context=true --> schedule worker thread --> schedule_ops code path
 
 due scheduled job
     |
@@ -209,7 +211,7 @@ fresh scheduled job thread
 | Reply/session thread | Long-lived per Zulip DM or stream/topic | Previous Codex turns for this Zulip conversation | Current Zulip message batch, scoped durable memory when changed, pending `posted_bot_update` | User-visible reply decision only |
 | Memory worker thread | Ephemeral fork | Previous reply/session thread context | Current Zulip message batch, scoped durable memory when changed, pending `posted_bot_update` | `memory_ops` only |
 | Skill worker thread | Ephemeral fork | Previous reply/session thread context | Current Zulip message batch, scoped durable memory when changed, pending `posted_bot_update` | `skill_ops` only |
-| Schedule worker thread | Ephemeral fork | Previous reply/session thread context | Current Zulip message batch, scoped durable memory when changed, active schedule context, pending `posted_bot_update` | `schedule_ops` only |
+| Schedule worker thread | Ephemeral fork after skill persistence | Reply/session thread context | Current Zulip message batch, scoped durable memory when changed, active schedule context, skill availability summary, pending `posted_bot_update` | `schedule_ops` only |
 | Scheduled job thread | Fresh per job run | None | Job brief, schedule spec, loaded skill content, scoped durable memory, current time | Scheduled result reply and optional `memory_ops` |
 
 `recent_context` is not injected into Codex prompts. Conversation continuity comes from Codex thread history and forked Codex context.
@@ -238,9 +240,11 @@ Zulip event
   -> append messages.jsonl
   -> persistent reply/session Codex thread for this Zulip topic/private chat
        output: message_to_post only
-  -> fork three ephemeral op workers from the reply/session thread
-       memory worker   -> memory_ops   -> workspace/memory/.../MEMORY.md
-       skill worker    -> skill_ops    -> workspace/skills/<name>/SKILL.md
+  -> fork reply-adjacent op workers from the reply/session thread
+       memory worker -> memory_ops -> workspace/memory/.../MEMORY.md
+       skill worker  -> skill_ops  -> workspace/skills/<name>/SKILL.md
+  -> apply skill results
+  -> fork schedule worker with current skill availability
        schedule worker -> schedule_ops -> workspace/schedules/jobs.json
   -> append each worker code path's deterministic acknowledgement
   -> post Zulip reply, or record dry-run post
@@ -266,7 +270,7 @@ Creating a skill-backed scheduled job:
 Human conversation asks for a reusable workflow
   -> skill worker returns skill_ops.create/update
   -> skill worker code path writes workspace/skills/<name>/SKILL.md
-  -> schedule worker may return schedule_ops.create with skills: ["<name>"]
+  -> schedule worker sees the applied skill summary and may return schedule_ops.create with skills: ["<name>"]
   -> schedule worker code path validates the skill exists and stores only the skill name
   -> Sili posts both "Skill saved: ..." and a Markdown schedule acknowledgement
 ```
