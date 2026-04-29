@@ -117,6 +117,30 @@ def _update_message_event() -> dict[str, object]:
     }
 
 
+def _private_event(
+    message_id: int,
+    *,
+    sender_id: int = 1,
+    sender_email: str = "alice@example.com",
+) -> dict[str, object]:
+    return {
+        "type": "message",
+        "message": {
+            "id": message_id,
+            "type": "private",
+            "display_recipient": [
+                {"id": sender_id, "email": sender_email, "full_name": f"User {sender_id}"},
+                {"id": 99, "email": "bot@example.com", "full_name": "Bot"},
+            ],
+            "sender_email": sender_email,
+            "sender_full_name": f"User {sender_id}",
+            "sender_id": sender_id,
+            "content": "hi in dm",
+            "content_type": "text/x-markdown",
+        },
+    }
+
+
 def _worker_payload(payload: dict[str, object], kind: str) -> dict[str, object]:
     if kind == "memory":
         return {"memory_ops": payload.get("memory_ops", [])}
@@ -1395,6 +1419,87 @@ def test_bot_authored_events_are_ignored_without_raw_event_storage(tmp_path):
         assert "ignored bot-authored message" in next((tmp_path / "records" / "errors").glob("*.jsonl")).read_text(
             encoding="utf-8"
         )
+
+    asyncio.run(scenario())
+
+
+def test_private_zulip_event_is_accepted_and_replied_to(tmp_path):
+    class PrivatePoster:
+        def __init__(self) -> None:
+            self.posts: list[dict[str, str]] = []
+
+        async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, str]:
+            assert message.conversation_type == "private"
+            assert message.stream_id is None
+            self.posts.append(
+                {
+                    "to": message.sender_email,
+                    "topic": message.topic,
+                    "content": content,
+                }
+            )
+            return {"result": "success"}
+
+    class PrivateTypingNotifier:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        async def start(self, message: NormalizedMessage) -> None:
+            assert message.conversation_type == "private"
+            self.events.append(
+                {"op": "start", "message_id": message.message_id, "sender_id": message.sender_id}
+            )
+
+        async def stop(self, message: NormalizedMessage) -> None:
+            assert message.conversation_type == "private"
+            self.events.append(
+                {"op": "stop", "message_id": message.message_id, "sender_id": message.sender_id}
+            )
+
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        poster = PrivatePoster()
+        typing = PrivateTypingNotifier()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=ThreadingCodex(),
+            zulip=poster,
+            typing=TypingStatusManager(typing, enabled=True, refresh_seconds=60),
+        )
+
+        first = await bot.enqueue_event(_private_event(1))
+        await bot.drain_once()
+        second = await bot.enqueue_event(_private_event(2, sender_id=2, sender_email="bob@example.com"))
+        await bot.drain_once()
+        first_key = _private_message(1).session_key
+        second_key = _private_message(2, sender_id=2, sender_email="bob@example.com").session_key
+
+        assert first.accepted is True
+        assert first.session_key == "zulip:realm:private:user:1"
+        assert first.message_id == 1
+        assert second.accepted is True
+        assert second.session_key == "zulip:realm:private:user:2"
+        assert second.message_id == 2
+        assert poster.posts == [
+            {"to": "alice@example.com", "topic": "private", "content": "Reply 1"},
+            {"to": "bob@example.com", "topic": "private", "content": "Reply 2"},
+        ]
+        assert typing.events == [
+            {"op": "start", "message_id": 1, "sender_id": 1},
+            {"op": "stop", "message_id": 1, "sender_id": 1},
+            {"op": "start", "message_id": 2, "sender_id": 2},
+            {"op": "stop", "message_id": 2, "sender_id": 2},
+        ]
+        assert len(storage.read_recent_messages(first_key, 10)) == 1
+        assert len(storage.read_recent_messages(second_key, 10)) == 1
+        assert storage.session_dir(first_key).name == "private-1"
+        assert storage.session_dir(second_key).name == "private-2"
+        assert storage.load_metadata(first_key).codex_thread_id == "thread-1"
+        assert storage.load_metadata(second_key).codex_thread_id == "thread-2"
 
     asyncio.run(scenario())
 
