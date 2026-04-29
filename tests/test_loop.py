@@ -131,6 +131,21 @@ class ForkingCodexMixin:
     worker_payloads: dict[str, dict[str, object]] = {}
     worker_errors: dict[str, str] = {}
 
+    async def ensure_thread(
+        self,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        if not hasattr(self, "ensure_thread_ids"):
+            self.ensure_thread_ids = []  # type: ignore[attr-defined]
+        if not hasattr(self, "ensure_developer_instructions"):
+            self.ensure_developer_instructions = []  # type: ignore[attr-defined]
+        self.ensure_thread_ids.append(thread_id)  # type: ignore[attr-defined]
+        self.ensure_developer_instructions.append(developer_instructions)  # type: ignore[attr-defined]
+        resolved_thread_id = thread_id or f"thread-{getattr(self, 'calls', 0) + 1}"
+        return CodexRunResult(raw_text="", thread_id=resolved_thread_id)
+
     async def run_turn_with_forks(
         self,
         prompt: str,
@@ -194,6 +209,7 @@ class BlockingCodex(ForkingCodexMixin):
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         self.calls += 1
         if self.calls == 1:
@@ -216,6 +232,7 @@ class FailingCodex(ForkingCodexMixin):
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         raise RuntimeError("codex failed")
 
@@ -235,6 +252,7 @@ class MemoryCheckingCodex(ForkingCodexMixin):
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         payload = {
             "should_reply": True,
@@ -260,6 +278,7 @@ class SilentMemoryCodex(ForkingCodexMixin):
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         payload = {
             "should_reply": False,
@@ -277,6 +296,7 @@ class SilentCodex(ForkingCodexMixin):
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         payload = {
             "should_reply": False,
@@ -301,6 +321,7 @@ class PromptCapturingCodex(ForkingCodexMixin):
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         self.prompt = prompt
         self.prompts.append(prompt)
@@ -329,6 +350,7 @@ class ThreadingCodex(ForkingCodexMixin):
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         self.calls += 1
         self.prompts.append(prompt)
@@ -371,12 +393,25 @@ class MissingThreadCodex(ForkingCodexMixin):
             worker_specs=worker_specs,
         )
 
+    async def ensure_thread(
+        self,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        self.thread_ids.append(thread_id)
+        self.developer_instructions.append(developer_instructions)
+        if thread_id == "missing-thread":
+            raise RuntimeError("JSON-RPC error -32600: no rollout found for thread id missing-thread")
+        return CodexRunResult(raw_text="", thread_id=thread_id or f"recovered-thread-{self.calls + 1}")
+
     async def run_decision(
         self,
         prompt: str,
         thread_id: str | None,
         *,
         developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         self.calls += 1
         payload = {
@@ -549,9 +584,10 @@ def test_stream_messages_type_for_directly_addressed_and_ordinary_messages(tmp_p
         await bot._handle_message(_message(2))
 
         assert typing.events == [("start", 1), ("stop", 1), ("start", 2), ("stop", 2)]
-        assert bot.codex.thread_ids == [None, "thread-1"]
-        assert bot.codex.developer_instructions[0] is not None
-        assert bot.codex.developer_instructions[1] is None
+        assert bot.codex.thread_ids == ["thread-1", "thread-1"]
+        assert bot.codex.developer_instructions == [None, None]
+        assert bot.codex.ensure_developer_instructions[0] is not None
+        assert bot.codex.ensure_developer_instructions[1] is None
 
     asyncio.run(scenario())
 
@@ -787,10 +823,11 @@ def test_current_message_is_not_duplicated_and_recent_context_is_not_rendered(tm
         assert "previous context" not in codex.prompt
         assert "Instruction Layers" not in codex.prompt
         assert "Scoped Memory" not in codex.prompt
-        assert codex.thread_ids == [None]
-        assert codex.developer_instructions[0] is not None
-        assert "Codex Thread Contract" in codex.developer_instructions[0]
-        assert "references/schedule/system.md" not in codex.developer_instructions[0]
+        assert codex.thread_ids == ["thread-1"]
+        assert codex.developer_instructions[0] is None
+        assert codex.ensure_developer_instructions[0] is not None
+        assert "Codex Thread Contract" in codex.ensure_developer_instructions[0]
+        assert "references/schedule/system.md" not in codex.ensure_developer_instructions[0]
 
     asyncio.run(scenario())
 
@@ -811,9 +848,10 @@ def test_resumed_thread_gets_no_recent_context_or_developer_instructions(tmp_pat
         await bot._handle_message(_message(1, "first context"))
         await bot._handle_message(_message(2, "second request"))
 
-        assert codex.thread_ids == [None, "thread-1"]
-        assert codex.developer_instructions[0] is not None
-        assert codex.developer_instructions[1] is None
+        assert codex.thread_ids == ["thread-1", "thread-1"]
+        assert codex.developer_instructions == [None, None]
+        assert codex.ensure_developer_instructions[0] is not None
+        assert codex.ensure_developer_instructions[1] is None
         assert "first context" not in codex.prompts[1]
         assert "second request" in codex.prompts[1]
 
@@ -841,9 +879,42 @@ def test_legacy_thread_without_instruction_marker_starts_fresh_without_recent_co
         await bot._handle_message(current)
 
         metadata = storage.load_metadata(current.session_key)
-        assert codex.thread_ids == [None]
-        assert codex.developer_instructions[0] is not None
+        assert codex.thread_ids == ["thread-1"]
+        assert codex.developer_instructions[0] is None
+        assert codex.ensure_developer_instructions[0] is not None
         assert "legacy context" not in codex.prompt
+        assert metadata.codex_thread_id == "thread-1"
+        assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
+
+    asyncio.run(scenario())
+
+
+def test_stale_reply_instruction_mode_starts_fresh_thread(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        storage = WorkspaceStorage(tmp_path)
+        message = _message(1, "current after instruction bump")
+        storage.append_message(message)
+        storage.set_codex_thread_state(
+            message.session_key,
+            thread_id="old-v2-thread",
+            instruction_mode="reply-session-v2",
+        )
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(message)
+
+        metadata = storage.load_metadata(message.session_key)
+        assert codex.ensure_thread_ids == [None]
+        assert codex.ensure_developer_instructions[0] is not None
         assert metadata.codex_thread_id == "thread-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
 
@@ -925,9 +996,9 @@ def test_memory_entries_are_conditionally_injected_into_codex_prompt(tmp_path):
         assert "remembered background" not in codex.prompts[0].casefold()
         assert "memory worker may correct stale memory" not in codex.prompts[0]
         assert "Treat scoped memory and posted bot updates as background context" in (
-            codex.developer_instructions[0] or ""
+            codex.ensure_developer_instructions[0] or ""
         )
-        assert "Launch date is Friday" not in (codex.developer_instructions[0] or "")
+        assert "Launch date is Friday" not in (codex.ensure_developer_instructions[0] or "")
         assert "Scoped Memory" not in codex.prompts[1]
         assert storage.load_metadata(message.session_key).last_injected_memory_hash is not None
 
@@ -1005,8 +1076,9 @@ def test_clear_resets_codex_thread_and_starts_fresh_on_next_message(tmp_path):
         await bot._handle_message(after)
 
         assert codex.calls == 2
-        assert codex.thread_ids == [None, None]
-        assert codex.developer_instructions[1] is not None
+        assert codex.thread_ids == ["thread-1", "thread-2"]
+        assert codex.developer_instructions == [None, None]
+        assert codex.ensure_developer_instructions[1] is not None
         assert "Posted Bot Updates" not in codex.prompts[1]
         assert "Reply 1" not in codex.prompts[1]
         assert storage.load_metadata(first.session_key).codex_thread_id == "thread-2"
@@ -1258,7 +1330,7 @@ def test_removed_memory_after_prior_injection_sends_stale_update(tmp_path):
 
         assert "Launch date is Friday" in codex.prompts[0]
         assert "# Scoped Memory\n\n- Empty" in codex.prompts[1]
-        assert "If a `Scoped Memory` runtime section is empty" in (codex.developer_instructions[0] or "")
+        assert "If a `Scoped Memory` runtime section is empty" in (codex.ensure_developer_instructions[0] or "")
         assert storage.load_metadata(first.session_key).last_injected_memory_hash is None
 
     asyncio.run(scenario())

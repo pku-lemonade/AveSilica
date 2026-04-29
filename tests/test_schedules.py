@@ -74,6 +74,17 @@ class PayloadCodex:
         self.prompts: list[str] = []
         self.thread_ids: list[str | None] = []
         self.developer_instructions: list[str | None] = []
+        self.worker_prompts: dict[str, str] = {}
+        self.worker_developer_instructions: dict[str, str] = {}
+
+    async def ensure_thread(
+        self,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        resolved_thread_id = thread_id or f"thread-{len(self.prompts) + 1}"
+        return CodexRunResult(raw_text="", thread_id=resolved_thread_id)
 
     async def run_decision(
         self,
@@ -298,6 +309,10 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert "Skill Availability" in schedule_prompt
         assert "`weekly-digest`: Use for weekly digests." in schedule_prompt
         assert "Summarize the topic concisely." not in schedule_prompt
+        reply_prompt = bot.codex.prompts[0]
+        assert "# Applied Changes This Turn" in reply_prompt
+        assert "Skill saved: weekly-digest" in reply_prompt
+        assert "**Schedule created**" in reply_prompt
 
     asyncio.run(scenario())
 
@@ -466,6 +481,147 @@ def test_daily_morning_request_uses_cron_schedule_spec(tmp_path):
     assert job["schedule"]["kind"] == "cron"
     assert job["schedule"]["expr"] == "0 9 * * *"
     assert job["schedule"]["timezone"] == "Asia/Shanghai"
+
+
+def test_schedule_remove_confirmation_is_injected_before_reply_and_suppresses_conflict(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+        first = schedules.create_job(
+            _message(1),
+            ScheduleOperation(
+                action="create",
+                name="Remind Feiyang to submit travel paperwork",
+                prompt="Remind Feiyang that he should submit travel paperwork.",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
+            ),
+        )
+        second = schedules.create_job(
+            _message(1),
+            ScheduleOperation(
+                action="create",
+                name="Remind Feiyang to submit travel paperwork tomorrow morning",
+                prompt="Remind Feiyang that he should submit travel paperwork.",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-03T09:00:00"),
+            ),
+        )
+        payload = {
+            "should_reply": True,
+            "reply_kind": "chat",
+            "message_to_post": (
+                "Sili can\u2019t remove reminders from this reply-only thread, "
+                "so no deletion has been performed here."
+            ),
+            "schedule_ops": [
+                {
+                    "action": "remove",
+                    "job_id": first["job_id"],
+                    "name": "",
+                    "match": "",
+                    "prompt": "",
+                    "schedule_spec": {"kind": "unchanged", "run_at": "", "duration": "", "cron": ""},
+                    "repeat": None,
+                    "skills": [],
+                    "mention_targets": [],
+                    "confidence": 0.99,
+                },
+                {
+                    "action": "remove",
+                    "job_id": second["job_id"],
+                    "name": "",
+                    "match": "",
+                    "prompt": "",
+                    "schedule_spec": {"kind": "unchanged", "run_at": "", "duration": "", "cron": ""},
+                    "repeat": None,
+                    "skills": [],
+                    "mention_targets": [],
+                    "confidence": 0.99,
+                },
+            ],
+            "confidence": 0.7,
+        }
+        codex = PayloadCodex(payload)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+            schedules=schedules,
+        )
+
+        await bot._handle_message(_message(2, "remove all reminders"))
+
+        content = poster.posts[0]["content"]
+        assert "can't remove" not in content.replace("\u2019", "'").casefold()
+        assert "reply-only thread" not in content
+        assert content.count("**Schedule removed**") == 2
+        assert "- Job ID: `" + first["job_id"] + "`" in content
+        assert "- Job ID: `" + second["job_id"] + "`" in content
+        assert schedules.load_jobs() == []
+        assert "# Applied Changes This Turn" in codex.prompts[0]
+        assert "**Schedule removed**" in codex.prompts[0]
+
+    asyncio.run(scenario())
+
+
+def test_schedule_list_confirmation_is_injected_before_reply_and_suppresses_conflict(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+        schedules.create_job(
+            _message(1),
+            ScheduleOperation(
+                action="create",
+                name="Travel paperwork reminder",
+                prompt="Remind Feiyang that he should submit travel paperwork.",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
+            ),
+        )
+        payload = {
+            "should_reply": True,
+            "reply_kind": "chat",
+            "message_to_post": "Sili doesn't have a live reminder-listing tool in this reply context.",
+            "schedule_ops": [
+                {
+                    "action": "list",
+                    "job_id": "",
+                    "name": "",
+                    "match": "",
+                    "prompt": "",
+                    "schedule_spec": {"kind": "unchanged", "run_at": "", "duration": "", "cron": ""},
+                    "repeat": None,
+                    "skills": [],
+                    "mention_targets": [],
+                    "confidence": 0.99,
+                }
+            ],
+            "confidence": 0.7,
+        }
+        codex = PayloadCodex(payload)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+            schedules=schedules,
+        )
+
+        await bot._handle_message(_message(2, "sili list reminders"))
+
+        content = poster.posts[0]["content"]
+        assert "live reminder-listing tool" not in content
+        assert "**Scheduled tasks here**" in content
+        assert "**Travel paperwork reminder**" in content
+        assert "# Applied Changes This Turn" in codex.prompts[0]
+        assert "**Scheduled tasks here**" in codex.prompts[0]
+
+    asyncio.run(scenario())
 
 
 def test_schedule_can_store_multiple_person_mentions_without_pinging_confirmation(tmp_path):

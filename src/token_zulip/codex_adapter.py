@@ -32,6 +32,14 @@ class CodexTurnWithForksResult:
 
 
 class CodexAdapter(Protocol):
+    async def ensure_thread(
+        self,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        ...
+
     async def run_decision(
         self,
         prompt: str,
@@ -78,6 +86,35 @@ class CodexSdkAdapter:
         self.sandbox = sandbox
         self.approval_policy = approval_policy
         self.output_schema_path = output_schema_path.expanduser().resolve() if output_schema_path else None
+
+    async def ensure_thread(
+        self,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        try:
+            from codex_app_server import AppServerConfig, AsyncCodex  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "Codex Python SDK is not installed. Install the optional SDK dependency "
+                "or provide a custom CodexAdapter."
+            ) from exc
+
+        self.cwd.mkdir(parents=True, exist_ok=True)
+        async with AsyncCodex(config=AppServerConfig(codex_bin=self._codex_bin(), cwd=str(self.cwd))) as codex:
+            thread_kwargs = self._thread_kwargs()
+            if thread_id:
+                thread = await codex.thread_resume(thread_id, **thread_kwargs)
+            else:
+                if developer_instructions:
+                    thread_kwargs["developer_instructions"] = developer_instructions
+                thread = await codex.thread_start(**thread_kwargs)
+
+            resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "") or None
+            if not resolved_thread_id:
+                raise RuntimeError("Codex parent thread did not provide a thread id")
+            return CodexRunResult(raw_text="", thread_id=resolved_thread_id, raw_result=thread)
 
     async def run_decision(
         self,

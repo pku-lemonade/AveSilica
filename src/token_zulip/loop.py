@@ -46,7 +46,7 @@ from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, nor
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_REPLY_FALLBACK = "I saw this, but couldn't produce a useful reply. Please try again."
-CODEX_INSTRUCTION_MODE = "reply-session-v2"
+CODEX_INSTRUCTION_MODE = "reply-session-v3"
 
 
 class ZulipPoster(Protocol):
@@ -559,13 +559,6 @@ class AgentLoop:
             posted_bot_update_context = self._posted_bot_update_context(pending_posted_bot_updates)
             memory_context, memory_hash, memory_hash_changed = self._memory_context_for_prompt(key, metadata)
             shared_context = self._join_acknowledgements([memory_context, posted_bot_update_context])
-            reply_prompt = self.prompt_builder.build(
-                PromptParts(
-                    current_messages=messages,
-                    injected_context=shared_context,
-                ),
-                template_file=REPLY_TURN_USER_PROMPT_FILE,
-            )
             memory_prompt = self.prompt_builder.build(
                 PromptParts(
                     current_messages=messages,
@@ -596,12 +589,9 @@ class AgentLoop:
                 ),
             ]
             try:
-                codex_result = await self.codex.run_turn_with_forks(
-                    reply_prompt,
+                parent_result = await self.codex.ensure_thread(
                     active_thread_id,
                     developer_instructions=reply_developer_instructions,
-                    main_output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
-                    worker_specs=worker_specs,
                 )
             except Exception as exc:
                 if active_thread_id is None or not self._is_missing_codex_rollout_error(exc):
@@ -616,44 +606,32 @@ class AgentLoop:
                     },
                 )
                 self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-                codex_result = await self.codex.run_turn_with_forks(
-                    reply_prompt,
+                parent_result = await self.codex.ensure_thread(
                     None,
                     developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
-                    main_output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
-                    worker_specs=worker_specs,
                 )
-            if codex_result.main.thread_id:
+            parent_thread_id = parent_result.thread_id
+            if parent_thread_id:
                 self.storage.set_codex_thread_state(
                     key,
-                    thread_id=codex_result.main.thread_id,
+                    thread_id=parent_thread_id,
                     instruction_mode=CODEX_INSTRUCTION_MODE,
                 )
 
-            reply_decision = ReplyDecision.from_json_text(codex_result.main.raw_text)
-            if memory_hash_changed:
-                self.storage.set_last_injected_memory_hash(key, memory_hash)
-
-            for worker_kind, error in codex_result.worker_errors.items():
-                self.storage.log_error(
-                    key,
-                    {
-                        "event": "op_worker_failed",
-                        "worker": worker_kind,
-                        "error": error,
-                        "message_ids": [message.message_id for message in messages],
-                    },
-                )
+            worker_results: dict[str, CodexRunResult | None] = {
+                spec.kind: await self._run_op_worker(key, messages, parent_thread_id, spec)
+                for spec in worker_specs
+            }
 
             memory_decision, memory_applied = self._apply_memory_worker_result(
                 key,
                 messages,
-                codex_result.workers.get("memory"),
+                worker_results.get("memory"),
             )
             skill_decision, skill_applied = self._apply_skill_worker_result(
                 key,
                 messages,
-                codex_result.workers.get("skill"),
+                worker_results.get("skill"),
             )
             schedule_context = self._join_acknowledgements(
                 [
@@ -671,10 +649,10 @@ class AgentLoop:
                 ),
                 template_file=SCHEDULE_WORKER_USER_PROMPT_FILE,
             )
-            schedule_result = await self._run_schedule_worker(
+            schedule_result = await self._run_op_worker(
                 key,
                 messages,
-                codex_result.main.thread_id,
+                parent_thread_id,
                 CodexWorkerSpec(
                     kind="schedule",
                     prompt=schedule_prompt,
@@ -688,23 +666,55 @@ class AgentLoop:
                 messages,
                 schedule_result,
             )
-            decision = AgentDecision.from_parts(
-                reply_decision,
-                memory_ops=memory_decision.memory_ops,
-                skill_ops=skill_decision.skill_ops,
-                schedule_ops=schedule_decision.schedule_ops,
-            )
             memory_acknowledgement = self._memory_acknowledgement(memory_applied)
             skill_acknowledgement = self._skill_acknowledgement(skill_applied)
             schedule_acknowledgement = self._schedule_acknowledgement(schedule_applied)
             acknowledgement = self._join_acknowledgements(
                 [skill_acknowledgement, schedule_acknowledgement, memory_acknowledgement]
             )
+            reply_context = self._join_acknowledgements(
+                [
+                    shared_context,
+                    self._applied_changes_context(acknowledgement),
+                ]
+            )
+            reply_prompt = self.prompt_builder.build(
+                PromptParts(
+                    current_messages=messages,
+                    injected_context=reply_context,
+                ),
+                template_file=REPLY_TURN_USER_PROMPT_FILE,
+            )
+            reply_result = await self.codex.run_decision(
+                reply_prompt,
+                parent_thread_id,
+                developer_instructions=None,
+                output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+            )
+            if reply_result.thread_id:
+                self.storage.set_codex_thread_state(
+                    key,
+                    thread_id=reply_result.thread_id,
+                    instruction_mode=CODEX_INSTRUCTION_MODE,
+                )
+
+            reply_decision = ReplyDecision.from_json_text(reply_result.raw_text)
+            if memory_hash_changed:
+                self.storage.set_last_injected_memory_hash(key, memory_hash)
+
+            decision = AgentDecision.from_parts(
+                reply_decision,
+                memory_ops=memory_decision.memory_ops,
+                skill_ops=skill_decision.skill_ops,
+                schedule_ops=schedule_decision.schedule_ops,
+            )
             message_to_post = self._message_to_post(
                 first,
                 decision,
                 acknowledgement=acknowledgement,
             )
+            if self._reply_conflicts_with_schedule_acknowledgement(message_to_post, schedule_acknowledgement):
+                message_to_post = ""
             outbound_message = self._with_acknowledgement(message_to_post, acknowledgement)
             if typing_started and first.conversation_type == "stream" and not outbound_message:
                 await stack.aclose()
@@ -1089,7 +1099,7 @@ class AgentLoop:
             sections.append(f"- {status} {action}{target}{detail}")
         return "\n".join(sections).rstrip()
 
-    async def _run_schedule_worker(
+    async def _run_op_worker(
         self,
         key: SessionKey,
         messages: list[NormalizedMessage],
@@ -1120,6 +1130,51 @@ class AgentLoop:
                 },
             )
             return None
+
+    def _applied_changes_context(self, acknowledgement: str) -> str:
+        if not acknowledgement.strip():
+            return ""
+        return "\n".join(
+            [
+                "# Applied Changes This Turn",
+                "",
+                "These changes have already been validated and persisted by TokenZulip before this reply decision.",
+                "",
+                "```text",
+                acknowledgement.strip(),
+                "```",
+            ]
+        )
+
+    def _reply_conflicts_with_schedule_acknowledgement(
+        self,
+        message_to_post: str,
+        schedule_acknowledgement: str,
+    ) -> bool:
+        if not message_to_post.strip() or not schedule_acknowledgement.strip():
+            return False
+        acknowledgement = schedule_acknowledgement.casefold()
+        if "schedule removed" not in acknowledgement and "scheduled tasks here" not in acknowledgement:
+            return False
+        text = (
+            message_to_post.casefold()
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
+        )
+        blocked_phrases = [
+            "can't remove",
+            "cannot remove",
+            "can't list",
+            "cannot list",
+            "doesn't have a live reminder",
+            "does not have a live reminder",
+            "no deletion has been performed",
+            "no scheduler",
+            "no reminder-listing tool",
+            "no live reminder-listing tool",
+            "reply-only thread",
+        ]
+        return any(phrase in text for phrase in blocked_phrases)
 
     def _posted_bot_update_context(self, updates: list[dict[str, Any]]) -> str:
         if not updates:

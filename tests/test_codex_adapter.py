@@ -119,6 +119,32 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
     }
 
     FakeThread.events.clear()
+    ensured = asyncio.run(adapter.ensure_thread(None, developer_instructions="dev instructions"))
+
+    assert ensured.raw_text == ""
+    assert ensured.thread_id == "thread-2"
+    assert FakeThread.events == []
+    assert FakeAsyncCodex.last.thread_kwargs == {
+        "model": "gpt-test",
+        "cwd": str(tmp_path),
+        "approval_policy": "never",
+        "sandbox": "danger-full-access",
+        "developer_instructions": "dev instructions",
+    }
+
+    ensured_resumed = asyncio.run(adapter.ensure_thread("thread-1", developer_instructions="ignored"))
+
+    assert ensured_resumed.raw_text == ""
+    assert ensured_resumed.thread_id == "thread-1"
+    assert FakeAsyncCodex.last.thread_kwargs == {
+        "thread_id": "thread-1",
+        "model": "gpt-test",
+        "cwd": str(tmp_path),
+        "approval_policy": "never",
+        "sandbox": "danger-full-access",
+    }
+
+    FakeThread.events.clear()
     forked = asyncio.run(
         adapter.run_turn_with_forks(
             "prompt",
