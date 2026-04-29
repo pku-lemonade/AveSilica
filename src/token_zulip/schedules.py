@@ -25,7 +25,6 @@ except ImportError:  # pragma: no cover - Windows fallback
 from .models import NormalizedMessage, NormalizedMessageMove, ScheduleOperation, ScheduleSpec, SessionKey, safe_slug, utc_now_iso
 
 
-SCHEDULE_CODEX_INSTRUCTION_MODE = "scheduled-v1"
 SCHEDULES_FILENAME = "jobs.json"
 SCHEDULE_OUTPUT_FILENAME = "runs.jsonl"
 ONESHOT_GRACE_SECONDS = 120
@@ -300,8 +299,6 @@ class ScheduleStore:
             "last_status": None,
             "last_error": None,
             "last_delivery_error": None,
-            "codex_thread_id": None,
-            "codex_instruction_mode": None,
             "origin": self.origin_record(origin),
         }
         with self._locked_jobs() as jobs:
@@ -519,17 +516,6 @@ class ScheduleStore:
                 jobs[index] = updated
                 return True
         return False
-
-    def set_codex_thread_state(self, job_id: str, *, thread_id: str | None, instruction_mode: str | None) -> None:
-        with self._locked_jobs() as jobs:
-            for index, job in enumerate(jobs):
-                if job.get("id") == job_id:
-                    updated = copy.deepcopy(job)
-                    updated["codex_thread_id"] = thread_id
-                    updated["codex_instruction_mode"] = instruction_mode
-                    updated["updated_at"] = utc_now_iso()
-                    jobs[index] = updated
-                    return
 
     def mark_job_run(
         self,

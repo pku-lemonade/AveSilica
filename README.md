@@ -197,7 +197,7 @@ persistent reply/session thread
 due scheduled job
     |
     v
-persistent job thread
+fresh scheduled job thread
     |
     `-- posts result to origin Zulip conversation
           |
@@ -210,7 +210,7 @@ persistent job thread
 | Memory worker thread | Ephemeral fork | Previous reply/session thread context | Current Zulip message batch, scoped durable memory when changed, pending `posted_bot_update` | `memory_ops` only |
 | Skill worker thread | Ephemeral fork | Previous reply/session thread context | Current Zulip message batch, scoped durable memory when changed, pending `posted_bot_update` | `skill_ops` only |
 | Schedule worker thread | Ephemeral fork | Previous reply/session thread context | Current Zulip message batch, scoped durable memory when changed, active schedule context, pending `posted_bot_update` | `schedule_ops` only |
-| Scheduled job thread | Long-lived per scheduled job | Previous Codex turns for that job | Job brief, schedule spec, loaded skill content, scoped durable memory, current time | Scheduled result reply and optional `memory_ops` |
+| Scheduled job thread | Fresh per job run | None | Job brief, schedule spec, loaded skill content, scoped durable memory, current time | Scheduled result reply and optional `memory_ops` |
 
 `recent_context` is not injected into Codex prompts. Conversation continuity comes from Codex thread history and forked Codex context.
 
@@ -276,7 +276,7 @@ Running a due scheduled job:
 ```text
 scheduler ticker wakes every TOKENZULIP_SCHEDULE_TICK_SECONDS
   -> ScheduleStore.get_due_jobs()
-  -> for each due job, use a separate job-scoped Codex thread
+  -> for each due job, start a fresh scheduled job Codex thread
        developer_instructions:
          codex-thread-contract.md
          scheduled-job-policy.md
@@ -309,6 +309,6 @@ When a stream/topic or private-chat session already has a marked Codex thread, T
 
 The reply/session thread returns only `should_reply`, `reply_kind`, `message_to_post`, and confidence. Three ephemeral forked workers return memory, skill, and schedule decisions through separate schemas and code paths. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. TokenZulip validates and persists applied changes, appends deterministic acknowledgements, and then posts any reply.
 
-When schedules are enabled, the listener also runs a background scheduler. Configure it with `TOKENZULIP_SCHEDULES_ENABLED`, `TOKENZULIP_SCHEDULE_TICK_SECONDS`, `TOKENZULIP_SCHEDULE_TIMEZONE`, and `TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS`. Recurring jobs use separate job-scoped Codex threads so scheduled automation history does not pollute the human Zulip conversation thread.
+When schedules are enabled, the listener also runs a background scheduler. Configure it with `TOKENZULIP_SCHEDULES_ENABLED`, `TOKENZULIP_SCHEDULE_TICK_SECONDS`, `TOKENZULIP_SCHEDULE_TIMEZONE`, and `TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS`. Scheduled job runs start fresh Codex threads from persisted job data, loaded skills, scoped memory, and current time, so scheduled automation history does not pollute the human Zulip conversation thread.
 
 When live posting is enabled, the bot can show Zulip typing indicators for every processed message. Silent channel decisions stop typing after Codex decides not to reply. Set `TOKENZULIP_TYPING_ENABLED=false` to disable typing indicators.

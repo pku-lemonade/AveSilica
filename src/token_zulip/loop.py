@@ -23,7 +23,7 @@ from .models import (
     SkillDecision,
 )
 from .prompt import PromptBuilder, PromptParts
-from .schedules import SCHEDULE_CODEX_INSTRUCTION_MODE, ScheduleStore, utc_now, zoneinfo_for
+from .schedules import ScheduleStore, utc_now, zoneinfo_for
 from .skills import SkillStore
 from .storage import SessionMetadata, WorkspaceStorage
 from .typing_status import TypingStatusManager
@@ -452,22 +452,15 @@ class AgentLoop:
         job_id = str(job.get("id") or "")
         origin_message = self.schedules.message_for_job(job)
         key = origin_message.session_key
-        active_thread_id = (
-            str(job.get("codex_thread_id"))
-            if job.get("codex_instruction_mode") == SCHEDULE_CODEX_INSTRUCTION_MODE and job.get("codex_thread_id")
-            else None
+        developer_instructions = self.instructions.compose(
+            role="scheduled_job",
+            stream=origin_message.stream,
+            topic_hash=origin_message.topic_hash,
+            topic=origin_message.topic,
+            stream_id=origin_message.stream_id,
+            conversation_type=origin_message.conversation_type,
+            private_user_key=origin_message.private_user_key,
         )
-        developer_instructions = None
-        if active_thread_id is None:
-            developer_instructions = self.instructions.compose(
-                role="scheduled_job",
-                stream=origin_message.stream,
-                topic_hash=origin_message.topic_hash,
-                topic=origin_message.topic,
-                stream_id=origin_message.stream_id,
-                conversation_type=origin_message.conversation_type,
-                private_user_key=origin_message.private_user_key,
-            )
 
         post: dict[str, Any] | None = None
         memory_applied: list[dict[str, Any]] = []
@@ -479,18 +472,12 @@ class AgentLoop:
             codex_result = await asyncio.wait_for(
                 self.codex.run_decision(
                     prompt,
-                    active_thread_id,
+                    None,
                     developer_instructions=developer_instructions,
                     output_schema_path=self.config.workspace_dir / SCHEDULED_JOB_DECISION_SCHEMA_FILE,
                 ),
                 timeout=self.config.schedule_run_timeout_seconds,
             )
-            if codex_result.thread_id:
-                self.schedules.set_codex_thread_state(
-                    job_id,
-                    thread_id=codex_result.thread_id,
-                    instruction_mode=SCHEDULE_CODEX_INSTRUCTION_MODE,
-                )
 
             decision = AgentDecision.from_json_text(codex_result.raw_text)
             if decision.schedule_ops:

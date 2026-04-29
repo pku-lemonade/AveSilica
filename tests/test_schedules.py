@@ -353,7 +353,8 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         assert pending[-1]["content"] == "Digest done."
         assert pending[-1]["job_id"] == created["job_id"]
         job = schedules.load_jobs()[0]
-        assert job["codex_thread_id"] == "thread-1"
+        assert "codex_thread_id" not in job
+        assert "codex_instruction_mode" not in job
         assert job["last_status"] == "ok"
 
     asyncio.run(scenario())
