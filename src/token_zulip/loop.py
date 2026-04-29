@@ -44,7 +44,7 @@ from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, nor
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_REPLY_FALLBACK = "I saw this, but couldn't produce a useful reply. Please try again."
-CODEX_INSTRUCTION_MODE = "developer-v1"
+CODEX_INSTRUCTION_MODE = "reply-session-v2"
 
 
 class ZulipPoster(Protocol):
@@ -323,26 +323,48 @@ class AgentLoop:
                 template_file=SKILL_WORKER_PROMPT_FILE,
             )
 
-            codex_result = await self.codex.run_turn_with_forks(
-                reply_prompt,
-                active_thread_id,
-                developer_instructions=reply_developer_instructions,
-                main_output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
-                worker_specs=[
-                    CodexWorkerSpec(
-                        kind="memory",
-                        prompt=memory_prompt,
-                        developer_instructions=self.instructions.compose(role="memory_worker", **instruction_kwargs),
-                        output_schema_path=self.config.workspace_dir / MEMORY_DECISION_SCHEMA_FILE,
-                    ),
-                    CodexWorkerSpec(
-                        kind="skill",
-                        prompt=skill_prompt,
-                        developer_instructions=self.instructions.compose(role="skill_worker", **instruction_kwargs),
-                        output_schema_path=self.config.workspace_dir / SKILL_DECISION_SCHEMA_FILE,
-                    ),
-                ],
-            )
+            worker_specs = [
+                CodexWorkerSpec(
+                    kind="memory",
+                    prompt=memory_prompt,
+                    developer_instructions=self.instructions.compose(role="memory_worker", **instruction_kwargs),
+                    output_schema_path=self.config.workspace_dir / MEMORY_DECISION_SCHEMA_FILE,
+                ),
+                CodexWorkerSpec(
+                    kind="skill",
+                    prompt=skill_prompt,
+                    developer_instructions=self.instructions.compose(role="skill_worker", **instruction_kwargs),
+                    output_schema_path=self.config.workspace_dir / SKILL_DECISION_SCHEMA_FILE,
+                ),
+            ]
+            try:
+                codex_result = await self.codex.run_turn_with_forks(
+                    reply_prompt,
+                    active_thread_id,
+                    developer_instructions=reply_developer_instructions,
+                    main_output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                    worker_specs=worker_specs,
+                )
+            except Exception as exc:
+                if active_thread_id is None or not self._is_missing_codex_rollout_error(exc):
+                    raise
+                self.storage.log_error(
+                    key,
+                    {
+                        "kind": "codex_thread_restarted",
+                        "thread_id": active_thread_id,
+                        "error": repr(exc),
+                        "message_ids": [message.message_id for message in messages],
+                    },
+                )
+                self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
+                codex_result = await self.codex.run_turn_with_forks(
+                    reply_prompt,
+                    None,
+                    developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
+                    main_output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                    worker_specs=worker_specs,
+                )
             if codex_result.main.thread_id:
                 self.storage.set_codex_thread_state(
                     key,
@@ -748,6 +770,10 @@ class AgentLoop:
             message_ids=message_ids,
             job_id=job_id,
         )
+
+    @staticmethod
+    def _is_missing_codex_rollout_error(exc: Exception) -> bool:
+        return "no rollout found for thread id" in str(exc).casefold()
 
     def _post_was_visible(self, post: dict[str, Any] | None) -> bool:
         if not post:

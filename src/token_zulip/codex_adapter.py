@@ -143,6 +143,11 @@ class CodexSdkAdapter:
             if not parent_id:
                 raise RuntimeError("Codex parent thread did not provide a thread id")
 
+            main_result = await parent.run(
+                prompt,
+                **self._run_kwargs(output_schema_path=main_output_schema_path),
+            )
+
             forks: dict[str, Any] = {}
             for spec in worker_specs:
                 fork_kwargs = {
@@ -153,12 +158,6 @@ class CodexSdkAdapter:
                 }
                 forks[spec.kind] = await codex.thread_fork(parent_id, **fork_kwargs)
 
-            main_task = asyncio.create_task(
-                parent.run(
-                    prompt,
-                    **self._run_kwargs(output_schema_path=main_output_schema_path),
-                )
-            )
             worker_tasks = {
                 spec.kind: asyncio.create_task(
                     forks[spec.kind].run(
@@ -168,12 +167,8 @@ class CodexSdkAdapter:
                 )
                 for spec in worker_specs
             }
-
-            all_tasks = [main_task, *worker_tasks.values()]
-            results = await asyncio.gather(*all_tasks, return_exceptions=True)
-            main_result = results[0]
-            if isinstance(main_result, Exception):
-                raise main_result
+            if worker_tasks:
+                await asyncio.gather(*worker_tasks.values(), return_exceptions=True)
 
             workers: dict[str, CodexRunResult] = {}
             worker_errors: dict[str, str] = {}

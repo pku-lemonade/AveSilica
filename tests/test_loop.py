@@ -344,6 +344,51 @@ class ThreadingCodex(ForkingCodexMixin):
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
 
 
+class MissingThreadCodex(ForkingCodexMixin):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.thread_ids: list[str | None] = []
+        self.developer_instructions: list[str | None] = []
+
+    async def run_turn_with_forks(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None,
+        main_output_schema_path: Path,
+        worker_specs: list[CodexWorkerSpec],
+    ) -> CodexTurnWithForksResult:
+        self.thread_ids.append(thread_id)
+        self.developer_instructions.append(developer_instructions)
+        if thread_id == "missing-thread":
+            raise RuntimeError("JSON-RPC error -32600: no rollout found for thread id missing-thread")
+        return await super().run_turn_with_forks(
+            prompt,
+            thread_id,
+            developer_instructions=developer_instructions,
+            main_output_schema_path=main_output_schema_path,
+            worker_specs=worker_specs,
+        )
+
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        self.calls += 1
+        payload = {
+            "should_reply": False,
+            "reply_kind": "silent",
+            "message_to_post": "",
+            "memory_ops": [],
+            "confidence": 0.9,
+        }
+        return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"recovered-thread-{self.calls}")
+
+
 class FakePoster:
     def __init__(self, memory_file: Path | None = None) -> None:
         self.posts: list[dict[str, str]] = []
@@ -801,6 +846,47 @@ def test_legacy_thread_without_instruction_marker_starts_fresh_without_recent_co
         assert "legacy context" not in codex.prompt
         assert metadata.codex_thread_id == "thread-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
+
+    asyncio.run(scenario())
+
+
+def test_missing_codex_rollout_restarts_marked_reply_thread(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = MissingThreadCodex()
+        storage = WorkspaceStorage(tmp_path)
+        message = _message(1, "sili remind me tomorrow", directly_addressed=True)
+        storage.append_message(message)
+        storage.set_codex_thread_state(
+            message.session_key,
+            thread_id="missing-thread",
+            instruction_mode=CODEX_INSTRUCTION_MODE,
+        )
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(message)
+
+        metadata = storage.load_metadata(message.session_key)
+        errors = (tmp_path / "records" / "errors").glob("*.jsonl")
+        error_records = [
+            json.loads(line)
+            for path in errors
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert codex.thread_ids == ["missing-thread", None]
+        assert codex.developer_instructions[0] is None
+        assert codex.developer_instructions[1] is not None
+        assert metadata.codex_thread_id == "recovered-thread-1"
+        assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
+        assert metadata.last_processed_message_id == 1
+        assert any(record.get("kind") == "codex_thread_restarted" for record in error_records)
 
     asyncio.run(scenario())
 

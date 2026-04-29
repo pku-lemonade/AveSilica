@@ -20,6 +20,7 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
         final_response = '{"should_reply": false}'
 
     class FakeThread:
+        events: list[tuple[str, str, str]] = []
         next_id = 2
 
         def __init__(self, thread_id: str | None = None) -> None:
@@ -29,6 +30,7 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
             self.run_kwargs: dict[str, object] = {}
 
         async def run(self, prompt: str, **kwargs) -> FakeRunResult:
+            FakeThread.events.append(("run", self.id, prompt))
             self.run_kwargs = {"prompt": prompt, **kwargs}
             return FakeRunResult()
 
@@ -62,6 +64,9 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
 
         async def thread_fork(self, thread_id: str, **kwargs) -> FakeThread:
             fork = FakeThread(f"fork-{len(self.forks) + 1}")
+            FakeThread.events.append(
+                ("fork", thread_id, str(kwargs.get("developer_instructions") or ""))
+            )
             self.fork_kwargs.append({"thread_id": thread_id, **kwargs})
             self.forks.append(fork)
             return fork
@@ -113,6 +118,7 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
         "sandbox": "danger-full-access",
     }
 
+    FakeThread.events.clear()
     forked = asyncio.run(
         adapter.run_turn_with_forks(
             "prompt",
@@ -132,6 +138,11 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
 
     assert forked.main.thread_id == "thread-1"
     assert set(forked.workers) == {"memory"}
+    assert FakeThread.events[:3] == [
+        ("run", "thread-1", "prompt"),
+        ("fork", "thread-1", "memory instructions"),
+        ("run", "fork-1", "memory prompt"),
+    ]
     assert FakeAsyncCodex.last.fork_kwargs == [
         {
             "thread_id": "thread-1",
@@ -146,6 +157,37 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
     ]
     assert FakeAsyncCodex.last.forks[0].run_kwargs["output_schema"]
     assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "memory prompt"
+
+    FakeThread.events.clear()
+    fresh_forked = asyncio.run(
+        adapter.run_turn_with_forks(
+            "fresh prompt",
+            None,
+            developer_instructions="reply instructions",
+            main_output_schema_path=tmp_path / "references" / "reply-decision-schema.json",
+            worker_specs=[
+                CodexWorkerSpec(
+                    kind="memory",
+                    prompt="fresh memory prompt",
+                    developer_instructions="fresh memory instructions",
+                    output_schema_path=tmp_path / "references" / "memory-decision-schema.json",
+                )
+            ],
+        )
+    )
+
+    assert fresh_forked.main.thread_id == "thread-2"
+    assert FakeAsyncCodex.last.thread_kwargs == {
+        "model": "gpt-test",
+        "cwd": str(tmp_path),
+        "approval_policy": "never",
+        "sandbox": "danger-full-access",
+        "developer_instructions": "reply instructions",
+    }
+    assert FakeThread.events[0] == ("run", "thread-2", "fresh prompt")
+    assert FakeThread.events[1] == ("fork", "thread-2", "fresh memory instructions")
+    assert FakeThread.events[2] == ("run", "fork-1", "fresh memory prompt")
+    assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "fresh memory prompt"
 
     worker = asyncio.run(
         adapter.run_worker_fork(
