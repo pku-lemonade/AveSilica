@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 from dataclasses import dataclass
@@ -148,41 +147,28 @@ class CodexSdkAdapter:
                 **self._run_kwargs(output_schema_path=main_output_schema_path),
             )
 
-            forks: dict[str, Any] = {}
+            workers: dict[str, CodexRunResult] = {}
+            worker_errors: dict[str, str] = {}
             for spec in worker_specs:
-                fork_kwargs = {
-                    **self._thread_kwargs(),
-                    "developer_instructions": spec.developer_instructions,
-                    "ephemeral": True,
-                    "exclude_turns": True,
-                }
-                forks[spec.kind] = await codex.thread_fork(parent_id, **fork_kwargs)
-
-            worker_tasks = {
-                spec.kind: asyncio.create_task(
-                    forks[spec.kind].run(
+                try:
+                    fork_kwargs = {
+                        **self._thread_kwargs(),
+                        "developer_instructions": spec.developer_instructions,
+                        "ephemeral": True,
+                        "exclude_turns": True,
+                    }
+                    fork = await codex.thread_fork(parent_id, **fork_kwargs)
+                    result = await fork.run(
                         spec.prompt,
                         **self._run_kwargs(output_schema_path=spec.output_schema_path),
                     )
-                )
-                for spec in worker_specs
-            }
-            if worker_tasks:
-                await asyncio.gather(*worker_tasks.values(), return_exceptions=True)
-
-            workers: dict[str, CodexRunResult] = {}
-            worker_errors: dict[str, str] = {}
-            for kind, task in worker_tasks.items():
-                error = task.exception()
-                if error is not None:
-                    worker_errors[kind] = str(error)
-                    continue
-                result = task.result()
-                workers[kind] = CodexRunResult(
-                    raw_text=str(getattr(result, "final_response", "") or ""),
-                    thread_id=str(getattr(forks[kind], "id", "") or "") or None,
-                    raw_result=result,
-                )
+                    workers[spec.kind] = CodexRunResult(
+                        raw_text=str(getattr(result, "final_response", "") or ""),
+                        thread_id=str(getattr(fork, "id", "") or "") or None,
+                        raw_result=result,
+                    )
+                except Exception as exc:
+                    worker_errors[spec.kind] = str(exc)
 
             return CodexTurnWithForksResult(
                 main=CodexRunResult(

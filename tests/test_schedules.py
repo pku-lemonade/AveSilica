@@ -398,6 +398,46 @@ def test_schedule_rejects_skill_reference_when_same_turn_skill_is_rejected(tmp_p
     asyncio.run(scenario())
 
 
+def test_schedule_worker_prompt_includes_current_schedule_inventory(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+        created = schedules.create_job(
+            _message(1),
+            ScheduleOperation(
+                action="create",
+                name="Travel paperwork reminder",
+                prompt="Remind Feiyang that he should submit travel paperwork.",
+                schedule="2030-01-02T09:00:00",
+            ),
+        )
+        payload = _silent_payload()
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PayloadCodex(payload),
+            zulip=poster,
+            schedules=schedules,
+        )
+
+        await bot._handle_message(_message(2, "remove the travel paperwork reminder"))
+
+        schedule_prompt = bot.codex.worker_prompts["schedule"]
+        assert "# Current Scheduled Tasks Here" in schedule_prompt
+        assert f"id={created['job_id']}" in schedule_prompt
+        assert "name=Travel paperwork reminder" in schedule_prompt
+        assert "state=scheduled" in schedule_prompt
+        assert "trigger=once at 2030-01-02 09:00 Asia/Shanghai" in schedule_prompt
+        assert "next=2030-01-02 09:00 Asia/Shanghai" in schedule_prompt
+        assert "skills=[none]; mentions=[none]" in schedule_prompt
+        assert "prompt: Remind Feiyang that he should submit travel paperwork." in schedule_prompt
+
+    asyncio.run(scenario())
+
+
 def test_daily_morning_request_uses_cron_schedule_spec(tmp_path):
     store = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
     op = ScheduleOperation.from_mapping(

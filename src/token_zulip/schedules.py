@@ -770,6 +770,7 @@ class ScheduleStore:
         return {
             "id": job.get("id"),
             "name": job.get("name"),
+            "prompt": job.get("prompt") or "",
             "schedule": job.get("schedule_display"),
             "schedule_detail": job.get("schedule") or {},
             "next_run_at": job.get("next_run_at"),

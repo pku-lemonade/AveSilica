@@ -401,6 +401,7 @@ class AgentLoop:
             schedule_context = self._join_acknowledgements(
                 [
                     self._schedule_context_for_prompt(),
+                    self._current_schedules_context(first),
                     self._mentionable_participants_context(key),
                     self._skill_availability_context(skill_applied),
                     shared_context,
@@ -633,6 +634,55 @@ class AgentLoop:
                 f"- Current time ({timezone_name}): {local_now.isoformat()}",
             ]
         )
+
+    def _current_schedules_context(self, origin: NormalizedMessage) -> str:
+        result = self.schedules.list_context_jobs(origin)
+        raw_jobs = result.get("jobs") if isinstance(result, dict) else []
+        jobs = [job for job in raw_jobs if isinstance(job, dict)] if isinstance(raw_jobs, list) else []
+        sections = ["# Current Scheduled Tasks Here"]
+        if not jobs:
+            sections.extend(["", "- None"])
+            return "\n".join(sections)
+
+        sections.append("")
+        for job in jobs:
+            job_id = str(job.get("id") or "").strip()
+            name = str(job.get("name") or "").strip() or "unnamed schedule"
+            state = str(job.get("state") or ("active" if job.get("enabled", True) else "inactive"))
+            trigger = self._schedule_trigger_label(job)
+            next_run = self._format_schedule_time(job.get("next_run_at"))
+            skills = self._schedule_inventory_skills(job)
+            mentions = self._schedule_inventory_mentions(job)
+            sections.append(
+                f"- id={job_id}; name={name}; state={state}; trigger={trigger}; "
+                f"next={next_run}; skills=[{skills}]; mentions=[{mentions}]"
+            )
+            prompt = str(job.get("prompt") or "").strip()
+            if prompt:
+                sections.append(f"  prompt: {prompt}")
+        return "\n".join(sections).rstrip()
+
+    def _schedule_inventory_skills(self, job: dict[str, Any]) -> str:
+        raw_skills = job.get("skills")
+        if not isinstance(raw_skills, list):
+            return "none"
+        skills = [str(skill).strip() for skill in raw_skills if str(skill).strip()]
+        return ", ".join(skills) if skills else "none"
+
+    def _schedule_inventory_mentions(self, job: dict[str, Any]) -> str:
+        mentions: list[str] = []
+        for target in self._job_mention_targets(job):
+            kind = str(target.get("kind") or "").strip().lower()
+            if kind == "person":
+                full_name = str(target.get("full_name") or "").strip()
+                user_id = target.get("user_id")
+                if full_name and user_id is not None:
+                    mentions.append(f"person:{full_name}#{user_id}")
+                elif full_name:
+                    mentions.append(f"person:{full_name}")
+            elif kind in {"topic", "channel", "all"}:
+                mentions.append(kind)
+        return ", ".join(mentions) if mentions else "none"
 
     def _mentionable_participants_context(self, key: SessionKey) -> str:
         participants = self._mentionable_users(key)

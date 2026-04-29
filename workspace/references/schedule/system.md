@@ -10,6 +10,8 @@ The schedule worker decides scheduled task lifecycle operations only. It does no
 - For skill-backed jobs, put only skill names from the injected Skill Availability context in `skills`; never duplicate full skill content inside a schedule operation.
 - Never invent or predict a skill name. If a reusable workflow is clearly required but no available skill fits, leave `schedule_ops` empty so the reply thread can clarify or a later turn can schedule after skill creation succeeds.
 - Do not claim that a scheduled task was saved, changed, or removed; TokenZulip validates, persists, and acknowledges applied changes after this worker returns.
+- For update, remove, pause, resume, and run-now requests, prefer an exact `job_id` from the injected Current Scheduled Tasks Here section.
+- If no exact job ID is visible, use `match` only when the user's wording maps unambiguously to one visible job name or prompt. If multiple visible jobs match, leave `schedule_ops` empty so the reply thread can ask a concise clarification.
 
 Use `mention_targets` for scheduled reminders that should ping specific Zulip recipients when the job runs:
 

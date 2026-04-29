@@ -215,3 +215,175 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
         }
     ]
     assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "schedule prompt"
+
+
+def test_run_turn_with_forks_runs_workers_sequentially(monkeypatch, tmp_path):
+    @dataclass
+    class FakeAppServerConfig:
+        codex_bin: str
+        cwd: str | None = None
+
+    class FakeRunResult:
+        def __init__(self, text: str) -> None:
+            self.final_response = text
+
+    class FakeThread:
+        active_runs = 0
+        events: list[tuple[str, str, str]] = []
+
+        def __init__(self, thread_id: str) -> None:
+            self.id = thread_id
+
+        async def run(self, prompt: str, **kwargs) -> FakeRunResult:
+            if FakeThread.active_runs:
+                raise RuntimeError("concurrent runs are not supported")
+            FakeThread.active_runs += 1
+            try:
+                FakeThread.events.append(("run", self.id, prompt))
+                await asyncio.sleep(0)
+                return FakeRunResult(f'{{"thread":"{self.id}"}}')
+            finally:
+                FakeThread.active_runs -= 1
+
+    class FakeAsyncCodex:
+        def __init__(self, *, config: FakeAppServerConfig) -> None:
+            self.config = config
+            self.fork_count = 0
+
+        async def __aenter__(self) -> "FakeAsyncCodex":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def thread_resume(self, thread_id: str, **kwargs) -> FakeThread:
+            return FakeThread(thread_id)
+
+        async def thread_fork(self, thread_id: str, **kwargs) -> FakeThread:
+            self.fork_count += 1
+            fork = FakeThread(f"fork-{self.fork_count}")
+            FakeThread.events.append(("fork", thread_id, str(kwargs.get("developer_instructions") or "")))
+            return fork
+
+    monkeypatch.setitem(
+        sys.modules,
+        "codex_app_server",
+        types.SimpleNamespace(AppServerConfig=FakeAppServerConfig, AsyncCodex=FakeAsyncCodex),
+    )
+    monkeypatch.setattr("token_zulip.codex_adapter.shutil.which", lambda name: "/usr/local/bin/codex")
+    initialize_workspace(tmp_path)
+    adapter = CodexSdkAdapter(model="gpt-test", cwd=tmp_path)
+
+    result = asyncio.run(
+        adapter.run_turn_with_forks(
+            "reply prompt",
+            "thread-1",
+            developer_instructions=None,
+            main_output_schema_path=tmp_path / "references" / "reply" / "schema.json",
+            worker_specs=[
+                CodexWorkerSpec(
+                    kind="memory",
+                    prompt="memory prompt",
+                    developer_instructions="memory instructions",
+                    output_schema_path=tmp_path / "references" / "memory" / "schema.json",
+                ),
+                CodexWorkerSpec(
+                    kind="skill",
+                    prompt="skill prompt",
+                    developer_instructions="skill instructions",
+                    output_schema_path=tmp_path / "references" / "skill" / "schema.json",
+                ),
+            ],
+        )
+    )
+
+    assert set(result.workers) == {"memory", "skill"}
+    assert result.worker_errors == {}
+    assert FakeThread.events == [
+        ("run", "thread-1", "reply prompt"),
+        ("fork", "thread-1", "memory instructions"),
+        ("run", "fork-1", "memory prompt"),
+        ("fork", "thread-1", "skill instructions"),
+        ("run", "fork-2", "skill prompt"),
+    ]
+
+
+def test_run_turn_with_forks_continues_after_worker_failure(monkeypatch, tmp_path):
+    @dataclass
+    class FakeAppServerConfig:
+        codex_bin: str
+        cwd: str | None = None
+
+    class FakeRunResult:
+        final_response = '{"ok": true}'
+
+    class FakeThread:
+        events: list[tuple[str, str]] = []
+
+        def __init__(self, thread_id: str, *, fail: bool = False) -> None:
+            self.id = thread_id
+            self.fail = fail
+
+        async def run(self, prompt: str, **kwargs) -> FakeRunResult:
+            FakeThread.events.append((self.id, prompt))
+            if self.fail:
+                raise RuntimeError(f"{self.id} failed")
+            return FakeRunResult()
+
+    class FakeAsyncCodex:
+        def __init__(self, *, config: FakeAppServerConfig) -> None:
+            self.config = config
+            self.fork_count = 0
+
+        async def __aenter__(self) -> "FakeAsyncCodex":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def thread_resume(self, thread_id: str, **kwargs) -> FakeThread:
+            return FakeThread(thread_id)
+
+        async def thread_fork(self, thread_id: str, **kwargs) -> FakeThread:
+            self.fork_count += 1
+            return FakeThread(f"fork-{self.fork_count}", fail=self.fork_count == 1)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "codex_app_server",
+        types.SimpleNamespace(AppServerConfig=FakeAppServerConfig, AsyncCodex=FakeAsyncCodex),
+    )
+    monkeypatch.setattr("token_zulip.codex_adapter.shutil.which", lambda name: "/usr/local/bin/codex")
+    initialize_workspace(tmp_path)
+    adapter = CodexSdkAdapter(model="gpt-test", cwd=tmp_path)
+
+    result = asyncio.run(
+        adapter.run_turn_with_forks(
+            "reply prompt",
+            "thread-1",
+            developer_instructions=None,
+            main_output_schema_path=tmp_path / "references" / "reply" / "schema.json",
+            worker_specs=[
+                CodexWorkerSpec(
+                    kind="memory",
+                    prompt="memory prompt",
+                    developer_instructions="memory instructions",
+                    output_schema_path=tmp_path / "references" / "memory" / "schema.json",
+                ),
+                CodexWorkerSpec(
+                    kind="skill",
+                    prompt="skill prompt",
+                    developer_instructions="skill instructions",
+                    output_schema_path=tmp_path / "references" / "skill" / "schema.json",
+                ),
+            ],
+        )
+    )
+
+    assert "fork-1 failed" in result.worker_errors["memory"]
+    assert set(result.workers) == {"skill"}
+    assert FakeThread.events == [
+        ("thread-1", "reply prompt"),
+        ("fork-1", "memory prompt"),
+        ("fork-2", "skill prompt"),
+    ]

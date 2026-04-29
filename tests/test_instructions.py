@@ -65,6 +65,8 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     assert "```spoiler Details" not in reply_system_text
     assert "when Silica can materially improve" in reply_system_text
     assert "use available lookup tools" in reply_system_text
+    assert "named tools/frameworks" in reply_system_text
+    assert "include source links in the visible reply" in reply_system_text
     assert "instead of suggesting search terms" in reply_system_text
     assert "unsupported claims" in memory_system_text
     assert "MEMORY.md" in memory_system_text
@@ -111,6 +113,8 @@ def test_worker_instruction_profiles_do_not_load_reply_policy(tmp_path):
     assert "mention_targets" in text
     assert "zero, one, or multiple person targets" in text
     assert "`@**topic**` mentions topic participants" in text
+    assert "prefer an exact `job_id`" in text
+    assert "Current Scheduled Tasks Here" in text
 
 
 def test_shared_instruction_includes_zulip_mention_semantics_for_reply_and_workers(tmp_path):
