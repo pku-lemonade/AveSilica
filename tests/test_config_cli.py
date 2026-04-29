@@ -49,9 +49,9 @@ def test_cli_init_creates_workspace_layout(tmp_path):
     assert main(["--workspace", str(workspace), "init"]) == 0
 
     assert (workspace / "AGENTS.md").exists()
-    assert (workspace / "references" / "reply-thread-policy.md").exists()
-    assert (workspace / "references" / "memory-worker-policy.md").exists()
-    assert (workspace / "references" / "schedule-worker-prompt.md").exists()
+    assert (workspace / "references" / "reply" / "system.md").exists()
+    assert (workspace / "references" / "memory" / "system.md").exists()
+    assert (workspace / "references" / "schedule" / "user.md").exists()
     assert (workspace / "memory" / "AGENTS.md").exists()
     assert (workspace / "memory" / "MEMORY.md").exists()
     assert (workspace / "records").exists()

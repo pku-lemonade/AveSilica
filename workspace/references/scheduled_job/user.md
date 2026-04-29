@@ -11,6 +11,10 @@
 
 $task
 
+# Persisted Mention Targets
+
+$mention_targets
+
 # Loaded Skills
 
 $skill_context

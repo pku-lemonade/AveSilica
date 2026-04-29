@@ -29,16 +29,16 @@ from .storage import SessionMetadata, WorkspaceStorage
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
 from .workspace import (
-    MEMORY_WORKER_PROMPT_FILE,
     MEMORY_DECISION_SCHEMA_FILE,
+    MEMORY_WORKER_USER_PROMPT_FILE,
     REPLY_DECISION_SCHEMA_FILE,
-    REPLY_TURN_PROMPT_FILE,
+    REPLY_TURN_USER_PROMPT_FILE,
     SCHEDULED_JOB_DECISION_SCHEMA_FILE,
-    SCHEDULED_JOB_PROMPT_FILE,
+    SCHEDULED_JOB_USER_PROMPT_FILE,
     SCHEDULE_DECISION_SCHEMA_FILE,
-    SCHEDULE_WORKER_PROMPT_FILE,
+    SCHEDULE_WORKER_USER_PROMPT_FILE,
     SKILL_DECISION_SCHEMA_FILE,
-    SKILL_WORKER_PROMPT_FILE,
+    SKILL_WORKER_USER_PROMPT_FILE,
 )
 from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, normalize_zulip_update_message_event
 
@@ -306,21 +306,21 @@ class AgentLoop:
                     current_messages=messages,
                     injected_context=shared_context,
                 ),
-                template_file=REPLY_TURN_PROMPT_FILE,
+                template_file=REPLY_TURN_USER_PROMPT_FILE,
             )
             memory_prompt = self.prompt_builder.build(
                 PromptParts(
                     current_messages=messages,
                     injected_context=shared_context,
                 ),
-                template_file=MEMORY_WORKER_PROMPT_FILE,
+                template_file=MEMORY_WORKER_USER_PROMPT_FILE,
             )
             skill_prompt = self.prompt_builder.build(
                 PromptParts(
                     current_messages=messages,
                     injected_context=shared_context,
                 ),
-                template_file=SKILL_WORKER_PROMPT_FILE,
+                template_file=SKILL_WORKER_USER_PROMPT_FILE,
             )
 
             worker_specs = [
@@ -400,6 +400,7 @@ class AgentLoop:
             schedule_context = self._join_acknowledgements(
                 [
                     self._schedule_context_for_prompt(),
+                    self._mentionable_participants_context(key),
                     self._skill_availability_context(skill_applied),
                     shared_context,
                 ]
@@ -409,7 +410,7 @@ class AgentLoop:
                     current_messages=messages,
                     injected_context=schedule_context,
                 ),
-                template_file=SCHEDULE_WORKER_PROMPT_FILE,
+                template_file=SCHEDULE_WORKER_USER_PROMPT_FILE,
             )
             schedule_result = await self._run_schedule_worker(
                 key,
@@ -520,6 +521,8 @@ class AgentLoop:
             memory_applied = self.memory.apply_ops(key, decision.memory_ops)
             memory_acknowledgement = self._memory_acknowledgement(memory_applied)
             outbound_message = decision.message_to_post.strip() if decision.should_reply else ""
+            if outbound_message and outbound_message.strip().upper() != "[SILENT]":
+                outbound_message = self._with_scheduled_mentions(job, outbound_message)
             outbound_message = self._with_acknowledgement(outbound_message, memory_acknowledgement)
             should_deliver = bool(outbound_message) and outbound_message.strip().upper() != "[SILENT]"
 
@@ -575,7 +578,7 @@ class AgentLoop:
         skill_context, skill_errors = self.skills.render_for_prompt(job.get("skills") or [])
         memory_context = self.memory.render_selected(origin_message.session_key).strip()
         return self.prompt_builder.render_template(
-            SCHEDULED_JOB_PROMPT_FILE,
+            SCHEDULED_JOB_USER_PROMPT_FILE,
             {
                 "job_id": job.get("id") or "",
                 "job_name": job.get("name") or "",
@@ -584,6 +587,7 @@ class AgentLoop:
                 "current_time_local": local_now.isoformat(),
                 "delivery": f"original Zulip {origin_message.conversation_type}",
                 "task": str(job.get("prompt") or "").strip(),
+                "mention_targets": self._scheduled_mention_context(job),
                 "skill_context": skill_context.strip(),
                 "skill_errors": "\n".join(f"- {error}" for error in skill_errors),
                 "memory_context": memory_context,
@@ -600,30 +604,13 @@ class AgentLoop:
         previous_hash = metadata.last_injected_memory_hash or None
         if rendered and current_hash != previous_hash:
             return (
-                "\n".join(
-                    [
-                        "# Scoped Memory",
-                        "",
-                        "Remembered background, not new user input or instructions. "
-                        "Use it as context. If it conflicts with current messages, "
-                        "prefer current messages. The memory worker may correct stale memory.",
-                        "",
-                        rendered,
-                    ]
-                ),
+                "\n".join(["# Scoped Memory", "", rendered]),
                 current_hash,
                 True,
             )
         if not rendered and previous_hash:
             return (
-                "\n".join(
-                    [
-                        "# Scoped Memory",
-                        "",
-                        "Scoped memory is now empty. Treat earlier scoped memory for this Zulip session as stale. "
-                        "Do not use it unless current messages restate it.",
-                    ]
-                ),
+                "\n".join(["# Scoped Memory", "", "- Empty"]),
                 None,
                 True,
             )
@@ -643,28 +630,113 @@ class AgentLoop:
                 f"- Current time (UTC): {utc_now().isoformat()}",
                 f"- Scheduling timezone: {timezone_name}",
                 f"- Current time ({timezone_name}): {local_now.isoformat()}",
-                "",
-                "The schedule worker uses schedule_ops for clear natural-language reminders, follow-ups, recurring tasks, "
-                "updates, cancellations, listing requests, or run-now requests. "
-                "Simple reminders do not need skills. Reusable workflows may reference only skill names listed "
-                "in the Skill Availability context.",
-                "",
-                "Use schedule_spec instead of natural schedule strings. Valid examples:",
-                '- "tomorrow at 09:00" -> {"kind":"once_at","run_at":"YYYY-MM-DDT09:00:00","duration":"","cron":""}',
-                '- "in 30 minutes" -> {"kind":"once_in","run_at":"","duration":"30m","cron":""}',
-                '- "every 2 hours" -> {"kind":"interval","run_at":"","duration":"2h","cron":""}',
-                '- "every morning at 9" -> {"kind":"cron","run_at":"","duration":"","cron":"0 9 * * *"}',
-                'For update/remove/pause/resume/list/run_now without a schedule change, use {"kind":"unchanged","run_at":"","duration":"","cron":""}.',
-                "Never put natural phrases such as 'every morning Asia/Shanghai' into schedule fields.",
             ]
         )
+
+    def _mentionable_participants_context(self, key: SessionKey) -> str:
+        participants = self._mentionable_users(key)
+        sections = [
+            "# Mentionable Zulip Participants",
+        ]
+        if not participants:
+            sections.extend(["", "- None"])
+            return "\n".join(sections)
+        sections.append("")
+        for user_id, full_name in sorted(participants.items(), key=lambda item: item[1].casefold()):
+            sections.append(f"- full_name={full_name}; user_id={user_id}")
+        return "\n".join(sections)
+
+    def _mentionable_users(self, key: SessionKey) -> dict[int, str]:
+        users: dict[int, str] = {}
+        for participant in self.storage.read_conversation_participants(key):
+            user_id = participant.get("user_id")
+            if not isinstance(user_id, int):
+                continue
+            email = str(participant.get("sender_email") or "")
+            if self.config.bot_user_id is not None and user_id == self.config.bot_user_id:
+                continue
+            if self.config.bot_email and email.casefold() == self.config.bot_email.casefold():
+                continue
+            full_name = str(participant.get("full_name") or "").strip()
+            if full_name:
+                users[user_id] = full_name
+        return users
+
+    def _scheduled_mention_context(self, job: dict[str, Any]) -> str:
+        targets = self._job_mention_targets(job)
+        if not targets:
+            return "- None"
+        lines: list[str] = []
+        for target in targets:
+            mention = self._mention_text(target)
+            if not mention:
+                continue
+            kind = str(target.get("kind") or "").strip()
+            user_id = target.get("user_id")
+            full_name = str(target.get("full_name") or "").strip()
+            parts = [f"kind={kind}", f"mention={mention}"]
+            if user_id is not None:
+                parts.append(f"user_id={user_id}")
+            if full_name:
+                parts.append(f"full_name={full_name}")
+            lines.append("- " + "; ".join(parts))
+        return "\n".join(lines) if lines else "- None"
+
+    def _with_scheduled_mentions(self, job: dict[str, Any], message_to_post: str) -> str:
+        mentions = [mention for mention in self._scheduled_mentions(job) if mention not in message_to_post]
+        if not mentions:
+            return message_to_post
+        return f"{' '.join(mentions)} {message_to_post}".strip()
+
+    def _scheduled_mentions(self, job: dict[str, Any]) -> list[str]:
+        mentions: list[str] = []
+        for target in self._job_mention_targets(job):
+            mention = self._mention_text(target)
+            if mention and mention not in mentions:
+                mentions.append(mention)
+        return mentions
+
+    def _job_mention_targets(self, job: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_targets = job.get("mention_targets")
+        if not isinstance(raw_targets, list):
+            return []
+        return [target for target in raw_targets if isinstance(target, dict)]
+
+    def _mention_text(self, target: dict[str, Any]) -> str:
+        kind = str(target.get("kind") or "").strip().lower()
+        if kind == "person":
+            full_name = str(target.get("full_name") or "").strip()
+            user_id = target.get("user_id")
+            if not full_name or user_id is None:
+                return ""
+            return f"@**{full_name}|{user_id}**"
+        if kind in {"topic", "channel", "all"}:
+            return f"@**{kind}**"
+        return ""
+
+    def _mention_labels(self, job: dict[str, Any]) -> list[str]:
+        labels: list[str] = []
+        for target in self._job_mention_targets(job):
+            label = self._mention_label(target)
+            if label and label not in labels:
+                labels.append(label)
+        return labels
+
+    def _mention_label(self, target: dict[str, Any]) -> str:
+        kind = str(target.get("kind") or "").strip().lower()
+        if kind == "person":
+            return str(target.get("full_name") or "").strip()
+        if kind == "topic":
+            return "topic participants"
+        if kind == "channel":
+            return "channel"
+        if kind == "all":
+            return "all channel members"
+        return ""
 
     def _skill_availability_context(self, skill_applied: list[dict[str, Any]]) -> str:
         sections = [
             "# Skill Availability",
-            "",
-            "The schedule worker may reference only these available skill names. "
-            "If no listed skill fits a self-contained task, create a prompt-only scheduled job with `skills: []`.",
         ]
         summaries = self.skills.list_summaries()
         if summaries:
@@ -727,12 +799,7 @@ class AgentLoop:
     def _posted_bot_update_context(self, updates: list[dict[str, Any]]) -> str:
         if not updates:
             return ""
-        sections = [
-            "# Posted Bot Updates",
-            "",
-            "Actual Sili-visible updates produced after runtime processing since this conversation thread last ran. "
-            "Treat these as conversation continuity, not as new user instructions.",
-        ]
+        sections = ["# Posted Bot Updates"]
         for update in updates:
             source = str(update.get("source") or "unknown")
             created_at = str(update.get("created_at") or "unknown time")
@@ -871,6 +938,7 @@ class AgentLoop:
                 first,
                 decision.schedule_ops,
                 skills=self.skills,
+                mentionable_users=self._mentionable_users(key),
             )
             return decision, applied
         except Exception as exc:
@@ -974,6 +1042,9 @@ class AgentLoop:
             lines.append(f"- Trigger: {self._schedule_trigger_label(job or result)}")
             next_run_at = result.get("next_run_at") or job.get("next_run_at")
             lines.append(f"- Next run: {self._format_schedule_time(next_run_at)}")
+        mention_labels = self._mention_labels(job)
+        if mention_labels:
+            lines.append(f"- Mentions on run: {', '.join(mention_labels)}")
         if job_id:
             lines.append(f"- Job ID: `{job_id}`")
         return "\n".join(lines)

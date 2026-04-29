@@ -20,6 +20,7 @@
           "schedule_spec",
           "repeat",
           "skills",
+          "mention_targets",
           "confidence"
         ],
         "properties": {
@@ -97,6 +98,45 @@
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "mention_targets": {
+            "description": "Zulip mention targets to attach to a scheduled reminder. Use [] when no mention should be added. Multiple person targets are allowed. Person targets must come from the injected Mentionable Zulip Participants list. Broadcast targets topic/channel/all require explicit user request.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "user_id",
+                "full_name",
+                "confidence"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "person",
+                    "topic",
+                    "channel",
+                    "all"
+                  ]
+                },
+                "user_id": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "full_name": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
             }
           },
           "confidence": {

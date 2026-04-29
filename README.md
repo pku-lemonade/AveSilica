@@ -129,10 +129,10 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 ## Workspace Layout
 
 - `workspace/AGENTS.md`: global identity, voice, style, and high-level behavior.
-- `workspace/references/codex-thread-contract.md`: shared non-negotiable contract for every Codex thread.
-- `workspace/references/*-prompt.md`: role-specific prompt templates for reply, workers, and scheduled jobs.
-- `workspace/references/*-decision-schema.json`: native Codex structured output schemas for reply, memory, skill, schedule, and scheduled-job turns.
-- `workspace/references/*-policy.md`: role-specific reply, memory, skill, schedule, and scheduled-job policies.
+- `workspace/references/system.md`: shared non-negotiable contract for every Codex thread.
+- `workspace/references/<agent>/user.md`: role-specific user prompt template.
+- `workspace/references/<agent>/system.md`: role-specific system configuration loaded as Codex developer instructions.
+- `workspace/references/<agent>/schema.json`: native Codex structured output schema.
 - `workspace/memory/AGENTS.md`: optional global deployment/team instructions.
 - `workspace/memory/MEMORY.md`: compact global memory updated by validated memory operations.
 - `workspace/memory/stream-<slug>-<id>/AGENTS.md`: optional channel-specific instructions.
@@ -151,32 +151,28 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 
 Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing template files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/instructions.py` composes role-specific developer instructions, `src/token_zulip/prompt.py` renders role-specific prompts, and `src/token_zulip/codex_adapter.py` runs the native Codex `output_schema` for the reply/session thread and each forked op worker.
 
-Every role starts with `workspace/references/codex-thread-contract.md`, then loads only its role policy and scoped `AGENTS.md` files. The reply/session thread also loads `workspace/AGENTS.md` and `workspace/references/reply-thread-policy.md`; workers load only their worker policy plus scoped `AGENTS.md`; scheduled job threads load `workspace/AGENTS.md`, `workspace/references/scheduled-job-policy.md`, and memory policy.
+Every role starts with `workspace/references/system.md`, then loads only its role system configuration and scoped `AGENTS.md` files. The reply/session thread also loads `workspace/AGENTS.md` and `workspace/references/reply/system.md`; workers load only their worker system configuration plus scoped `AGENTS.md`; scheduled job threads load `workspace/AGENTS.md`, `workspace/references/scheduled_job/system.md`, and memory system configuration.
 
 The composed instruction layers are passed to Codex as `developer_instructions` only when a persistent thread is created, or when an ephemeral worker fork is created. Existing marked reply/session and job threads are resumed without repeating those instructions.
 
 Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 
 - `workspace/AGENTS.md`: global identity, voice, style, and high-level behavior.
-- `workspace/references/codex-thread-contract.md`: shared Codex thread contract and structured-output boundaries.
-- `workspace/references/reply-thread-policy.md`: when to reply and which `reply_kind` to choose.
-- `workspace/references/reply-turn-prompt.md`: reply/session thread prompt template.
-- `workspace/references/reply-decision-schema.json`: reply/session thread schema.
-- `workspace/references/memory-decision-schema.json`: memory worker schema.
-- `workspace/references/skill-decision-schema.json`: skill worker schema.
-- `workspace/references/schedule-decision-schema.json`: schedule worker schema.
-- `workspace/references/scheduled-job-decision-schema.json`: scheduled job runtime schema.
-- `workspace/references/*-worker-prompt.md`: memory, skill, and schedule worker prompt templates.
-- `workspace/references/*-worker-policy.md`: memory, skill, and schedule worker policies.
-- `workspace/references/scheduled-job-prompt.md`: scheduled job runtime prompt template.
-- `workspace/references/scheduled-job-policy.md`: scheduled job runtime policy.
+- `workspace/references/system.md`: shared Codex thread contract and structured-output boundaries.
+- `workspace/references/reply/`: reply/session agent `user.md`, `system.md`, and `schema.json`.
+- `workspace/references/memory/`: memory worker agent `user.md`, `system.md`, and `schema.json`.
+- `workspace/references/skill/`: skill worker agent `user.md`, `system.md`, and `schema.json`.
+- `workspace/references/schedule/`: schedule worker agent `user.md`, `system.md`, and `schema.json`.
+- `workspace/references/scheduled_job/`: scheduled job agent `user.md`, `system.md`, and `schema.json`.
 - `workspace/memory/AGENTS.md`: human-authored global deployment/team preferences.
 - `workspace/memory/.../AGENTS.md`: human-authored channel/topic/private exceptions or preferences.
 - `workspace/memory/.../MEMORY.md`: compact remembered context. This is the memory source of truth for validated memory operations and is injected into Codex prompts when the scoped memory snapshot changes.
 
+Static model-facing instruction belongs in the Markdown files above. Runtime Python should inject dynamic data sections only, such as current time, mentionable participants, available skill summaries, posted bot updates, and persisted job fields.
+
 Memory follows a Hermes-style markdown model. `MEMORY.md` is a compact memory source of truth. Entries are separated by `§`; TokenZulip applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/stream-*/topic-*/messages.jsonl` or `workspace/records/private-*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions, acknowledgements, and applied or rejected operations.
 
-Scheduled tasks follow a Hermes-inspired job model. The schedule worker requests changes through `schedule_ops`; the schedule code path validates and persists jobs under `workspace/schedules/jobs.json`, appends an acknowledgement only after persistence succeeds, and runs due jobs from a scheduler ticker inside `token-zulip run`. Jobs post back only to their originating Zulip topic or private chat. Jobs may be prompt-only or skill-backed; skill-backed jobs store skill names and load `workspace/skills/<name>/SKILL.md` only when the job fires.
+Scheduled tasks follow a Hermes-inspired job model. The schedule worker requests changes through `schedule_ops`; the schedule code path validates and persists jobs under `workspace/schedules/jobs.json`, appends an acknowledgement only after persistence succeeds, and runs due jobs from a scheduler ticker inside `token-zulip run`. Jobs post back only to their originating Zulip topic or private chat. Jobs may be prompt-only or skill-backed; skill-backed jobs store skill names and load `workspace/skills/<name>/SKILL.md` only when the job fires. Reminder jobs may also store zero or more Zulip mention targets that are applied when the job runs.
 
 Skill persistence is owned by the skill worker code path: its forked Codex decision may return `skill_ops` containing a skill name, description, and `SKILL.md` content. TokenZulip validates that request and writes `workspace/skills/<name>/SKILL.md`. Scheduled job threads do not write skills; they only load skill names recorded on the job.
 
@@ -211,8 +207,8 @@ fresh scheduled job thread
 | Reply/session thread | Long-lived per Zulip DM or stream/topic | Previous Codex turns for this Zulip conversation | Current Zulip message batch, scoped durable memory when changed, pending `posted_bot_update` | User-visible reply decision only |
 | Memory worker thread | Ephemeral fork | Updated reply/session thread context including the current turn | Current Zulip message batch, scoped durable memory when changed, pending `posted_bot_update` | `memory_ops` only |
 | Skill worker thread | Ephemeral fork | Updated reply/session thread context including the current turn | Current Zulip message batch, scoped durable memory when changed, pending `posted_bot_update` | `skill_ops` only |
-| Schedule worker thread | Ephemeral fork after skill persistence | Updated reply/session thread context including the current turn | Current Zulip message batch, scoped durable memory when changed, active schedule context, skill availability summary, pending `posted_bot_update` | `schedule_ops` only |
-| Scheduled job thread | Fresh per job run | None | Job brief, schedule spec, loaded skill content, scoped durable memory, current time | Scheduled result reply and optional `memory_ops` |
+| Schedule worker thread | Ephemeral fork after skill persistence | Updated reply/session thread context including the current turn | Current Zulip message batch, scoped durable memory when changed, current scheduling time, mentionable Zulip participants, skill availability summary, pending `posted_bot_update` | `schedule_ops` only |
+| Scheduled job thread | Fresh per job run | None | Job brief, persisted mention targets, loaded skill content, scoped durable memory, current time | Scheduled result reply and optional `memory_ops` |
 
 `recent_context` is not injected into Codex prompts. Conversation continuity comes from Codex thread history and forked Codex context.
 
@@ -259,6 +255,7 @@ Human conversation says: follow up Friday / remind us / run this weekly
   -> schedule worker code path writes jobs.json
        prompt: self-contained job instruction
        skills: []
+       mention_targets: []
        origin: current Zulip topic/private chat
        next_run_at: UTC ISO timestamp
   -> Sili posts a Markdown acknowledgement with name, trigger, next run, and job id
@@ -282,17 +279,19 @@ scheduler ticker wakes every TOKENZULIP_SCHEDULE_TICK_SECONDS
   -> ScheduleStore.get_due_jobs()
   -> for each due job, start a fresh scheduled job Codex thread
        developer_instructions:
-         codex-thread-contract.md
-         scheduled-job-policy.md
-         memory-worker-policy.md
+         system.md
+         scheduled_job/system.md
+         memory/system.md
          scoped AGENTS.md files
        prompt:
          job id/name/time
          job prompt
+         persisted mention target list, if any
          loaded SKILL.md contents for job.skills
          scoped memory for the origin Zulip conversation
          output rules
        output: message_to_post and optional memory_ops
+  -> prepend any missing persisted mentions
   -> post result to the original Zulip topic/private chat
   -> enqueue posted_bot_update for the origin reply/session thread
   -> append workspace/records/scheduled/<job_id>/runs.jsonl
@@ -311,7 +310,7 @@ Zulip upload links in raw Markdown are downloaded to the session's `uploads/<mes
 
 When a stream/topic or private-chat session already has a marked Codex thread, TokenZulip resumes that thread and sends only the new Zulip message batch plus any changed scoped memory snapshot and pending `posted_bot_update`. New or legacy unmarked sessions start a fresh Codex thread with composed `developer_instructions`; they do not replay recent Zulip records into the prompt.
 
-The reply/session thread returns only `should_reply`, `reply_kind`, `message_to_post`, and confidence. After that parent turn completes, three ephemeral forked workers return memory, skill, and schedule decisions through separate schemas and code paths. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. TokenZulip validates and persists applied changes, appends deterministic acknowledgements, and then posts any reply.
+The reply/session thread returns only `should_reply`, `reply_kind`, `message_to_post`, and confidence. After that parent turn completes, three ephemeral forked workers return memory, skill, and schedule decisions through separate schemas and code paths. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. Schedule operations may also include multiple `mention_targets`; confirmations use plain names, while the due job post uses Zulip mention markup. TokenZulip validates and persists applied changes, appends deterministic acknowledgements, and then posts any reply.
 
 When schedules are enabled, the listener also runs a background scheduler. Configure it with `TOKENZULIP_SCHEDULES_ENABLED`, `TOKENZULIP_SCHEDULE_TICK_SECONDS`, `TOKENZULIP_SCHEDULE_TIMEZONE`, and `TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS`. Scheduled job runs start fresh Codex threads from persisted job data, loaded skills, scoped memory, and current time, so scheduled automation history does not pollute the human Zulip conversation thread.
 

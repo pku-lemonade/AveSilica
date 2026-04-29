@@ -790,7 +790,7 @@ def test_current_message_is_not_duplicated_and_recent_context_is_not_rendered(tm
         assert codex.thread_ids == [None]
         assert codex.developer_instructions[0] is not None
         assert "Codex Thread Contract" in codex.developer_instructions[0]
-        assert "schedule-worker-policy" not in codex.developer_instructions[0]
+        assert "references/schedule/system.md" not in codex.developer_instructions[0]
 
     asyncio.run(scenario())
 
@@ -922,8 +922,11 @@ def test_memory_entries_are_conditionally_injected_into_codex_prompt(tmp_path):
 
         assert "Scoped Memory" in codex.prompts[0]
         assert "Launch date is Friday" in codex.prompts[0]
-        assert "remembered background" in codex.prompts[0].casefold()
-        assert "memory worker may correct stale memory" in codex.prompts[0]
+        assert "remembered background" not in codex.prompts[0].casefold()
+        assert "memory worker may correct stale memory" not in codex.prompts[0]
+        assert "Treat scoped memory and posted bot updates as background context" in (
+            codex.developer_instructions[0] or ""
+        )
         assert "Launch date is Friday" not in (codex.developer_instructions[0] or "")
         assert "Scoped Memory" not in codex.prompts[1]
         assert storage.load_metadata(message.session_key).last_injected_memory_hash is not None
@@ -1020,8 +1023,8 @@ def test_removed_memory_after_prior_injection_sends_stale_update(tmp_path):
         await bot._handle_message(_message(2, "next turn"))
 
         assert "Launch date is Friday" in codex.prompts[0]
-        assert "Scoped memory is now empty" in codex.prompts[1]
-        assert "Do not use it unless current messages restate it" in codex.prompts[1]
+        assert "# Scoped Memory\n\n- Empty" in codex.prompts[1]
+        assert "If a `Scoped Memory` runtime section is empty" in (codex.developer_instructions[0] or "")
         assert storage.load_metadata(first.session_key).last_injected_memory_hash is None
 
     asyncio.run(scenario())

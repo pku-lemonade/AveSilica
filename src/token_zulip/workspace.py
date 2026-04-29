@@ -7,6 +7,11 @@ from pathlib import Path
 
 WORKSPACE_DIRS: tuple[str, ...] = (
     "references",
+    "references/reply",
+    "references/memory",
+    "references/skill",
+    "references/schedule",
+    "references/scheduled_job",
     "skills",
     "schedules",
     "memory",
@@ -15,37 +20,37 @@ WORKSPACE_DIRS: tuple[str, ...] = (
     "records/scheduled",
 )
 
-CODEX_THREAD_CONTRACT_FILE = "references/codex-thread-contract.md"
-REPLY_TURN_PROMPT_FILE = "references/reply-turn-prompt.md"
-MEMORY_WORKER_PROMPT_FILE = "references/memory-worker-prompt.md"
-SKILL_WORKER_PROMPT_FILE = "references/skill-worker-prompt.md"
-SCHEDULE_WORKER_PROMPT_FILE = "references/schedule-worker-prompt.md"
-SCHEDULED_JOB_PROMPT_FILE = "references/scheduled-job-prompt.md"
-REPLY_DECISION_SCHEMA_FILE = "references/reply-decision-schema.json"
-MEMORY_DECISION_SCHEMA_FILE = "references/memory-decision-schema.json"
-SKILL_DECISION_SCHEMA_FILE = "references/skill-decision-schema.json"
-SCHEDULE_DECISION_SCHEMA_FILE = "references/schedule-decision-schema.json"
-SCHEDULED_JOB_DECISION_SCHEMA_FILE = "references/scheduled-job-decision-schema.json"
+SHARED_SYSTEM_FILE = "references/system.md"
+REPLY_TURN_USER_PROMPT_FILE = "references/reply/user.md"
+MEMORY_WORKER_USER_PROMPT_FILE = "references/memory/user.md"
+SKILL_WORKER_USER_PROMPT_FILE = "references/skill/user.md"
+SCHEDULE_WORKER_USER_PROMPT_FILE = "references/schedule/user.md"
+SCHEDULED_JOB_USER_PROMPT_FILE = "references/scheduled_job/user.md"
+REPLY_DECISION_SCHEMA_FILE = "references/reply/schema.json"
+MEMORY_DECISION_SCHEMA_FILE = "references/memory/schema.json"
+SKILL_DECISION_SCHEMA_FILE = "references/skill/schema.json"
+SCHEDULE_DECISION_SCHEMA_FILE = "references/schedule/schema.json"
+SCHEDULED_JOB_DECISION_SCHEMA_FILE = "references/scheduled_job/schema.json"
 DECISION_SCHEMA_FILE = REPLY_DECISION_SCHEMA_FILE
 
 WORKSPACE_TEMPLATE_FILES: tuple[str, ...] = (
-    CODEX_THREAD_CONTRACT_FILE,
-    REPLY_TURN_PROMPT_FILE,
-    MEMORY_WORKER_PROMPT_FILE,
-    SKILL_WORKER_PROMPT_FILE,
-    SCHEDULE_WORKER_PROMPT_FILE,
-    SCHEDULED_JOB_PROMPT_FILE,
+    SHARED_SYSTEM_FILE,
+    REPLY_TURN_USER_PROMPT_FILE,
+    MEMORY_WORKER_USER_PROMPT_FILE,
+    SKILL_WORKER_USER_PROMPT_FILE,
+    SCHEDULE_WORKER_USER_PROMPT_FILE,
+    SCHEDULED_JOB_USER_PROMPT_FILE,
     REPLY_DECISION_SCHEMA_FILE,
     MEMORY_DECISION_SCHEMA_FILE,
     SKILL_DECISION_SCHEMA_FILE,
     SCHEDULE_DECISION_SCHEMA_FILE,
     SCHEDULED_JOB_DECISION_SCHEMA_FILE,
     "AGENTS.md",
-    "references/reply-thread-policy.md",
-    "references/memory-worker-policy.md",
-    "references/skill-worker-policy.md",
-    "references/schedule-worker-policy.md",
-    "references/scheduled-job-policy.md",
+    "references/reply/system.md",
+    "references/memory/system.md",
+    "references/skill/system.md",
+    "references/schedule/system.md",
+    "references/scheduled_job/system.md",
     "memory/AGENTS.md",
     "memory/MEMORY.md",
 )

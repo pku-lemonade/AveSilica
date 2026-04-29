@@ -5,7 +5,7 @@ from pathlib import Path
 from string import Template
 
 from .models import NormalizedMessage
-from .workspace import REPLY_TURN_PROMPT_FILE
+from .workspace import REPLY_TURN_USER_PROMPT_FILE
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ class PromptBuilder:
     def __init__(self, root: Path) -> None:
         self.root = root.expanduser().resolve()
 
-    def build(self, parts: PromptParts, *, template_file: str = REPLY_TURN_PROMPT_FILE) -> str:
+    def build(self, parts: PromptParts, *, template_file: str = REPLY_TURN_USER_PROMPT_FILE) -> str:
         current = "\n".join(self._format_message(message) for message in parts.current_messages)
         template = Template(self._template_text(template_file))
         return template.safe_substitute(

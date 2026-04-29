@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from .models import (
 REACTION_EVENTS_CAP = 20
 ENTRY_DELIMITER = "\n§\n"
 POSTED_BOT_UPDATES_FILENAME = "posted_bot_updates.jsonl"
+ZULIP_PERSON_MENTION_RE = re.compile(r"@\*\*([^|\n]+?)\|(\d+)\*\*")
 
 
 @dataclass
@@ -288,6 +290,36 @@ class WorkspaceStorage:
             if self._optional_message_id(record) not in exclude
         ]
         return records[-limit:]
+
+    def read_conversation_participants(self, key: SessionKey) -> list[dict[str, Any]]:
+        path = self.session_path(key, "messages.jsonl")
+        participants: dict[int, dict[str, Any]] = {}
+        for record in self._read_jsonl(path):
+            message_id = self._optional_message_id(record)
+            sender_id = _optional_int(record.get("sender_id"))
+            full_name = str(record.get("sender_full_name") or "").strip()
+            if sender_id is not None and full_name:
+                participants[sender_id] = {
+                    "user_id": sender_id,
+                    "full_name": full_name,
+                    "sender_email": str(record.get("sender_email") or ""),
+                    "last_message_id": message_id,
+                }
+            for mentioned_name, mentioned_id in ZULIP_PERSON_MENTION_RE.findall(str(record.get("content") or "")):
+                user_id = _optional_int(mentioned_id)
+                full_name = mentioned_name.strip()
+                if user_id is None or not full_name:
+                    continue
+                participants.setdefault(
+                    user_id,
+                    {
+                        "user_id": user_id,
+                        "full_name": full_name,
+                        "sender_email": "",
+                        "last_message_id": message_id,
+                    },
+                )
+        return sorted(participants.values(), key=lambda item: str(item.get("full_name") or "").casefold())
 
     def append_pending_messages(self, key: SessionKey, messages: list[NormalizedMessage]) -> None:
         for message in messages:

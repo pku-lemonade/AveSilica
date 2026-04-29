@@ -9,7 +9,7 @@ from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
 from token_zulip.loop import AgentLoop
 from token_zulip.memory import MemoryStore
-from token_zulip.models import NormalizedMessage, ScheduleOperation, ScheduleSpec
+from token_zulip.models import NormalizedMessage, ScheduleMentionTarget, ScheduleOperation, ScheduleSpec
 from token_zulip.schedules import ScheduleStore, parse_schedule, parse_schedule_spec
 from token_zulip.skills import SkillStore
 from token_zulip.storage import WorkspaceStorage
@@ -42,7 +42,14 @@ def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
     )
 
 
-def _message(message_id: int, content: str = "schedule this") -> NormalizedMessage:
+def _message(
+    message_id: int,
+    content: str = "schedule this",
+    *,
+    sender_id: int = 1,
+    sender_full_name: str = "Alice",
+    sender_email: str = "alice@example.com",
+) -> NormalizedMessage:
     return NormalizedMessage(
         realm_id="realm",
         message_id=message_id,
@@ -51,9 +58,9 @@ def _message(message_id: int, content: str = "schedule this") -> NormalizedMessa
         stream_slug="engineering",
         topic="Launch",
         topic_hash="topic123",
-        sender_email="alice@example.com",
-        sender_full_name="Alice",
-        sender_id=1,
+        sender_email=sender_email,
+        sender_full_name=sender_full_name,
+        sender_id=sender_id,
         content=content,
         timestamp=None,
         received_at="now",
@@ -175,19 +182,27 @@ def test_parse_schedule_spec_supports_decomposed_kinds():
 
 
 def test_active_schema_requires_decomposed_schedule_spec():
-    schema_path = Path(__file__).parent.parent / "workspace" / "references" / "schedule-decision-schema.json"
+    schema_path = Path(__file__).parent.parent / "workspace" / "references" / "schedule" / "schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     schedule_props = schema["properties"]["schedule_ops"]["items"]["properties"]
     required = schema["properties"]["schedule_ops"]["items"]["required"]
 
     assert "schedule" not in schedule_props
     assert "schedule_spec" in required
+    assert "mention_targets" in required
+    assert "mention_targets" in schedule_props
     assert schedule_props["schedule_spec"]["properties"]["kind"]["enum"] == [
         "unchanged",
         "once_at",
         "once_in",
         "interval",
         "cron",
+    ]
+    assert schedule_props["mention_targets"]["items"]["properties"]["kind"]["enum"] == [
+        "person",
+        "topic",
+        "channel",
+        "all",
     ]
 
 
@@ -413,6 +428,176 @@ def test_daily_morning_request_uses_cron_schedule_spec(tmp_path):
     assert job["schedule"]["timezone"] == "Asia/Shanghai"
 
 
+def test_schedule_can_store_multiple_person_mentions_without_pinging_confirmation(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        storage.append_message(
+            _message(
+                1,
+                "I am Zhuohang.",
+                sender_id=2,
+                sender_full_name="Zhuohang Bian",
+                sender_email="zhuohang@example.com",
+            )
+        )
+        storage.append_message(
+            _message(
+                2,
+                "Loop in @**Feiyang Liu|3** too.",
+            )
+        )
+        payload = {
+            **_silent_payload(),
+            "schedule_ops": [
+                {
+                    "action": "create",
+                    "job_id": "",
+                    "name": "Tokencake follow-up",
+                    "match": "",
+                    "prompt": "Remind Zhuohang Bian and Feiyang Liu to follow up on tokencake.",
+                    "schedule_spec": {
+                        "kind": "once_at",
+                        "run_at": "2030-01-02T09:00:00",
+                        "duration": "",
+                        "cron": "",
+                    },
+                    "repeat": None,
+                    "skills": [],
+                    "mention_targets": [
+                        {
+                            "kind": "person",
+                            "user_id": 2,
+                            "full_name": "Zhuohang Bian",
+                            "confidence": 0.95,
+                        },
+                        {
+                            "kind": "person",
+                            "user_id": 3,
+                            "full_name": "Feiyang Liu",
+                            "confidence": 0.9,
+                        },
+                    ],
+                    "confidence": 0.9,
+                }
+            ],
+        }
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PayloadCodex(payload),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(3, "remind Zhuohang and Feiyang tomorrow"))
+
+        job = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai").load_jobs()[0]
+        assert job["mention_targets"] == [
+            {"kind": "person", "user_id": 2, "full_name": "Zhuohang Bian", "confidence": 0.95},
+            {"kind": "person", "user_id": 3, "full_name": "Feiyang Liu", "confidence": 0.9},
+        ]
+        confirmation = poster.posts[0]["content"]
+        assert "- Mentions on run: Zhuohang Bian, Feiyang Liu" in confirmation
+        assert "@**Zhuohang" not in confirmation
+        assert "@**Feiyang" not in confirmation
+        schedule_prompt = bot.codex.worker_prompts["schedule"]
+        assert "# Mentionable Zulip Participants" in schedule_prompt
+        assert "full_name=Zhuohang Bian; user_id=2" in schedule_prompt
+        assert "full_name=Feiyang Liu; user_id=3" in schedule_prompt
+
+    asyncio.run(scenario())
+
+
+def test_schedule_rejects_unknown_person_mention_target(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        payload = {
+            **_silent_payload(),
+            "schedule_ops": [
+                {
+                    "action": "create",
+                    "job_id": "",
+                    "name": "Unknown person reminder",
+                    "match": "",
+                    "prompt": "Remind Missing Person to follow up.",
+                    "schedule_spec": {
+                        "kind": "once_at",
+                        "run_at": "2030-01-02T09:00:00",
+                        "duration": "",
+                        "cron": "",
+                    },
+                    "repeat": None,
+                    "skills": [],
+                    "mention_targets": [
+                        {
+                            "kind": "person",
+                            "user_id": 999,
+                            "full_name": "Missing Person",
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "confidence": 0.9,
+                }
+            ],
+        }
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PayloadCodex(payload),
+            zulip=poster,
+        )
+
+        await bot._handle_message(_message(1, "remind Missing Person tomorrow"))
+
+        assert "**Schedule not changed**" in poster.posts[0]["content"]
+        assert "- Reason: mention target not found in conversation: 999" in poster.posts[0]["content"]
+        assert not ScheduleStore(tmp_path, timezone_name="Asia/Shanghai").load_jobs()
+
+    asyncio.run(scenario())
+
+
+def test_schedule_store_requires_explicit_broadcast_mention_scope(tmp_path):
+    store = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+    results = store.apply_ops(
+        _message(1),
+        [
+            ScheduleOperation(
+                action="create",
+                name="Broadcast reminder",
+                prompt="Remind everyone to update the topic.",
+                schedule="2030-01-02T09:00:00",
+                mention_targets=(ScheduleMentionTarget(kind="all", confidence=0.9),),
+            )
+        ],
+    )
+    rejected = results[0]
+
+    assert rejected["status"] == "rejected"
+    assert rejected["reason"] == "broadcast mention target requires explicit @**all** in prompt"
+
+    applied = store.create_job(
+        _message(2),
+        ScheduleOperation(
+            action="create",
+            name="Broadcast reminder",
+            prompt="Remind @**all** to update the topic.",
+            schedule="2030-01-02T09:00:00",
+            mention_targets=(ScheduleMentionTarget(kind="all", confidence=0.9),),
+        ),
+    )
+
+    assert applied["status"] == "applied"
+    assert store.load_jobs()[0]["mention_targets"] == [
+        {"kind": "all", "user_id": None, "full_name": "", "confidence": 0.9}
+    ]
+
+
 def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
@@ -478,3 +663,76 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         assert job["last_status"] == "ok"
 
     asyncio.run(scenario())
+
+
+def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+        created = schedules.create_job(
+            _message(1),
+            ScheduleOperation(
+                action="create",
+                name="Tokencake follow-up",
+                prompt="Remind Zhuohang Bian and Feiyang Liu to handle tokencake.",
+                schedule="2030-01-02T09:00:00",
+                mention_targets=(
+                    ScheduleMentionTarget(kind="person", user_id=2, full_name="Zhuohang Bian", confidence=0.9),
+                    ScheduleMentionTarget(kind="person", user_id=3, full_name="Feiyang Liu", confidence=0.9),
+                ),
+            ),
+        )
+        schedules.trigger_job(_message(1), ScheduleOperation(action="run_now", job_id=created["job_id"]))
+        payload = {
+            **_silent_payload(),
+            "should_reply": True,
+            "reply_kind": "report",
+            "message_to_post": "Please handle tokencake.",
+        }
+        codex = PayloadCodex(payload)
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=poster,
+            schedules=schedules,
+        )
+
+        assert await bot.run_schedules_once() == 1
+
+        assert poster.posts == [
+            {
+                "topic": "Launch",
+                "content": "@**Zhuohang Bian|2** @**Feiyang Liu|3** Please handle tokencake.",
+            }
+        ]
+        assert "# Persisted Mention Targets" in codex.prompts[0]
+        assert "mention=@**Zhuohang Bian|2**" in codex.prompts[0]
+        assert "mention=@**Feiyang Liu|3**" in codex.prompts[0]
+
+    asyncio.run(scenario())
+
+
+def test_due_scheduled_job_does_not_duplicate_existing_mentions(tmp_path):
+    initialize_workspace(tmp_path)
+    bot = AgentLoop(
+        config=_config(tmp_path),
+        storage=WorkspaceStorage(tmp_path),
+        instructions=InstructionLoader(tmp_path),
+        memory=MemoryStore(tmp_path / "memory"),
+        codex=PayloadCodex(_silent_payload()),
+        zulip=FakePoster(),
+    )
+    job = {
+        "mention_targets": [
+            {"kind": "person", "user_id": 2, "full_name": "Zhuohang Bian", "confidence": 0.9},
+            {"kind": "person", "user_id": 3, "full_name": "Feiyang Liu", "confidence": 0.9},
+        ]
+    }
+
+    assert bot._with_scheduled_mentions(job, "@**Zhuohang Bian|2** done") == (
+        "@**Feiyang Liu|3** @**Zhuohang Bian|2** done"
+    )

@@ -22,7 +22,16 @@ try:
 except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
-from .models import NormalizedMessage, NormalizedMessageMove, ScheduleOperation, ScheduleSpec, SessionKey, safe_slug, utc_now_iso
+from .models import (
+    NormalizedMessage,
+    NormalizedMessageMove,
+    ScheduleMentionTarget,
+    ScheduleOperation,
+    ScheduleSpec,
+    SessionKey,
+    safe_slug,
+    utc_now_iso,
+)
 
 
 SCHEDULES_FILENAME = "jobs.json"
@@ -230,16 +239,31 @@ class ScheduleStore:
         ops: list[ScheduleOperation],
         *,
         skills: SkillLookup | None = None,
+        mentionable_users: dict[int, str] | None = None,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for op in ops:
             try:
                 if op.action == "create":
-                    results.append(self.create_job(origin, op, skills=skills))
+                    results.append(
+                        self.create_job(
+                            origin,
+                            op,
+                            skills=skills,
+                            mentionable_users=mentionable_users,
+                        )
+                    )
                 elif op.action == "list":
                     results.append(self.list_context_jobs(origin))
                 elif op.action == "update":
-                    results.append(self.update_job(origin, op, skills=skills))
+                    results.append(
+                        self.update_job(
+                            origin,
+                            op,
+                            skills=skills,
+                            mentionable_users=mentionable_users,
+                        )
+                    )
                 elif op.action == "remove":
                     results.append(self.remove_job(origin, op))
                 elif op.action == "pause":
@@ -266,12 +290,18 @@ class ScheduleStore:
         op: ScheduleOperation,
         *,
         skills: SkillLookup | None = None,
+        mentionable_users: dict[int, str] | None = None,
     ) -> dict[str, Any]:
         if not op.prompt.strip():
             return self._rejected("create", "prompt is required", name=op.name)
         if not _operation_has_schedule(op):
             return self._rejected("create", "schedule is required", name=op.name)
         skill_names = self._validated_skills(op.skills, skills)
+        mention_targets = self._validated_mention_targets(
+            op.mention_targets,
+            mentionable_users,
+            prompt=op.prompt,
+        )
         schedule = _parse_operation_schedule(op, self.timezone_name)
         next_run_at = compute_next_run(schedule, self.timezone_name)
         if next_run_at is None:
@@ -287,6 +317,7 @@ class ScheduleStore:
             "name": op.name.strip() or op.prompt.strip()[:60],
             "prompt": op.prompt.strip(),
             "skills": skill_names,
+            "mention_targets": mention_targets,
             "schedule": schedule,
             "schedule_display": schedule.get("display", op.schedule),
             "repeat": {"times": repeat_times, "completed": 0},
@@ -319,6 +350,7 @@ class ScheduleStore:
         op: ScheduleOperation,
         *,
         skills: SkillLookup | None = None,
+        mentionable_users: dict[int, str] | None = None,
     ) -> dict[str, Any]:
         with self._locked_jobs() as jobs:
             index, job = self._resolve_job(jobs, origin, op)
@@ -331,6 +363,12 @@ class ScheduleStore:
                 updated["prompt"] = op.prompt.strip()
             if op.skills:
                 updated["skills"] = self._validated_skills(op.skills, skills)
+            if op.mention_targets:
+                updated["mention_targets"] = self._validated_mention_targets(
+                    op.mention_targets,
+                    mentionable_users,
+                    prompt=op.prompt or str(updated.get("prompt") or ""),
+                )
             if op.repeat is not None:
                 repeat_state = dict(updated.get("repeat") or {})
                 repeat_state["times"] = op.repeat
@@ -684,6 +722,50 @@ class ScheduleStore:
                 normalized.append(value)
         return normalized
 
+    def _validated_mention_targets(
+        self,
+        requested: tuple[ScheduleMentionTarget, ...],
+        mentionable_users: dict[int, str] | None,
+        *,
+        prompt: str,
+    ) -> list[dict[str, Any]]:
+        normalized: list[ScheduleMentionTarget] = []
+        seen: set[tuple[str, int | None]] = set()
+        prompt_text = prompt.strip()
+        for target in requested:
+            if target.kind == "person":
+                if target.user_id is None:
+                    raise ValueError("person mention target requires user_id")
+                full_name = target.full_name.strip()
+                if mentionable_users is not None:
+                    full_name = mentionable_users.get(target.user_id, "")
+                    if not full_name:
+                        raise ValueError(f"mention target not found in conversation: {target.user_id}")
+                if not full_name:
+                    raise ValueError("person mention target requires full_name")
+                normalized_target = ScheduleMentionTarget(
+                    kind="person",
+                    user_id=target.user_id,
+                    full_name=full_name,
+                    confidence=target.confidence,
+                )
+            else:
+                literal = f"@**{target.kind}**"
+                if literal not in prompt_text:
+                    raise ValueError(f"broadcast mention target requires explicit {literal} in prompt")
+                normalized_target = ScheduleMentionTarget(
+                    kind=target.kind,
+                    user_id=None,
+                    full_name="",
+                    confidence=target.confidence,
+                )
+
+            key = (normalized_target.kind, normalized_target.user_id)
+            if key not in seen:
+                seen.add(key)
+                normalized.append(normalized_target)
+        return [target.to_record() for target in normalized]
+
     def _public_job(self, job: dict[str, Any]) -> dict[str, Any]:
         return {
             "id": job.get("id"),
@@ -696,6 +778,7 @@ class ScheduleStore:
             "enabled": job.get("enabled", True),
             "state": job.get("state"),
             "skills": job.get("skills") or [],
+            "mention_targets": job.get("mention_targets") or [],
         }
 
     def _rejected(

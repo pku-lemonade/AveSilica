@@ -16,6 +16,7 @@ MEMORY_OPS = {"add", "remove", "replace"}
 MEMORY_SCOPES = {"channel", "conversation", "global"}
 SCHEDULE_OPS = {"create", "update", "remove", "pause", "resume", "list", "run_now"}
 SCHEDULE_SPEC_KINDS = {"unchanged", "once_at", "once_in", "interval", "cron"}
+SCHEDULE_MENTION_TARGET_KINDS = {"person", "topic", "channel", "all"}
 SKILL_OPS = {"create", "update", "remove"}
 CONVERSATION_TYPES = {"stream", "private"}
 TOPIC_HASH_LENGTH = 6
@@ -364,6 +365,54 @@ class ScheduleSpec:
 
 
 @dataclass(frozen=True)
+class ScheduleMentionTarget:
+    kind: str
+    user_id: int | None = None
+    full_name: str = ""
+    confidence: float = 0.0
+
+    @classmethod
+    def from_mapping(cls, value: dict[str, Any]) -> "ScheduleMentionTarget":
+        if not isinstance(value, dict):
+            raise ValueError("mention target must be an object")
+        kind = str(value.get("kind") or "").strip().lower()
+        if kind not in SCHEDULE_MENTION_TARGET_KINDS:
+            raise ValueError(f"invalid mention target kind: {kind!r}")
+
+        raw_user_id = value.get("user_id")
+        user_id: int | None = None
+        if raw_user_id is not None:
+            try:
+                user_id = int(raw_user_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("mention target user_id must be an integer or null") from exc
+
+        full_name = str(value.get("full_name") or "").strip()
+        if kind == "person":
+            if user_id is None:
+                raise ValueError("person mention target requires user_id")
+            if not full_name:
+                raise ValueError("person mention target requires full_name")
+
+        confidence = float(value.get("confidence") or 0.0)
+        confidence = max(0.0, min(1.0, confidence))
+        return cls(
+            kind=kind,
+            user_id=user_id,
+            full_name=full_name,
+            confidence=confidence,
+        )
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "user_id": self.user_id,
+            "full_name": self.full_name,
+            "confidence": self.confidence,
+        }
+
+
+@dataclass(frozen=True)
 class ScheduleOperation:
     action: str
     job_id: str = ""
@@ -374,6 +423,7 @@ class ScheduleOperation:
     schedule_spec: ScheduleSpec = field(default_factory=ScheduleSpec)
     repeat: int | None = None
     skills: tuple[str, ...] = ()
+    mention_targets: tuple[ScheduleMentionTarget, ...] = ()
     confidence: float = 0.0
 
     @classmethod
@@ -391,6 +441,11 @@ class ScheduleOperation:
             skills = tuple(str(item) for item in raw_skills if str(item).strip())
         else:
             skills = ()
+
+        raw_mention_targets = value.get("mention_targets") or []
+        if not isinstance(raw_mention_targets, list):
+            raise ValueError("mention_targets must be an array")
+        mention_targets = tuple(ScheduleMentionTarget.from_mapping(item) for item in raw_mention_targets)
 
         repeat = value.get("repeat")
         if repeat is not None:
@@ -414,6 +469,7 @@ class ScheduleOperation:
             schedule_spec=ScheduleSpec.from_mapping(value.get("schedule_spec")),
             repeat=repeat,
             skills=skills,
+            mention_targets=mention_targets,
             confidence=confidence,
         )
 
@@ -428,6 +484,7 @@ class ScheduleOperation:
             "schedule_spec": self.schedule_spec.to_record(),
             "repeat": self.repeat,
             "skills": list(self.skills),
+            "mention_targets": [target.to_record() for target in self.mention_targets],
             "confidence": self.confidence,
         }
 

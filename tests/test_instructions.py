@@ -17,15 +17,15 @@ def test_instruction_layers_are_ordered(tmp_path):
 
     text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, topic="Launch Plan", stream_id=10)
 
-    assert "## Source: references/codex-thread-contract.md" in text
-    assert text.index("## Source: references/codex-thread-contract.md") < text.index("## Source: AGENTS.md")
-    assert text.index("## Source: AGENTS.md") < text.index("## Source: references/reply-thread-policy.md")
-    assert text.index("## Source: references/reply-thread-policy.md") < text.index("## Source: memory/AGENTS.md")
+    assert "## Source: references/system.md" in text
+    assert text.index("## Source: references/system.md") < text.index("## Source: AGENTS.md")
+    assert text.index("## Source: AGENTS.md") < text.index("## Source: references/reply/system.md")
+    assert text.index("## Source: references/reply/system.md") < text.index("## Source: memory/AGENTS.md")
     assert "workspace memory rule" in text
     assert "Do not try to write files" not in text
     assert "Propose memory changes in the structured fields only" not in text
-    assert "memory-worker-policy.md" not in text
-    assert "schedule-worker-policy.md" not in text
+    assert "references/memory/system.md" not in text
+    assert "references/schedule/system.md" not in text
     stream_label = "memory/stream-engineering-10/AGENTS.md"
     topic_label = f"memory/stream-engineering-10/topic-launch-plan-{topic_hash}/AGENTS.md"
     assert text.index("## Source: memory/AGENTS.md") < text.index(stream_label)
@@ -54,26 +54,26 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     initialize_workspace(tmp_path)
 
     global_text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
-    reply_policy_text = (tmp_path / "references" / "reply-thread-policy.md").read_text(encoding="utf-8")
-    memory_policy_text = (tmp_path / "references" / "memory-worker-policy.md").read_text(encoding="utf-8")
+    reply_system_text = (tmp_path / "references" / "reply" / "system.md").read_text(encoding="utf-8")
+    memory_system_text = (tmp_path / "references" / "memory" / "system.md").read_text(encoding="utf-8")
 
     assert "```spoiler Details" in global_text
     assert "Keep replies chat-sized" in global_text
     assert "long useful public-channel replies" in global_text
     assert "supporting detail, caveats, or long checklists" in global_text
     assert "when Silica can materially improve" not in global_text
-    assert "```spoiler Details" not in reply_policy_text
-    assert "when Silica can materially improve" in reply_policy_text
-    assert "use available lookup tools" in reply_policy_text
-    assert "instead of suggesting search terms" in reply_policy_text
-    assert "unsupported claims" in memory_policy_text
-    assert "MEMORY.md" in memory_policy_text
-    assert "memory_ops: []" in memory_policy_text
-    assert "stream-<slug>-<id>/MEMORY.md" in memory_policy_text
-    assert "content` to an empty string" in memory_policy_text
-    assert "add" in memory_policy_text
-    assert "replace" in memory_policy_text
-    assert "remove" in memory_policy_text
+    assert "```spoiler Details" not in reply_system_text
+    assert "when Silica can materially improve" in reply_system_text
+    assert "use available lookup tools" in reply_system_text
+    assert "instead of suggesting search terms" in reply_system_text
+    assert "unsupported claims" in memory_system_text
+    assert "MEMORY.md" in memory_system_text
+    assert "memory_ops: []" in memory_system_text
+    assert "stream-<slug>-<id>/MEMORY.md" in memory_system_text
+    assert "content` to an empty string" in memory_system_text
+    assert "add" in memory_system_text
+    assert "replace" in memory_system_text
+    assert "remove" in memory_system_text
 
 
 def test_private_instruction_loads_memory_scoped_agents(tmp_path):
@@ -103,8 +103,26 @@ def test_worker_instruction_profiles_do_not_load_reply_policy(tmp_path):
         stream_id=10,
     )
 
-    assert "## Source: references/codex-thread-contract.md" in text
-    assert "## Source: references/schedule-worker-policy.md" in text
-    assert "## Source: references/reply-thread-policy.md" not in text
+    assert "## Source: references/system.md" in text
+    assert "## Source: references/schedule/system.md" in text
+    assert "## Source: references/reply/system.md" not in text
     assert "## Source: AGENTS.md" not in text
     assert "schedule_ops" in text
+    assert "mention_targets" in text
+    assert "zero, one, or multiple person targets" in text
+    assert "`@**topic**` mentions topic participants" in text
+
+
+def test_scheduled_job_instruction_mentions_persisted_mentions_only(tmp_path):
+    initialize_workspace(tmp_path)
+
+    text = InstructionLoader(tmp_path).compose(
+        "Engineering",
+        normalized_topic_hash("Launch Plan"),
+        role="scheduled_job",
+        stream_id=10,
+    )
+
+    assert "## Source: references/scheduled_job/system.md" in text
+    assert "persisted mention targets" in text
+    assert "Never invent person, topic, channel, or all mentions" in text

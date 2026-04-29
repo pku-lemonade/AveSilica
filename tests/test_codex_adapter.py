@@ -124,13 +124,13 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
             "prompt",
             "thread-1",
             developer_instructions=None,
-            main_output_schema_path=tmp_path / "references" / "reply-decision-schema.json",
+            main_output_schema_path=tmp_path / "references" / "reply" / "schema.json",
             worker_specs=[
                 CodexWorkerSpec(
                     kind="memory",
                     prompt="memory prompt",
                     developer_instructions="memory instructions",
-                    output_schema_path=tmp_path / "references" / "memory-decision-schema.json",
+                    output_schema_path=tmp_path / "references" / "memory" / "schema.json",
                 )
             ],
         )
@@ -164,13 +164,13 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
             "fresh prompt",
             None,
             developer_instructions="reply instructions",
-            main_output_schema_path=tmp_path / "references" / "reply-decision-schema.json",
+            main_output_schema_path=tmp_path / "references" / "reply" / "schema.json",
             worker_specs=[
                 CodexWorkerSpec(
                     kind="memory",
                     prompt="fresh memory prompt",
                     developer_instructions="fresh memory instructions",
-                    output_schema_path=tmp_path / "references" / "memory-decision-schema.json",
+                    output_schema_path=tmp_path / "references" / "memory" / "schema.json",
                 )
             ],
         )
@@ -196,7 +196,7 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
                 kind="schedule",
                 prompt="schedule prompt",
                 developer_instructions="schedule instructions",
-                output_schema_path=tmp_path / "references" / "schedule-decision-schema.json",
+                output_schema_path=tmp_path / "references" / "schedule" / "schema.json",
             ),
         )
     )
