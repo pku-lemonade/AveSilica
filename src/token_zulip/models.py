@@ -35,15 +35,6 @@ def normalized_topic_hash(topic: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:TOPIC_HASH_LENGTH]
 
 
-def private_user_key(sender_id: int | None, sender_email: str) -> str:
-    if sender_id is not None:
-        return str(sender_id)
-    normalized_email = sender_email.strip().casefold()
-    if normalized_email:
-        return "email-" + hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:16]
-    return "unknown"
-
-
 def safe_slug(value: str) -> str:
     slug = slugify(value, allow_unicode=True, regex_pattern=r"[^\w.\-]+")
     return slug or "unnamed"
@@ -66,8 +57,8 @@ def topic_memory_dir_name(topic_hash: str, topic_slug: str | None = None) -> str
     return topic_dir_name(topic_hash, topic_slug)
 
 
-def private_memory_dir_name(user_key: str | None) -> str:
-    return f"private-{safe_slug(user_key or 'unknown')}"
+def private_memory_dir_name(recipient_key: str | None) -> str:
+    return f"private-recipient-{safe_slug(recipient_key or 'unknown')}"
 
 
 def topic_record_dir_name(topic_hash: str, topic_slug: str | None = None) -> str:
@@ -79,7 +70,7 @@ def scoped_stream_dir(root: Path, key: "SessionKey") -> Path:
 
 
 def scoped_private_dir(root: Path, key: "SessionKey") -> Path:
-    return root / private_memory_dir_name(key.private_user_key or key.topic_hash)
+    return root / private_memory_dir_name(key.private_recipient_key or key.topic_hash)
 
 
 def scoped_conversation_dir(root: Path, key: "SessionKey", *, readable_topic: bool = False) -> Path:
@@ -94,15 +85,15 @@ class SessionKey:
     stream_id: int | None
     topic_hash: str
     conversation_type: str = "stream"
-    private_user_key: str | None = None
+    private_recipient_key: str | None = None
     stream_slug: str | None = None
     topic_slug: str | None = None
 
     @property
     def value(self) -> str:
         if self.conversation_type == "private":
-            user_key = self.private_user_key or self.topic_hash or "unknown"
-            return f"zulip:{self.realm_id}:private:user:{user_key}"
+            recipient_key = self.private_recipient_key or self.topic_hash or "unknown"
+            return f"zulip:{self.realm_id}:private:recipient:{recipient_key}"
         return f"zulip:{self.realm_id}:stream:{self.stream_id}:topic:{self.topic_hash}"
 
     @property
@@ -127,7 +118,8 @@ class NormalizedMessage:
     received_at: str
     raw: dict[str, Any]
     conversation_type: str = "stream"
-    private_user_key: str | None = None
+    private_recipient_key: str | None = None
+    private_recipients: list[dict[str, Any]] = field(default_factory=list)
     reply_required: bool = False
     directly_addressed: bool = False
     uploads: list[dict[str, Any]] = field(default_factory=list)
@@ -141,7 +133,7 @@ class NormalizedMessage:
             stream_id=self.stream_id,
             topic_hash=self.topic_hash,
             conversation_type=self.conversation_type,
-            private_user_key=self.private_user_key,
+            private_recipient_key=self.private_recipient_key,
             stream_slug=self.stream_slug,
             topic_slug=safe_slug(self.topic),
         )
@@ -158,6 +150,8 @@ class NormalizedMessage:
             "received_at": self.received_at,
             "directly_addressed": self.directly_addressed,
         }
+        if self.private_recipients:
+            record["private_recipients"] = self.private_recipients
         if self.uploads:
             record["uploads"] = self.uploads
         if self.reactions:

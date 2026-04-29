@@ -419,9 +419,9 @@ def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
     private_key = SessionKey(
         "realm",
         None,
-        "3",
+        "1001",
         conversation_type="private",
-        private_user_key="3",
+        private_recipient_key="1001",
     )
     stream_key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
 

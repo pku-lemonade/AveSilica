@@ -18,7 +18,6 @@ from .models import (
     NormalizedMessageMove,
     NormalizedReaction,
     normalized_topic_hash,
-    private_user_key,
     safe_slug,
     utc_now_iso,
 )
@@ -60,6 +59,7 @@ def normalize_zulip_event(
     realm_id: str,
     *,
     bot_user_id: int | None = None,
+    bot_email: str | None = None,
     bot_aliases: Sequence[str] = (),
 ) -> NormalizedMessage | None:
     if event.get("type") != "message":
@@ -79,7 +79,13 @@ def normalize_zulip_event(
             bot_aliases=bot_aliases,
         )
     if message_type == "private":
-        return _normalize_private_message(event, message, realm_id)
+        return _normalize_private_message(
+            event,
+            message,
+            realm_id,
+            bot_user_id=bot_user_id,
+            bot_email=bot_email,
+        )
     return None
 
 
@@ -221,9 +227,16 @@ def _normalize_private_message(
     event: dict[str, Any],
     message: dict[str, Any],
     realm_id: str,
+    *,
+    bot_user_id: int | None,
+    bot_email: str | None,
 ) -> NormalizedMessage | None:
     recipient = message.get("display_recipient")
-    if not isinstance(recipient, list) or len(recipient) != 2:
+    if not isinstance(recipient, list) or len(recipient) < 2:
+        return None
+
+    recipient_id = message.get("recipient_id")
+    if recipient_id is None:
         return None
 
     common = _common_message_fields(event, message, realm_id)
@@ -233,7 +246,17 @@ def _normalize_private_message(
 
     sender_email = str(message.get("sender_email") or "")
     sender_id = _optional_int(message.get("sender_id"))
-    user_key = private_user_key(sender_id, sender_email)
+    recipient_key = str(recipient_id).strip()
+    if not recipient_key:
+        return None
+    private_recipients = _private_delivery_recipients(
+        recipient,
+        message,
+        bot_user_id=bot_user_id,
+        bot_email=bot_email,
+    )
+    if not private_recipients:
+        return None
     topic = str(message.get("subject") or message.get("topic") or "private")
 
     return NormalizedMessage(
@@ -243,9 +266,10 @@ def _normalize_private_message(
         stream="private",
         stream_slug="private",
         topic=topic,
-        topic_hash=user_key,
+        topic_hash=recipient_key,
         conversation_type="private",
-        private_user_key=user_key,
+        private_recipient_key=recipient_key,
+        private_recipients=private_recipients,
         reply_required=True,
         sender_email=sender_email,
         sender_full_name=str(message.get("sender_full_name") or ""),
@@ -255,6 +279,56 @@ def _normalize_private_message(
         received_at=utc_now_iso(),
         raw=event,
     )
+
+
+def _private_delivery_recipients(
+    display_recipient: list[object],
+    message: dict[str, Any],
+    *,
+    bot_user_id: int | None,
+    bot_email: str | None,
+) -> list[dict[str, Any]]:
+    recipients: list[dict[str, Any]] = []
+
+    def add_user(raw: dict[str, Any]) -> None:
+        user_id = _optional_int(raw.get("id") or raw.get("user_id"))
+        email = str(raw.get("email") or "").strip()
+        full_name = str(raw.get("full_name") or "").strip()
+        if user_id is None and not email:
+            return
+        if bot_user_id is not None and user_id == bot_user_id:
+            return
+        if bot_email and email.casefold() == bot_email.casefold():
+            return
+        key = ("id", str(user_id)) if user_id is not None else ("email", email.casefold())
+        for existing in recipients:
+            existing_key = (
+                ("id", str(existing.get("user_id")))
+                if existing.get("user_id") is not None
+                else ("email", str(existing.get("email") or "").casefold())
+            )
+            if existing_key == key:
+                return
+        recipients.append(
+            {
+                "user_id": user_id,
+                "email": email,
+                "full_name": full_name,
+            }
+        )
+
+    for user in display_recipient:
+        if isinstance(user, dict):
+            add_user(user)
+
+    add_user(
+        {
+            "id": message.get("sender_id"),
+            "email": message.get("sender_email"),
+            "full_name": message.get("sender_full_name"),
+        }
+    )
+    return recipients
 
 
 def _common_message_fields(
@@ -362,11 +436,12 @@ class ZulipClientIO:
 
     async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
         if message.conversation_type == "private":
-            if not message.sender_email:
-                raise RuntimeError("Cannot reply to private Zulip message without sender_email")
+            recipients = _private_send_recipients(message)
+            if not recipients:
+                raise RuntimeError("Cannot reply to private Zulip message without recipients")
             request = {
                 "type": "private",
-                "to": [message.sender_email],
+                "to": recipients,
                 "content": content,
             }
         else:
@@ -467,12 +542,13 @@ class ZulipTypingNotifier:
 
     def _request(self, message: NormalizedMessage, op: str) -> dict[str, Any] | None:
         if message.conversation_type == "private":
-            if message.sender_id is None:
+            recipient_ids = _private_typing_recipient_ids(message)
+            if not recipient_ids:
                 return None
             return {
                 "type": "direct",
                 "op": op,
-                "to": [message.sender_id],
+                "to": recipient_ids,
             }
         if message.stream_id is None:
             return None
@@ -482,3 +558,23 @@ class ZulipTypingNotifier:
             "stream_id": message.stream_id,
             "topic": message.topic,
         }
+
+
+def _private_send_recipients(message: NormalizedMessage) -> list[int | str]:
+    recipients: list[int | str] = []
+    for recipient in message.private_recipients:
+        user_id = _optional_int(recipient.get("user_id"))
+        email = str(recipient.get("email") or "").strip()
+        value: int | str | None = user_id if user_id is not None else email or None
+        if value is not None and value not in recipients:
+            recipients.append(value)
+    return recipients
+
+
+def _private_typing_recipient_ids(message: NormalizedMessage) -> list[int]:
+    recipient_ids: list[int] = []
+    for recipient in message.private_recipients:
+        user_id = _optional_int(recipient.get("user_id"))
+        if user_id is not None and user_id not in recipient_ids:
+            recipient_ids.append(user_id)
+    return recipient_ids

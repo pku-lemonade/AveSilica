@@ -61,7 +61,7 @@ token-zulip run
 After sending a test message in a visible public channel, inspect:
 
 - `workspace/records/stream-*/topic-*/*`: stream/topic session identity, messages, pending queues, turns, and downloaded uploads.
-- `workspace/records/private-*/*`: private-chat session identity, messages, pending queues, turns, and downloaded uploads.
+- `workspace/records/private-recipient-*/*`: private-chat session identity, messages, pending queues, turns, and downloaded uploads.
 - `workspace/memory/MEMORY.md`: compact global memory updated by validated memory operations.
 - `workspace/memory/stream-*/MEMORY.md`: compact channel memory.
 - `workspace/memory/stream-*/topic-*/MEMORY.md`: compact topic memory.
@@ -139,11 +139,11 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 - `workspace/memory/stream-<slug>-<id>/MEMORY.md`: compact channel memory.
 - `workspace/memory/stream-<slug>-<id>/topic-<slug>-<6hex>/AGENTS.md`: optional topic-specific instructions.
 - `workspace/memory/stream-<slug>-<id>/topic-<slug>-<6hex>/MEMORY.md`: compact topic memory.
-- `workspace/memory/private-<user>/MEMORY.md`: compact private-chat memory.
+- `workspace/memory/private-recipient-<recipient>/MEMORY.md`: compact private-chat memory.
 - `workspace/skills/<name>/SKILL.md`: reusable skill instructions that scheduled jobs may load.
 - `workspace/schedules/jobs.json`: durable scheduled task definitions, including origin Zulip topic/private chat, next run, repeat state, and optional skill names.
 - `workspace/records/stream-<slug>-<id>/topic-<slug>-<6hex>/`: generated stream/topic session messages, session metadata, pending queues, turns, and uploads. Channel renames and Zulip topic/message moves update these readable paths while preserving known local history.
-- `workspace/records/private-<user>/`: generated private-chat session messages, session metadata, pending queues, turns, and uploads.
+- `workspace/records/private-recipient-<recipient>/`: generated private-chat session messages, session metadata, pending queues, turns, and uploads.
 - `workspace/records/scheduled/<job_id>/`: scheduled task run audit records.
 - `workspace/records/errors/`: error and ignored-event summaries.
 
@@ -170,7 +170,7 @@ Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 
 Static model-facing instruction belongs in the Markdown files above. Runtime Python should inject dynamic data sections only, such as current time, mentionable participants, available skill summaries, posted bot updates, and persisted job fields.
 
-Memory follows a Hermes-style markdown model. `MEMORY.md` is a compact memory source of truth. Entries are separated by `§`; TokenZulip applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/stream-*/topic-*/messages.jsonl` or `workspace/records/private-*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions, acknowledgements, and applied or rejected operations.
+Memory follows a Hermes-style markdown model. `MEMORY.md` is a compact memory source of truth. Entries are separated by `§`; TokenZulip applies `add`, `replace`, and `remove` memory operations directly to the scoped file. Raw/session history remains in `workspace/records/stream-*/topic-*/messages.jsonl` or `workspace/records/private-recipient-*/messages.jsonl`, and `turns.jsonl` keeps the historical log of memory decisions, acknowledgements, and applied or rejected operations.
 
 Scheduled tasks follow a Hermes-inspired job model. The schedule worker requests changes through `schedule_ops`; the schedule code path validates and persists jobs under `workspace/schedules/jobs.json`, appends an acknowledgement only after persistence succeeds, and runs due jobs from a scheduler ticker inside `token-zulip run`. Jobs post back only to their originating Zulip topic or private chat. Jobs may be prompt-only or skill-backed; skill-backed jobs store skill names and load `workspace/skills/<name>/SKILL.md` only when the job fires. Reminder jobs may also store zero or more Zulip mention targets that are applied when the job runs.
 

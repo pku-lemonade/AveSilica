@@ -167,12 +167,13 @@ def test_normalize_zulip_update_message_event_for_topic_move():
     assert len(move.destination_topic_hash) == 6
 
 
-def test_normalize_zulip_private_event_uses_sender_session_and_requires_reply():
+def test_normalize_zulip_private_event_uses_recipient_session_and_requires_reply():
     event = {
         "type": "message",
         "message": {
             "id": 43,
             "type": "private",
+            "recipient_id": 5001,
             "display_recipient": [
                 {"id": 3, "email": "alice@example.com", "full_name": "Alice"},
                 {"id": 99, "email": "bot@example.com", "full_name": "Bot"},
@@ -185,22 +186,26 @@ def test_normalize_zulip_private_event_uses_sender_session_and_requires_reply():
         },
     }
 
-    message = normalize_zulip_event(event, "realm")
+    message = normalize_zulip_event(event, "realm", bot_user_id=99, bot_email="bot@example.com")
 
     assert message is not None
     assert message.conversation_type == "private"
     assert message.reply_required is True
-    assert message.session_key.value == "zulip:realm:private:user:3"
+    assert message.session_key.value == "zulip:realm:private:recipient:5001"
     assert message.stream_id is None
+    assert message.private_recipients == [
+        {"user_id": 3, "email": "alice@example.com", "full_name": "Alice"}
+    ]
     assert message.content == "hi"
 
 
-def test_normalize_zulip_group_private_event_is_ignored():
+def test_normalize_zulip_group_private_event_uses_recipient_session():
     event = {
         "type": "message",
         "message": {
             "id": 44,
             "type": "private",
+            "recipient_id": 5002,
             "display_recipient": [
                 {"id": 3, "email": "alice@example.com", "full_name": "Alice"},
                 {"id": 4, "email": "bob@example.com", "full_name": "Bob"},
@@ -213,7 +218,34 @@ def test_normalize_zulip_group_private_event_is_ignored():
         },
     }
 
-    assert normalize_zulip_event(event, "realm") is None
+    message = normalize_zulip_event(event, "realm", bot_user_id=99, bot_email="bot@example.com")
+
+    assert message is not None
+    assert message.session_key.value == "zulip:realm:private:recipient:5002"
+    assert message.private_recipients == [
+        {"user_id": 3, "email": "alice@example.com", "full_name": "Alice"},
+        {"user_id": 4, "email": "bob@example.com", "full_name": "Bob"},
+    ]
+
+
+def test_normalize_zulip_private_event_without_recipient_id_is_ignored():
+    event = {
+        "type": "message",
+        "message": {
+            "id": 45,
+            "type": "private",
+            "display_recipient": [
+                {"id": 3, "email": "alice@example.com", "full_name": "Alice"},
+                {"id": 99, "email": "bot@example.com", "full_name": "Bot"},
+            ],
+            "sender_email": "alice@example.com",
+            "sender_full_name": "Alice",
+            "sender_id": 3,
+            "content": "hi",
+        },
+    }
+
+    assert normalize_zulip_event(event, "realm", bot_user_id=99, bot_email="bot@example.com") is None
 
 
 def test_alias_direct_address_detection_is_case_insensitive_and_conservative():
@@ -284,7 +316,7 @@ def test_normalize_stream_event_detects_direct_bot_addressing():
     assert ordinary is not None and ordinary.directly_addressed is False
 
 
-def test_zulip_private_reply_posts_to_sender_email():
+def test_zulip_private_reply_posts_to_recipient_list():
     class FakeClient:
         def __init__(self) -> None:
             self.requests: list[dict[str, object]] = []
@@ -300,9 +332,13 @@ def test_zulip_private_reply_posts_to_sender_email():
         stream="private",
         stream_slug="private",
         topic="private",
-        topic_hash="3",
+        topic_hash="5001",
         conversation_type="private",
-        private_user_key="3",
+        private_recipient_key="5001",
+        private_recipients=[
+            {"user_id": 3, "email": "alice@example.com", "full_name": "Alice"},
+            {"user_id": 4, "email": "bob@example.com", "full_name": "Bob"},
+        ],
         reply_required=True,
         sender_email="alice@example.com",
         sender_full_name="Alice",
@@ -318,7 +354,7 @@ def test_zulip_private_reply_posts_to_sender_email():
 
     assert result["request"] == {
         "type": "private",
-        "to": ["alice@example.com"],
+        "to": [3, 4],
         "content": "Hello.",
     }
     assert client.requests == [result["request"]]
@@ -356,9 +392,13 @@ def test_zulip_typing_notifier_sends_stream_and_private_requests():
         stream="private",
         stream_slug="private",
         topic="private",
-        topic_hash="3",
+        topic_hash="5001",
         conversation_type="private",
-        private_user_key="3",
+        private_recipient_key="5001",
+        private_recipients=[
+            {"user_id": 3, "email": "alice@example.com", "full_name": "Alice"},
+            {"user_id": 4, "email": "bob@example.com", "full_name": "Bob"},
+        ],
         reply_required=True,
         sender_email="alice@example.com",
         sender_full_name="Alice",
@@ -379,8 +419,8 @@ def test_zulip_typing_notifier_sends_stream_and_private_requests():
     assert client.requests == [
         {"type": "stream", "op": "start", "stream_id": 7, "topic": "Launch"},
         {"type": "stream", "op": "stop", "stream_id": 7, "topic": "Launch"},
-        {"type": "direct", "op": "start", "to": [3]},
-        {"type": "direct", "op": "stop", "to": [3]},
+        {"type": "direct", "op": "start", "to": [3, 4]},
+        {"type": "direct", "op": "stop", "to": [3, 4]},
     ]
 
 
@@ -400,9 +440,12 @@ def test_zulip_typing_notifier_skips_private_message_without_sender_id():
         stream="private",
         stream_slug="private",
         topic="private",
-        topic_hash="email",
+        topic_hash="5001",
         conversation_type="private",
-        private_user_key="email",
+        private_recipient_key="5001",
+        private_recipients=[
+            {"user_id": None, "email": "alice@example.com", "full_name": "Alice"},
+        ],
         reply_required=True,
         sender_email="alice@example.com",
         sender_full_name="Alice",

@@ -68,6 +68,32 @@ def _message(
     )
 
 
+def _private_message(message_id: int, content: str = "schedule this") -> NormalizedMessage:
+    return NormalizedMessage(
+        realm_id="realm",
+        message_id=message_id,
+        stream_id=None,
+        stream="private",
+        stream_slug="private",
+        topic="private",
+        topic_hash="5001",
+        sender_email="alice@example.com",
+        sender_full_name="Alice",
+        sender_id=1,
+        content=content,
+        timestamp=None,
+        received_at="now",
+        raw={},
+        conversation_type="private",
+        private_recipient_key="5001",
+        private_recipients=[
+            {"user_id": 1, "email": "alice@example.com", "full_name": "Alice"},
+            {"user_id": 2, "email": "bob@example.com", "full_name": "Bob"},
+        ],
+        reply_required=True,
+    )
+
+
 class PayloadCodex:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
@@ -248,6 +274,30 @@ def test_schedule_create_validates_referenced_skills(tmp_path):
 
     assert result["status"] == "applied"
     assert store.load_jobs()[0]["skills"] == ["weekly-digest"]
+
+
+def test_schedule_origin_preserves_private_recipient_delivery(tmp_path):
+    initialize_workspace(tmp_path)
+    store = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+    origin = _private_message(1)
+
+    result = store.create_job(
+        origin,
+        ScheduleOperation(
+            action="create",
+            name="DM reminder",
+            prompt="Remind the group.",
+            schedule="2030-01-02T09:00:00",
+        ),
+    )
+    job = store.load_jobs()[0]
+    restored = store.message_for_job(job)
+
+    assert result["status"] == "applied"
+    assert job["origin"]["private_recipient_key"] == "5001"
+    assert job["origin"]["private_recipients"] == origin.private_recipients
+    assert restored.session_key.value == "zulip:realm:private:recipient:5001"
+    assert restored.private_recipients == origin.private_recipients
 
 
 def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):

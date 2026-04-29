@@ -88,7 +88,7 @@ def test_private_instruction_loads_memory_scoped_agents(tmp_path):
         "",
         normalized_topic_hash("private"),
         conversation_type="private",
-        private_user_key="42",
+        private_recipient_key="42",
     )
 
     assert f"memory/{private_memory_dir_name('42')}/AGENTS.md" in text

@@ -38,7 +38,8 @@ class SessionMetadata:
     topic: str
     topic_hash: str
     topic_slug: str
-    private_user_key: str | None = None
+    private_recipient_key: str | None = None
+    private_recipients: list[dict[str, Any]] = field(default_factory=list)
     codex_thread_id: str | None = None
     codex_instruction_mode: str | None = None
     last_injected_memory_hash: str | None = None
@@ -63,7 +64,8 @@ class SessionMetadata:
             topic=message.topic,
             topic_hash=message.topic_hash,
             topic_slug=safe_slug(message.topic),
-            private_user_key=message.private_user_key,
+            private_recipient_key=message.private_recipient_key,
+            private_recipients=message.private_recipients,
         )
 
     @classmethod
@@ -79,15 +81,16 @@ class SessionMetadata:
             topic="private" if key.conversation_type == "private" else key.topic_hash,
             topic_hash=key.topic_hash,
             topic_slug=key.topic_slug or safe_slug("private" if key.conversation_type == "private" else key.topic_hash),
-            private_user_key=key.private_user_key,
+            private_recipient_key=key.private_recipient_key,
         )
 
     @classmethod
     def from_record(cls, record: dict[str, Any], key: SessionKey) -> "SessionMetadata":
         stream_id = record.get("stream_id", key.stream_id)
-        private_key = record.get("private_user_key", key.private_user_key)
+        private_key = record.get("private_recipient_key", key.private_recipient_key)
         last_processed = _optional_int(record.get("last_processed_message_id"))
         topic = str(record.get("topic") or ("private" if key.conversation_type == "private" else key.topic_hash))
+        private_recipients = record.get("private_recipients")
         return cls(
             session_id=str(record.get("session_id") or key.storage_id),
             session_key=str(record.get("session_key") or key.value),
@@ -99,7 +102,10 @@ class SessionMetadata:
             topic=topic,
             topic_hash=str(record.get("topic_hash") or key.topic_hash),
             topic_slug=str(record.get("topic_slug") or key.topic_slug or safe_slug(topic)),
-            private_user_key=str(private_key) if private_key is not None else None,
+            private_recipient_key=str(private_key) if private_key is not None else None,
+            private_recipients=[
+                item for item in private_recipients if isinstance(item, dict)
+            ] if isinstance(private_recipients, list) else [],
             codex_thread_id=str(record["codex_thread_id"]) if record.get("codex_thread_id") is not None else None,
             codex_instruction_mode=(
                 str(record["codex_instruction_mode"]) if record.get("codex_instruction_mode") is not None else None
@@ -133,7 +139,8 @@ class SessionMetadata:
             "topic": self.topic,
             "topic_hash": self.topic_hash,
             "topic_slug": self.topic_slug,
-            "private_user_key": self.private_user_key,
+            "private_recipient_key": self.private_recipient_key,
+            "private_recipients": self.private_recipients,
             "codex_thread_id": self.codex_thread_id,
             "codex_instruction_mode": self.codex_instruction_mode,
             "last_injected_memory_hash": self.last_injected_memory_hash,
@@ -310,6 +317,17 @@ class WorkspaceStorage:
     def read_conversation_participants(self, key: SessionKey) -> list[dict[str, Any]]:
         path = self.session_path(key, "messages.jsonl")
         participants: dict[int, dict[str, Any]] = {}
+        metadata = self.load_metadata(key)
+        for recipient in metadata.private_recipients:
+            user_id = _optional_int(recipient.get("user_id"))
+            full_name = str(recipient.get("full_name") or "").strip()
+            if user_id is not None and full_name:
+                participants[user_id] = {
+                    "user_id": user_id,
+                    "full_name": full_name,
+                    "sender_email": str(recipient.get("email") or ""),
+                    "last_message_id": None,
+                }
         for record in self._read_jsonl(path):
             message_id = self._optional_message_id(record)
             sender_id = _optional_int(record.get("sender_id"))
@@ -375,7 +393,8 @@ class WorkspaceStorage:
                 "topic": message.topic,
                 "topic_hash": message.topic_hash,
                 "topic_slug": safe_slug(message.topic),
-                "private_user_key": message.private_user_key,
+                "private_recipient_key": message.private_recipient_key,
+                "private_recipients": message.private_recipients,
             }.items():
                 if getattr(metadata, field_name) != value:
                     setattr(metadata, field_name, value)
@@ -407,7 +426,7 @@ class WorkspaceStorage:
             metadata.stream_id,
             metadata.topic_hash,
             conversation_type=metadata.conversation_type,
-            private_user_key=metadata.private_user_key,
+            private_recipient_key=metadata.private_recipient_key,
             stream_slug=metadata.stream_slug,
             topic_slug=metadata.topic_slug,
         )
@@ -602,7 +621,7 @@ class WorkspaceStorage:
             stream_id=key.stream_id,
             topic_hash=key.topic_hash,
             conversation_type=key.conversation_type,
-            private_user_key=key.private_user_key,
+            private_recipient_key=key.private_recipient_key,
             stream_slug=stream_slug,
             topic_slug=key.topic_slug,
         )
@@ -646,8 +665,8 @@ class WorkspaceStorage:
                 stream_id=stream_id,
                 topic_hash=str(record.get("topic_hash") or ""),
                 conversation_type=str(record.get("conversation_type") or "stream"),
-                private_user_key=(
-                    str(record["private_user_key"]) if record.get("private_user_key") is not None else None
+                private_recipient_key=(
+                    str(record["private_recipient_key"]) if record.get("private_recipient_key") is not None else None
                 ),
                 stream_slug=stream_slug,
                 topic_slug=str(record.get("topic_slug") or "") or None,
@@ -952,7 +971,10 @@ class WorkspaceStorage:
             received_at=str(record.get("received_at") or utc_now_iso()),
             raw={},
             conversation_type=metadata.conversation_type,
-            private_user_key=metadata.private_user_key,
+            private_recipient_key=metadata.private_recipient_key,
+            private_recipients=[
+                item for item in (record.get("private_recipients") or metadata.private_recipients) if isinstance(item, dict)
+            ],
             reply_required=bool(record.get("reply_required") or metadata.conversation_type == "private"),
             directly_addressed=bool(record.get("directly_addressed")),
             uploads=list(record.get("uploads") or []),
@@ -995,8 +1017,8 @@ class WorkspaceStorage:
             stream_id=_optional_int(record.get("stream_id")),
             topic_hash=topic_hash,
             conversation_type=conversation_type,
-            private_user_key=(
-                str(record["private_user_key"]) if record.get("private_user_key") is not None else None
+            private_recipient_key=(
+                str(record["private_recipient_key"]) if record.get("private_recipient_key") is not None else None
             ),
             stream_slug=str(record.get("stream_slug") or "") or None,
             topic_slug=str(record.get("topic_slug") or "") or None,

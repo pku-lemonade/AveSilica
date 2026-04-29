@@ -149,6 +149,7 @@ def _render_prompt(args: argparse.Namespace) -> int:
         event,
         config.realm_id,
         bot_user_id=config.bot_user_id,
+        bot_email=config.bot_email,
         bot_aliases=config.bot_aliases,
     )
     if message is None:

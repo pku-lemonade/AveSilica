@@ -55,7 +55,7 @@ class InstructionLoader:
         topic: str | None = None,
         stream_id: int | None = None,
         conversation_type: str = "stream",
-        private_user_key: str | None = None,
+        private_recipient_key: str | None = None,
     ) -> str:
         sources = self.sources(
             stream=stream,
@@ -64,7 +64,7 @@ class InstructionLoader:
             topic=topic,
             stream_id=stream_id,
             conversation_type=conversation_type,
-            private_user_key=private_user_key,
+            private_recipient_key=private_recipient_key,
         )
         rendered: list[str] = []
         total = 0
@@ -91,7 +91,7 @@ class InstructionLoader:
         topic: str | None = None,
         stream_id: int | None = None,
         conversation_type: str = "stream",
-        private_user_key: str | None = None,
+        private_recipient_key: str | None = None,
     ) -> list[InstructionSource]:
         if role not in ROLE_SYSTEM_FILES:
             raise ValueError(f"unknown instruction role: {role!r}")
@@ -99,7 +99,9 @@ class InstructionLoader:
             (SHARED_SYSTEM_FILE, self.root / SHARED_SYSTEM_FILE),
         ]
         candidates.extend((relative, self.root / relative) for relative in ROLE_SYSTEM_FILES[role])
-        candidates.extend(self._local_candidates(stream, topic_hash, topic, stream_id, conversation_type, private_user_key))
+        candidates.extend(
+            self._local_candidates(stream, topic_hash, topic, stream_id, conversation_type, private_recipient_key)
+        )
 
         sources: list[InstructionSource] = []
         for index, (label, path) in enumerate(candidates):
@@ -122,14 +124,14 @@ class InstructionLoader:
         topic: str | None,
         stream_id: int | None,
         conversation_type: str,
-        private_user_key: str | None,
+        private_recipient_key: str | None,
     ) -> list[tuple[str, Path]]:
         key = SessionKey(
             realm_id="instructions",
             stream_id=stream_id,
             topic_hash=topic_hash,
             conversation_type=conversation_type,
-            private_user_key=private_user_key,
+            private_recipient_key=private_recipient_key,
             stream_slug=safe_slug(stream),
             topic_slug=safe_slug(topic or topic_hash),
         )

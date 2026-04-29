@@ -60,8 +60,23 @@ def _message(message_id: int, content: str = "hello", *, directly_addressed: boo
     )
 
 
-def _private_message(message_id: int, sender_id: int = 1, sender_email: str = "alice@example.com") -> NormalizedMessage:
-    private_user_key = str(sender_id)
+def _private_recipient(user_id: int, email: str | None = None, full_name: str | None = None) -> dict[str, object]:
+    return {
+        "user_id": user_id,
+        "email": email or f"user{user_id}@example.com",
+        "full_name": full_name or f"User {user_id}",
+    }
+
+
+def _private_message(
+    message_id: int,
+    sender_id: int = 1,
+    sender_email: str = "alice@example.com",
+    *,
+    recipient_id: int = 1001,
+    recipients: list[dict[str, object]] | None = None,
+) -> NormalizedMessage:
+    private_recipient_key = str(recipient_id)
     return NormalizedMessage(
         realm_id="realm",
         message_id=message_id,
@@ -69,9 +84,10 @@ def _private_message(message_id: int, sender_id: int = 1, sender_email: str = "a
         stream="private",
         stream_slug="private",
         topic="private",
-        topic_hash=private_user_key,
+        topic_hash=private_recipient_key,
         conversation_type="private",
-        private_user_key=private_user_key,
+        private_recipient_key=private_recipient_key,
+        private_recipients=recipients or [_private_recipient(sender_id, sender_email)],
         reply_required=True,
         sender_email=sender_email,
         sender_full_name=f"User {sender_id}",
@@ -122,16 +138,22 @@ def _private_event(
     *,
     sender_id: int = 1,
     sender_email: str = "alice@example.com",
+    recipient_id: int | None = None,
+    display_recipient: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
+    recipient_id = recipient_id if recipient_id is not None else 1000 + sender_id
+    if display_recipient is None:
+        display_recipient = [
+            {"id": sender_id, "email": sender_email, "full_name": f"User {sender_id}"},
+            {"id": 99, "email": "bot@example.com", "full_name": "Bot"},
+        ]
     return {
         "type": "message",
         "message": {
             "id": message_id,
             "type": "private",
-            "display_recipient": [
-                {"id": sender_id, "email": sender_email, "full_name": f"User {sender_id}"},
-                {"id": 99, "email": "bot@example.com", "full_name": "Bot"},
-            ],
+            "recipient_id": recipient_id,
+            "display_recipient": display_recipient,
             "sender_email": sender_email,
             "sender_full_name": f"User {sender_id}",
             "sender_id": sender_id,
@@ -1518,7 +1540,7 @@ def test_private_zulip_event_is_accepted_and_replied_to(tmp_path):
             assert message.stream_id is None
             self.posts.append(
                 {
-                    "to": message.sender_email,
+                    "to": ",".join(str(item.get("email") or item.get("user_id")) for item in message.private_recipients),
                     "topic": message.topic,
                     "content": content,
                 }
@@ -1532,13 +1554,21 @@ def test_private_zulip_event_is_accepted_and_replied_to(tmp_path):
         async def start(self, message: NormalizedMessage) -> None:
             assert message.conversation_type == "private"
             self.events.append(
-                {"op": "start", "message_id": message.message_id, "sender_id": message.sender_id}
+                {
+                    "op": "start",
+                    "message_id": message.message_id,
+                    "recipient_ids": [item.get("user_id") for item in message.private_recipients],
+                }
             )
 
         async def stop(self, message: NormalizedMessage) -> None:
             assert message.conversation_type == "private"
             self.events.append(
-                {"op": "stop", "message_id": message.message_id, "sender_id": message.sender_id}
+                {
+                    "op": "stop",
+                    "message_id": message.message_id,
+                    "recipient_ids": [item.get("user_id") for item in message.private_recipients],
+                }
             )
 
     async def scenario() -> None:
@@ -1560,29 +1590,29 @@ def test_private_zulip_event_is_accepted_and_replied_to(tmp_path):
         await bot.drain_once()
         second = await bot.enqueue_event(_private_event(2, sender_id=2, sender_email="bob@example.com"))
         await bot.drain_once()
-        first_key = _private_message(1).session_key
-        second_key = _private_message(2, sender_id=2, sender_email="bob@example.com").session_key
+        first_key = _private_message(1, recipient_id=1001).session_key
+        second_key = _private_message(2, sender_id=2, sender_email="bob@example.com", recipient_id=1002).session_key
 
         assert first.accepted is True
-        assert first.session_key == "zulip:realm:private:user:1"
+        assert first.session_key == "zulip:realm:private:recipient:1001"
         assert first.message_id == 1
         assert second.accepted is True
-        assert second.session_key == "zulip:realm:private:user:2"
+        assert second.session_key == "zulip:realm:private:recipient:1002"
         assert second.message_id == 2
         assert poster.posts == [
             {"to": "alice@example.com", "topic": "private", "content": "Reply 1"},
             {"to": "bob@example.com", "topic": "private", "content": "Reply 2"},
         ]
         assert typing.events == [
-            {"op": "start", "message_id": 1, "sender_id": 1},
-            {"op": "stop", "message_id": 1, "sender_id": 1},
-            {"op": "start", "message_id": 2, "sender_id": 2},
-            {"op": "stop", "message_id": 2, "sender_id": 2},
+            {"op": "start", "message_id": 1, "recipient_ids": [1]},
+            {"op": "stop", "message_id": 1, "recipient_ids": [1]},
+            {"op": "start", "message_id": 2, "recipient_ids": [2]},
+            {"op": "stop", "message_id": 2, "recipient_ids": [2]},
         ]
         assert len(storage.read_recent_messages(first_key, 10)) == 1
         assert len(storage.read_recent_messages(second_key, 10)) == 1
-        assert storage.session_dir(first_key).name == "private-1"
-        assert storage.session_dir(second_key).name == "private-2"
+        assert storage.session_dir(first_key).name == "private-recipient-1001"
+        assert storage.session_dir(second_key).name == "private-recipient-1002"
         assert storage.load_metadata(first_key).codex_thread_id == "thread-1"
         assert storage.load_metadata(second_key).codex_thread_id == "thread-2"
 
@@ -1809,7 +1839,7 @@ def test_private_memory_only_decision_posts_acknowledgement_without_fallback(tmp
     asyncio.run(scenario())
 
 
-def test_private_messages_from_different_senders_use_different_sessions(tmp_path):
+def test_group_private_messages_from_different_senders_share_session(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = ThreadingCodex()
@@ -1822,17 +1852,34 @@ def test_private_messages_from_different_senders_use_different_sessions(tmp_path
             codex=codex,
             zulip=poster,
         )
-        first = _private_message(1, sender_id=1, sender_email="alice@example.com")
-        second = _private_message(2, sender_id=2, sender_email="bob@example.com")
+        recipients = [
+            _private_recipient(1, "alice@example.com", "Alice"),
+            _private_recipient(2, "bob@example.com", "Bob"),
+        ]
+        first = _private_message(
+            1,
+            sender_id=1,
+            sender_email="alice@example.com",
+            recipient_id=5001,
+            recipients=recipients,
+        )
+        second = _private_message(
+            2,
+            sender_id=2,
+            sender_email="bob@example.com",
+            recipient_id=5001,
+            recipients=recipients,
+        )
 
         await bot._handle_message(first)
         await bot._handle_message(second)
 
-        assert first.session_key.value == "zulip:realm:private:user:1"
-        assert second.session_key.value == "zulip:realm:private:user:2"
-        assert first.session_key.storage_id != second.session_key.storage_id
-        assert bot.storage.load_metadata(first.session_key).codex_thread_id == "thread-1"
-        assert bot.storage.load_metadata(second.session_key).codex_thread_id == "thread-2"
+        assert first.session_key.value == "zulip:realm:private:recipient:5001"
+        assert second.session_key.value == first.session_key.value
+        assert first.session_key.storage_id == second.session_key.storage_id
+        assert codex.ensure_thread_ids == [None, "thread-1"]
+        assert codex.thread_ids == ["thread-1", "thread-1"]
+        assert bot.storage.load_metadata(first.session_key).codex_thread_id == "thread-2"
         assert [post["content"] for post in poster.posts] == ["Reply 1", "Reply 2"]
 
     asyncio.run(scenario())

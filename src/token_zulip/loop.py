@@ -133,6 +133,7 @@ class AgentLoop:
             event,
             self.config.realm_id,
             bot_user_id=self.config.bot_user_id,
+            bot_email=self.config.bot_email,
             bot_aliases=self.config.bot_aliases,
         )
         if message is None:
@@ -549,7 +550,7 @@ class AgentLoop:
                 "topic": first.topic,
                 "stream_id": first.stream_id,
                 "conversation_type": first.conversation_type,
-                "private_user_key": first.private_user_key,
+                "private_recipient_key": first.private_recipient_key,
             }
             reply_developer_instructions = None
             if starting_new_thread:
@@ -781,7 +782,7 @@ class AgentLoop:
             topic=origin_message.topic,
             stream_id=origin_message.stream_id,
             conversation_type=origin_message.conversation_type,
-            private_user_key=origin_message.private_user_key,
+            private_recipient_key=origin_message.private_recipient_key,
         )
 
         post: dict[str, Any] | None = None

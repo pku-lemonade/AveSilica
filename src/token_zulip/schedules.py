@@ -613,7 +613,8 @@ class ScheduleStore:
             "topic": message.topic,
             "topic_hash": message.topic_hash,
             "topic_slug": safe_slug(message.topic),
-            "private_user_key": message.private_user_key,
+            "private_recipient_key": message.private_recipient_key,
+            "private_recipients": message.private_recipients,
             "sender_email": message.sender_email,
             "sender_full_name": message.sender_full_name,
             "sender_id": message.sender_id,
@@ -624,10 +625,10 @@ class ScheduleStore:
         return SessionKey(
             realm_id=str(origin.get("realm_id") or "unknown"),
             stream_id=_optional_int(origin.get("stream_id")),
-            topic_hash=str(origin.get("topic_hash") or origin.get("private_user_key") or "unknown"),
+            topic_hash=str(origin.get("topic_hash") or origin.get("private_recipient_key") or "unknown"),
             conversation_type=str(origin.get("conversation_type") or "stream"),
-            private_user_key=(
-                str(origin["private_user_key"]) if origin.get("private_user_key") is not None else None
+            private_recipient_key=(
+                str(origin["private_recipient_key"]) if origin.get("private_recipient_key") is not None else None
             ),
             stream_slug=str(origin.get("stream_slug") or origin.get("stream") or "unknown"),
             topic_slug=str(origin.get("topic_slug") or origin.get("topic") or "unknown"),
@@ -652,7 +653,10 @@ class ScheduleStore:
             received_at=utc_now_iso(),
             raw={"scheduled_job_id": job.get("id")},
             conversation_type=key.conversation_type,
-            private_user_key=key.private_user_key,
+            private_recipient_key=key.private_recipient_key,
+            private_recipients=[
+                item for item in origin.get("private_recipients", []) if isinstance(item, dict)
+            ] if isinstance(origin.get("private_recipients"), list) else [],
             reply_required=True,
         )
 

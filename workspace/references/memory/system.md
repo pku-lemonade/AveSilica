@@ -30,7 +30,7 @@ Do not add memory merely because it appears in injected scoped memory. Use curre
 
 Scope controls which `MEMORY.md` file TokenZulip edits:
 
-- `conversation`: default. Current Zulip topic or private chat. Writes to `workspace/memory/stream-<slug>-<id>/topic-<slug>-<6hex>/MEMORY.md` for stream topics, or `workspace/memory/private-<user>/MEMORY.md` for private chats.
+- `conversation`: default. Current Zulip topic or private chat. Writes to `workspace/memory/stream-<slug>-<id>/topic-<slug>-<6hex>/MEMORY.md` for stream topics, or `workspace/memory/private-recipient-<recipient>/MEMORY.md` for private chats.
 - `channel`: current Zulip channel/stream, shared by all topics in that channel. Writes to `workspace/memory/stream-<slug>-<id>/MEMORY.md`. Do not use in private chats.
 - `global`: rare cross-channel deployment/team fact. Writes to `workspace/memory/MEMORY.md`.
 
