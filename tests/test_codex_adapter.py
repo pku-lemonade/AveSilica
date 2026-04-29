@@ -15,9 +15,33 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
         codex_bin: str
         cwd: str | None = None
 
+    @dataclass
+    class FakeUsageBreakdown:
+        input_tokens: int = 11
+        cached_input_tokens: int = 3
+        output_tokens: int = 7
+        reasoning_output_tokens: int = 2
+        total_tokens: int = 20
+
+    @dataclass
+    class FakeUsage:
+        last: FakeUsageBreakdown
+        total: FakeUsageBreakdown
+        model_context_window: int = 128000
+
     class FakeRunResult:
         final_text = '{"should_reply": false}'
         final_response = '{"should_reply": false}'
+        usage = FakeUsage(
+            last=FakeUsageBreakdown(),
+            total=FakeUsageBreakdown(
+                input_tokens=101,
+                cached_input_tokens=30,
+                output_tokens=70,
+                reasoning_output_tokens=20,
+                total_tokens=191,
+            ),
+        )
 
     class FakeThread:
         events: list[tuple[str, str, str]] = []
@@ -106,6 +130,16 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
     assert FakeAsyncCodex.last.thread.run_kwargs["prompt"] == "prompt"
     assert FakeAsyncCodex.last.thread.run_kwargs["effort"] == "low"
     assert FakeAsyncCodex.last.thread.run_kwargs["output_schema"]
+    assert started.stats is not None
+    assert started.stats["operation"] == "run_decision"
+    assert started.stats["model"] == "gpt-test"
+    assert started.stats["effort"] == "low"
+    assert started.stats["api_call_count"] == 1
+    assert started.stats["tokens"]["last"]["input_tokens"] == 11
+    assert started.stats["tokens"]["last"]["cached_input_tokens"] == 3
+    assert started.stats["tokens"]["last"]["reasoning_output_tokens"] == 2
+    assert started.stats["tokens"]["total"]["total_tokens"] == 191
+    assert started.stats["tokens"]["model_context_window"] == 128000
 
     resumed = asyncio.run(adapter.run_decision("prompt", "thread-1", developer_instructions="ignored"))
 
@@ -123,6 +157,10 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
 
     assert ensured.raw_text == ""
     assert ensured.thread_id == "thread-2"
+    assert ensured.stats is not None
+    assert ensured.stats["operation"] == "ensure_thread"
+    assert ensured.stats["api_call_count"] == 0
+    assert "tokens" not in ensured.stats
     assert FakeThread.events == []
     assert FakeAsyncCodex.last.thread_kwargs == {
         "model": "gpt-test",
@@ -183,6 +221,11 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
     ]
     assert FakeAsyncCodex.last.forks[0].run_kwargs["output_schema"]
     assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "memory prompt"
+    assert forked.main.stats is not None
+    assert forked.main.stats["operation"] == "run_decision"
+    assert forked.workers["memory"].stats is not None
+    assert forked.workers["memory"].stats["operation"] == "worker_fork"
+    assert forked.workers["memory"].stats["parent_thread_id"] == "thread-1"
 
     FakeThread.events.clear()
     fresh_forked = asyncio.run(
@@ -228,6 +271,10 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
     )
 
     assert worker.thread_id == "fork-1"
+    assert worker.stats is not None
+    assert worker.stats["operation"] == "worker_fork"
+    assert worker.stats["parent_thread_id"] == "thread-1"
+    assert worker.stats["tokens"]["last"]["output_tokens"] == 7
     assert FakeAsyncCodex.last.fork_kwargs == [
         {
             "thread_id": "thread-1",

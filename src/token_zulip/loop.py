@@ -28,6 +28,7 @@ from .prompt import PromptBuilder, PromptParts
 from .schedules import ScheduleStore, utc_now, zoneinfo_for
 from .skills import SkillStore
 from .storage import SessionMetadata, WorkspaceStorage
+from .telemetry import TurnTelemetry
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
 from .workspace import (
@@ -524,76 +525,82 @@ class AgentLoop:
         if not messages:
             return
 
+        telemetry = TurnTelemetry(source="conversation_turn")
         first = messages[0]
         metadata = self.storage.load_metadata(key)
         async with AsyncExitStack() as stack:
             typing_started = False
-            if self.typing.should_show_typing(first, post_replies=self.config.post_replies):
-                await stack.enter_async_context(self.typing.active(first))
-                typing_started = True
+            with telemetry.phase("prepare_messages"):
+                if self.typing.should_show_typing(first, post_replies=self.config.post_replies):
+                    await stack.enter_async_context(self.typing.active(first))
+                    typing_started = True
 
-            messages = await self.uploads.process_messages(messages)
-            for processed_message in messages:
-                if processed_message.uploads:
-                    self.storage.update_message(processed_message)
+                messages = await self.uploads.process_messages(messages)
+                for processed_message in messages:
+                    if processed_message.uploads:
+                        self.storage.update_message(processed_message)
 
-            first = messages[0]
-            active_thread_id = (
-                metadata.codex_thread_id
-                if metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE and metadata.codex_thread_id
-                else None
-            )
-            starting_new_thread = active_thread_id is None
-            instruction_kwargs = {
-                "stream": first.stream,
-                "topic_hash": first.topic_hash,
-                "topic": first.topic,
-                "stream_id": first.stream_id,
-                "conversation_type": first.conversation_type,
-                "private_recipient_key": first.private_recipient_key,
-            }
-            reply_developer_instructions = None
-            if starting_new_thread:
-                reply_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
+                first = messages[0]
 
-            pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
-            posted_bot_update_context = self._posted_bot_update_context(pending_posted_bot_updates)
-            memory_context, memory_hash, memory_hash_changed = self._memory_context_for_prompt(key, metadata)
-            shared_context = self._join_acknowledgements([memory_context, posted_bot_update_context])
-            memory_prompt = self.prompt_builder.build(
-                PromptParts(
-                    current_messages=messages,
-                    injected_context=shared_context,
-                ),
-                template_file=MEMORY_WORKER_USER_PROMPT_FILE,
-            )
-            skill_prompt = self.prompt_builder.build(
-                PromptParts(
-                    current_messages=messages,
-                    injected_context=shared_context,
-                ),
-                template_file=SKILL_WORKER_USER_PROMPT_FILE,
-            )
-
-            worker_specs = [
-                CodexWorkerSpec(
-                    kind="memory",
-                    prompt=memory_prompt,
-                    developer_instructions=self.instructions.compose(role="memory_worker", **instruction_kwargs),
-                    output_schema_path=self.config.workspace_dir / MEMORY_DECISION_SCHEMA_FILE,
-                ),
-                CodexWorkerSpec(
-                    kind="skill",
-                    prompt=skill_prompt,
-                    developer_instructions=self.instructions.compose(role="skill_worker", **instruction_kwargs),
-                    output_schema_path=self.config.workspace_dir / SKILL_DECISION_SCHEMA_FILE,
-                ),
-            ]
-            try:
-                parent_result = await self.codex.ensure_thread(
-                    active_thread_id,
-                    developer_instructions=reply_developer_instructions,
+            with telemetry.phase("build_worker_prompts"):
+                active_thread_id = (
+                    metadata.codex_thread_id
+                    if metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE and metadata.codex_thread_id
+                    else None
                 )
+                starting_new_thread = active_thread_id is None
+                instruction_kwargs = {
+                    "stream": first.stream,
+                    "topic_hash": first.topic_hash,
+                    "topic": first.topic,
+                    "stream_id": first.stream_id,
+                    "conversation_type": first.conversation_type,
+                    "private_recipient_key": first.private_recipient_key,
+                }
+                reply_developer_instructions = None
+                if starting_new_thread:
+                    reply_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
+
+                pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
+                posted_bot_update_context = self._posted_bot_update_context(pending_posted_bot_updates)
+                memory_context, memory_hash, memory_hash_changed = self._memory_context_for_prompt(key, metadata)
+                shared_context = self._join_acknowledgements([memory_context, posted_bot_update_context])
+                memory_prompt = self.prompt_builder.build(
+                    PromptParts(
+                        current_messages=messages,
+                        injected_context=shared_context,
+                    ),
+                    template_file=MEMORY_WORKER_USER_PROMPT_FILE,
+                )
+                skill_prompt = self.prompt_builder.build(
+                    PromptParts(
+                        current_messages=messages,
+                        injected_context=shared_context,
+                    ),
+                    template_file=SKILL_WORKER_USER_PROMPT_FILE,
+                )
+
+                worker_specs = [
+                    CodexWorkerSpec(
+                        kind="memory",
+                        prompt=memory_prompt,
+                        developer_instructions=self.instructions.compose(role="memory_worker", **instruction_kwargs),
+                        output_schema_path=self.config.workspace_dir / MEMORY_DECISION_SCHEMA_FILE,
+                    ),
+                    CodexWorkerSpec(
+                        kind="skill",
+                        prompt=skill_prompt,
+                        developer_instructions=self.instructions.compose(role="skill_worker", **instruction_kwargs),
+                        output_schema_path=self.config.workspace_dir / SKILL_DECISION_SCHEMA_FILE,
+                    ),
+                ]
+            parent_phase = None
+            try:
+                with telemetry.phase("ensure_reply_session") as parent_phase:
+                    parent_result = await self.codex.ensure_thread(
+                        active_thread_id,
+                        developer_instructions=reply_developer_instructions,
+                    )
             except Exception as exc:
                 if active_thread_id is None or not self._is_missing_codex_rollout_error(exc):
                     raise
@@ -607,10 +614,12 @@ class AgentLoop:
                     },
                 )
                 self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-                parent_result = await self.codex.ensure_thread(
-                    None,
-                    developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
-                )
+                with telemetry.phase("ensure_reply_session_restarted") as parent_phase:
+                    parent_result = await self.codex.ensure_thread(
+                        None,
+                        developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
+                    )
+            telemetry.add_codex_result(parent_result, role="reply_session", phase=parent_phase)
             parent_thread_id = parent_result.thread_id
             if parent_thread_id:
                 self.storage.set_codex_thread_state(
@@ -619,80 +628,93 @@ class AgentLoop:
                     instruction_mode=CODEX_INSTRUCTION_MODE,
                 )
 
-            worker_results: dict[str, CodexRunResult | None] = {
-                spec.kind: await self._run_op_worker(key, messages, parent_thread_id, spec)
-                for spec in worker_specs
-            }
+            worker_results: dict[str, CodexRunResult | None] = {}
+            for spec in worker_specs:
+                with telemetry.phase(f"{spec.kind}_worker") as worker_phase:
+                    worker_result = await self._run_op_worker(key, messages, parent_thread_id, spec)
+                telemetry.add_codex_result(worker_result, role=spec.kind, phase=worker_phase)
+                worker_results[spec.kind] = worker_result
 
-            memory_decision, memory_applied = self._apply_memory_worker_result(
-                key,
-                messages,
-                worker_results.get("memory"),
-            )
-            skill_decision, skill_applied = self._apply_skill_worker_result(
-                key,
-                messages,
-                worker_results.get("skill"),
-            )
-            schedule_context = self._join_acknowledgements(
-                [
-                    self._schedule_context_for_prompt(),
-                    self._current_schedules_context(first),
-                    self._mentionable_participants_context(key),
-                    self._skill_availability_context(skill_applied),
-                    shared_context,
-                ]
-            )
-            schedule_prompt = self.prompt_builder.build(
-                PromptParts(
-                    current_messages=messages,
-                    injected_context=schedule_context,
-                ),
-                template_file=SCHEDULE_WORKER_USER_PROMPT_FILE,
-            )
-            schedule_result = await self._run_op_worker(
-                key,
-                messages,
-                parent_thread_id,
-                CodexWorkerSpec(
+            with telemetry.phase("apply_memory_skill"):
+                memory_decision, memory_applied = self._apply_memory_worker_result(
+                    key,
+                    messages,
+                    worker_results.get("memory"),
+                )
+                skill_decision, skill_applied = self._apply_skill_worker_result(
+                    key,
+                    messages,
+                    worker_results.get("skill"),
+                )
+
+            with telemetry.phase("build_schedule_prompt"):
+                schedule_context = self._join_acknowledgements(
+                    [
+                        self._schedule_context_for_prompt(),
+                        self._current_schedules_context(first),
+                        self._mentionable_participants_context(key),
+                        self._skill_availability_context(skill_applied),
+                        shared_context,
+                    ]
+                )
+                schedule_prompt = self.prompt_builder.build(
+                    PromptParts(
+                        current_messages=messages,
+                        injected_context=schedule_context,
+                    ),
+                    template_file=SCHEDULE_WORKER_USER_PROMPT_FILE,
+                )
+                schedule_spec = CodexWorkerSpec(
                     kind="schedule",
                     prompt=schedule_prompt,
                     developer_instructions=self.instructions.compose(role="schedule_worker", **instruction_kwargs),
                     output_schema_path=self.config.workspace_dir / SCHEDULE_DECISION_SCHEMA_FILE,
-                ),
-            )
-            schedule_decision, schedule_applied = self._apply_schedule_worker_result(
-                key,
-                first,
-                messages,
-                schedule_result,
-            )
-            memory_acknowledgement = self._memory_acknowledgement(memory_applied)
-            skill_acknowledgement = self._skill_acknowledgement(skill_applied)
-            schedule_acknowledgement = self._schedule_acknowledgement(schedule_applied)
-            acknowledgement = self._join_acknowledgements(
-                [skill_acknowledgement, schedule_acknowledgement, memory_acknowledgement]
-            )
-            reply_context = self._join_acknowledgements(
-                [
-                    shared_context,
-                    self._applied_changes_context(acknowledgement),
-                ]
-            )
-            reply_prompt = self.prompt_builder.build(
-                PromptParts(
-                    current_messages=messages,
-                    injected_context=reply_context,
-                ),
-                template_file=REPLY_TURN_USER_PROMPT_FILE,
-            )
-            try:
-                reply_result = await self.codex.run_decision(
-                    reply_prompt,
-                    parent_thread_id,
-                    developer_instructions=None,
-                    output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
                 )
+            with telemetry.phase("schedule_worker") as schedule_phase:
+                schedule_result = await self._run_op_worker(
+                    key,
+                    messages,
+                    parent_thread_id,
+                    schedule_spec,
+                )
+            telemetry.add_codex_result(schedule_result, role="schedule", phase=schedule_phase)
+            with telemetry.phase("apply_schedule"):
+                schedule_decision, schedule_applied = self._apply_schedule_worker_result(
+                    key,
+                    first,
+                    messages,
+                    schedule_result,
+                )
+
+            with telemetry.phase("build_reply_prompt"):
+                memory_acknowledgement = self._memory_acknowledgement(memory_applied)
+                skill_acknowledgement = self._skill_acknowledgement(skill_applied)
+                schedule_acknowledgement = self._schedule_acknowledgement(schedule_applied)
+                acknowledgement = self._join_acknowledgements(
+                    [skill_acknowledgement, schedule_acknowledgement, memory_acknowledgement]
+                )
+                reply_context = self._join_acknowledgements(
+                    [
+                        shared_context,
+                        self._applied_changes_context(acknowledgement),
+                    ]
+                )
+                reply_prompt = self.prompt_builder.build(
+                    PromptParts(
+                        current_messages=messages,
+                        injected_context=reply_context,
+                    ),
+                    template_file=REPLY_TURN_USER_PROMPT_FILE,
+                )
+            reply_phase = None
+            try:
+                with telemetry.phase("reply_decision") as reply_phase:
+                    reply_result = await self.codex.run_decision(
+                        reply_prompt,
+                        parent_thread_id,
+                        developer_instructions=None,
+                        output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                    )
             except Exception as exc:
                 if parent_thread_id is None or not self._is_missing_codex_rollout_error(exc):
                     raise
@@ -706,12 +728,14 @@ class AgentLoop:
                     },
                 )
                 self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-                reply_result = await self.codex.run_decision(
-                    reply_prompt,
-                    None,
-                    developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
-                    output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
-                )
+                with telemetry.phase("reply_decision_restarted") as reply_phase:
+                    reply_result = await self.codex.run_decision(
+                        reply_prompt,
+                        None,
+                        developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
+                        output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                    )
+            telemetry.add_codex_result(reply_result, role="reply", phase=reply_phase)
             if reply_result.thread_id:
                 self.storage.set_codex_thread_state(
                     key,
@@ -719,43 +743,46 @@ class AgentLoop:
                     instruction_mode=CODEX_INSTRUCTION_MODE,
                 )
 
-            reply_decision = ReplyDecision.from_json_text(reply_result.raw_text)
-            if memory_hash_changed:
-                self.storage.set_last_injected_memory_hash(key, memory_hash)
+            with telemetry.phase("apply_reply_decision"):
+                reply_decision = ReplyDecision.from_json_text(reply_result.raw_text)
+                if memory_hash_changed:
+                    self.storage.set_last_injected_memory_hash(key, memory_hash)
 
-            decision = AgentDecision.from_parts(
-                reply_decision,
-                memory_ops=memory_decision.memory_ops,
-                skill_ops=skill_decision.skill_ops,
-                schedule_ops=schedule_decision.schedule_ops,
-            )
-            message_to_post = self._message_to_post(
-                first,
-                decision,
-                acknowledgement=acknowledgement,
-            )
-            if self._reply_conflicts_with_schedule_acknowledgement(message_to_post, schedule_acknowledgement):
-                message_to_post = ""
-            outbound_message = self._with_acknowledgement(message_to_post, acknowledgement)
-            if typing_started and first.conversation_type == "stream" and not outbound_message:
-                await stack.aclose()
-                typing_started = False
+                decision = AgentDecision.from_parts(
+                    reply_decision,
+                    memory_ops=memory_decision.memory_ops,
+                    skill_ops=skill_decision.skill_ops,
+                    schedule_ops=schedule_decision.schedule_ops,
+                )
+                message_to_post = self._message_to_post(
+                    first,
+                    decision,
+                    acknowledgement=acknowledgement,
+                )
+                if self._reply_conflicts_with_schedule_acknowledgement(message_to_post, schedule_acknowledgement):
+                    message_to_post = ""
+                outbound_message = self._with_acknowledgement(message_to_post, acknowledgement)
+                if typing_started and first.conversation_type == "stream" and not outbound_message:
+                    await stack.aclose()
+                    typing_started = False
 
             post: dict[str, Any] | None = None
             if outbound_message:
-                if self.config.post_replies:
-                    post = self._post_summary(await self.zulip.post_reply(first, outbound_message), dry_run=False)
-                else:
-                    post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
-                self._enqueue_posted_bot_update(
-                    key,
-                    source="conversation_turn",
-                    content=outbound_message,
-                    post=post,
-                    acknowledgement=acknowledgement,
-                    message_ids=[message.message_id for message in messages],
-                )
+                with telemetry.phase("post_delivery"):
+                    if self.config.post_replies:
+                        post = self._post_summary(await self.zulip.post_reply(first, outbound_message), dry_run=False)
+                    else:
+                        post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
+                    self._enqueue_posted_bot_update(
+                        key,
+                        source="conversation_turn",
+                        content=outbound_message,
+                        post=post,
+                        acknowledgement=acknowledgement,
+                        message_ids=[message.message_id for message in messages],
+                    )
 
+            timing = telemetry.finish()
             self.storage.log_turn(
                 key=key,
                 messages=messages,
@@ -767,6 +794,7 @@ class AgentLoop:
                 memory_acknowledgement=memory_acknowledgement,
                 skill_acknowledgement=skill_acknowledgement,
                 schedule_acknowledgement=schedule_acknowledgement,
+                timing=timing,
             )
             self.storage.consume_posted_bot_updates(key, pending_posted_bot_updates)
         self.storage.mark_processed(key, [message.message_id for message in messages])
@@ -775,6 +803,7 @@ class AgentLoop:
         job_id = str(job.get("id") or "")
         origin_message = self.schedules.message_for_job(job)
         key = origin_message.session_key
+        telemetry = TurnTelemetry(source="scheduled_job")
         developer_instructions = self.instructions.compose(
             role="scheduled_job",
             stream=origin_message.stream,
@@ -791,45 +820,54 @@ class AgentLoop:
         schedule_ignored: list[dict[str, Any]] = []
         skill_ignored: list[dict[str, Any]] = []
         try:
-            prompt = self._scheduled_prompt(job, origin_message)
-            codex_result = await asyncio.wait_for(
-                self.codex.run_decision(
-                    prompt,
-                    None,
-                    developer_instructions=developer_instructions,
-                    output_schema_path=self.config.workspace_dir / SCHEDULED_JOB_DECISION_SCHEMA_FILE,
-                ),
-                timeout=self.config.schedule_run_timeout_seconds,
-            )
+            with telemetry.phase("build_prompt"):
+                prompt = self._scheduled_prompt(job, origin_message)
+            with telemetry.phase("scheduled_job_decision") as codex_phase:
+                codex_result = await asyncio.wait_for(
+                    self.codex.run_decision(
+                        prompt,
+                        None,
+                        developer_instructions=developer_instructions,
+                        output_schema_path=self.config.workspace_dir / SCHEDULED_JOB_DECISION_SCHEMA_FILE,
+                    ),
+                    timeout=self.config.schedule_run_timeout_seconds,
+                )
+            telemetry.add_codex_result(codex_result, role="scheduled_job", phase=codex_phase)
 
-            decision = AgentDecision.from_json_text(codex_result.raw_text)
-            if decision.schedule_ops:
-                schedule_ignored = [op.to_record() for op in decision.schedule_ops]
-            if decision.skill_ops:
-                skill_ignored = [op.to_record() for op in decision.skill_ops]
+            with telemetry.phase("apply_result"):
+                decision = AgentDecision.from_json_text(codex_result.raw_text)
+                if decision.schedule_ops:
+                    schedule_ignored = [op.to_record() for op in decision.schedule_ops]
+                if decision.skill_ops:
+                    skill_ignored = [op.to_record() for op in decision.skill_ops]
 
-            memory_applied = self.memory.apply_ops(key, decision.memory_ops)
-            memory_acknowledgement = self._memory_acknowledgement(memory_applied)
-            outbound_message = decision.message_to_post.strip() if decision.should_reply else ""
-            if outbound_message and outbound_message.strip().upper() != "[SILENT]":
-                outbound_message = self._with_scheduled_mentions(job, outbound_message)
-            outbound_message = self._with_acknowledgement(outbound_message, memory_acknowledgement)
-            should_deliver = bool(outbound_message) and outbound_message.strip().upper() != "[SILENT]"
+                memory_applied = self.memory.apply_ops(key, decision.memory_ops)
+                memory_acknowledgement = self._memory_acknowledgement(memory_applied)
+                outbound_message = decision.message_to_post.strip() if decision.should_reply else ""
+                if outbound_message and outbound_message.strip().upper() != "[SILENT]":
+                    outbound_message = self._with_scheduled_mentions(job, outbound_message)
+                outbound_message = self._with_acknowledgement(outbound_message, memory_acknowledgement)
+                should_deliver = bool(outbound_message) and outbound_message.strip().upper() != "[SILENT]"
 
             if should_deliver:
-                if self.config.post_replies:
-                    post = self._post_summary(await self.zulip.post_reply(origin_message, outbound_message), dry_run=False)
-                else:
-                    post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
-                self._enqueue_posted_bot_update(
-                    key,
-                    source="scheduled_job",
-                    content=outbound_message,
-                    post=post,
-                    acknowledgement=memory_acknowledgement,
-                    job_id=job_id,
-                )
+                with telemetry.phase("post_delivery"):
+                    if self.config.post_replies:
+                        post = self._post_summary(
+                            await self.zulip.post_reply(origin_message, outbound_message),
+                            dry_run=False,
+                        )
+                    else:
+                        post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
+                    self._enqueue_posted_bot_update(
+                        key,
+                        source="scheduled_job",
+                        content=outbound_message,
+                        post=post,
+                        acknowledgement=memory_acknowledgement,
+                        job_id=job_id,
+                    )
 
+            timing = telemetry.finish()
             self.schedules.log_run(
                 job_id,
                 {
@@ -840,7 +878,14 @@ class AgentLoop:
                     "memory_acknowledgement": memory_acknowledgement,
                     "ignored_schedule_ops": schedule_ignored,
                     "ignored_skill_ops": skill_ignored,
+                    "timing": timing,
                 },
+            )
+            self.storage.append_telemetry_stats(
+                key,
+                timing,
+                source="scheduled_job",
+                job_id=job_id,
             )
             self.schedules.mark_job_run(
                 job_id,
@@ -850,6 +895,7 @@ class AgentLoop:
         except Exception as exc:
             LOGGER.exception("Scheduled job %s failed", job_id)
             error = repr(exc)
+            timing = telemetry.finish(status="error")
             self.schedules.log_run(
                 job_id,
                 {
@@ -858,7 +904,14 @@ class AgentLoop:
                     "post": post,
                     "memory_applied": memory_applied,
                     "memory_acknowledgement": memory_acknowledgement,
+                    "timing": timing,
                 },
+            )
+            self.storage.append_telemetry_stats(
+                key,
+                timing,
+                source="scheduled_job",
+                job_id=job_id,
             )
             self.schedules.mark_job_run(job_id, success=False, error=error)
 

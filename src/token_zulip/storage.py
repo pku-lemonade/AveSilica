@@ -18,12 +18,14 @@ from .models import (
     scoped_conversation_dir,
     utc_now_iso,
 )
+from .telemetry import timing_codex_call_stats_records, timing_e2e_stats_record
 
 
 REACTION_EVENTS_CAP = 20
 ENTRY_DELIMITER = "\n§\n"
 POSTED_BOT_UPDATES_FILENAME = "posted_bot_updates.jsonl"
 ZULIP_PERSON_MENTION_RE = re.compile(r"@_?\*\*([^|\n]+?)(?:\|(\d+))?\*\*")
+CODEX_STATS_DIRNAME = "codex_stats"
 
 
 @dataclass
@@ -159,10 +161,11 @@ class WorkspaceStorage:
         self.records_dir = self.workspace_dir / "records"
         self.memory_dir = self.workspace_dir / "memory"
         self.errors_dir = self.records_dir / "errors"
+        self.codex_stats_dir = self.records_dir / CODEX_STATS_DIRNAME
         self.ensure_dirs()
 
     def ensure_dirs(self) -> None:
-        for path in [self.records_dir, self.errors_dir]:
+        for path in [self.records_dir, self.errors_dir, self.codex_stats_dir]:
             path.mkdir(parents=True, exist_ok=True)
 
     def log_ignored_event(self, event: dict[str, Any], reason: str, key: SessionKey | None = None) -> None:
@@ -542,10 +545,12 @@ class WorkspaceStorage:
         memory_acknowledgement: str = "",
         skill_acknowledgement: str = "",
         schedule_acknowledgement: str = "",
+        timing: dict[str, Any] | None = None,
     ) -> None:
+        message_ids = [message.message_id for message in messages]
         record: dict[str, Any] = {
             "created_at": utc_now_iso(),
-            "message_ids": [message.message_id for message in messages],
+            "message_ids": message_ids,
             "decision": decision.to_record(),
             "post": post,
             "memory_applied": memory_applied,
@@ -560,7 +565,16 @@ class WorkspaceStorage:
             record["skill_acknowledgement"] = skill_acknowledgement
         if schedule_acknowledgement:
             record["schedule_acknowledgement"] = schedule_acknowledgement
+        if timing:
+            record["timing"] = timing
         self._append_jsonl(self.session_path(key, "turns.jsonl"), record)
+        if timing:
+            self.append_telemetry_stats(
+                key,
+                timing,
+                source="conversation_turn",
+                message_ids=message_ids,
+            )
 
     def log_control_turn(
         self,
@@ -600,6 +614,43 @@ class WorkspaceStorage:
                 if record.get("session_id") == key.storage_id:
                     records.append(record)
         return records
+
+    def append_telemetry_stats(
+        self,
+        key: SessionKey,
+        timing: Any,
+        *,
+        source: str,
+        message_ids: list[int] | None = None,
+        job_id: str | None = None,
+    ) -> None:
+        e2e_record = timing_e2e_stats_record(timing)
+        if e2e_record is None:
+            return
+        records = [e2e_record, *timing_codex_call_stats_records(timing)]
+        path = self._codex_stats_path(e2e_record)
+        for stats_record in records:
+            record = self._telemetry_context(key, source=source)
+            record.update(stats_record)
+            record["source"] = source
+            if message_ids:
+                record["message_ids"] = message_ids
+            if job_id:
+                record["job_id"] = job_id
+            self._append_jsonl(path, record)
+
+    def _telemetry_context(self, key: SessionKey, *, source: str) -> dict[str, Any]:
+        return {
+            "created_at": utc_now_iso(),
+            "source": source,
+            "session_id": key.storage_id,
+            "session_key": key.value,
+            "realm_id": key.realm_id,
+            "conversation_type": key.conversation_type,
+            "stream_id": key.stream_id,
+            "topic_hash": key.topic_hash,
+            "private_recipient_key": key.private_recipient_key,
+        }
 
     def session_path(self, key: SessionKey, filename: str) -> Path:
         directory = self.session_dir(key)
@@ -1088,6 +1139,11 @@ class WorkspaceStorage:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=False) + "\n")
+
+    def _codex_stats_path(self, record: dict[str, Any]) -> Path:
+        timestamp = str(record.get("finished_at") or record.get("started_at") or record.get("created_at") or "")
+        day = timestamp[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", timestamp[:10]) else utc_now_iso()[:10]
+        return self.codex_stats_dir / f"{day}.jsonl"
 
     def _write_jsonl(self, path: Path, records: list[dict[str, Any]]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

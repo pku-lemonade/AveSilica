@@ -94,6 +94,41 @@ def _private_message(message_id: int, content: str = "schedule this") -> Normali
     )
 
 
+def _codex_stats(operation: str, thread_id: str, *, parent_thread_id: str | None = None) -> dict[str, object]:
+    record: dict[str, object] = {
+        "operation": operation,
+        "model": "gpt-test",
+        "effort": "medium",
+        "api_call_count": 1 if operation != "ensure_thread" else 0,
+        "started_at": "2026-01-03T00:00:00+00:00",
+        "finished_at": "2026-01-03T00:00:01+00:00",
+        "duration_ms": 1000,
+        "overhead_ms": 0,
+        "status": "ok",
+        "thread_id": thread_id,
+        "tokens": {
+            "last": {
+                "input_tokens": 12,
+                "cached_input_tokens": 5,
+                "output_tokens": 8,
+                "reasoning_output_tokens": 3,
+                "total_tokens": 23,
+            },
+            "total": {
+                "input_tokens": 120,
+                "cached_input_tokens": 50,
+                "output_tokens": 80,
+                "reasoning_output_tokens": 30,
+                "total_tokens": 230,
+            },
+            "model_context_window": 128000,
+        },
+    }
+    if parent_thread_id is not None:
+        record["parent_thread_id"] = parent_thread_id
+    return record
+
+
 class PayloadCodex:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
@@ -110,7 +145,11 @@ class PayloadCodex:
         developer_instructions: str | None = None,
     ) -> CodexRunResult:
         resolved_thread_id = thread_id or f"thread-{len(self.prompts) + 1}"
-        return CodexRunResult(raw_text="", thread_id=resolved_thread_id)
+        return CodexRunResult(
+            raw_text="",
+            thread_id=resolved_thread_id,
+            stats=_codex_stats("ensure_thread", resolved_thread_id),
+        )
 
     async def run_decision(
         self,
@@ -123,7 +162,12 @@ class PayloadCodex:
         self.prompts.append(prompt)
         self.thread_ids.append(thread_id)
         self.developer_instructions.append(developer_instructions)
-        return CodexRunResult(raw_text=json.dumps(self.payload), thread_id=f"thread-{len(self.prompts)}")
+        resolved_thread_id = f"thread-{len(self.prompts)}"
+        return CodexRunResult(
+            raw_text=json.dumps(self.payload),
+            thread_id=resolved_thread_id,
+            stats=_codex_stats("run_decision", resolved_thread_id),
+        )
 
     async def run_turn_with_forks(
         self,
@@ -150,6 +194,11 @@ class PayloadCodex:
             workers[spec.kind] = CodexRunResult(
                 raw_text=json.dumps(worker_payload),
                 thread_id=f"thread-{len(self.prompts)}-{spec.kind}",
+                stats=_codex_stats(
+                    "worker_fork",
+                    f"thread-{len(self.prompts)}-{spec.kind}",
+                    parent_thread_id=main.thread_id,
+                ),
             )
         return CodexTurnWithForksResult(main=main, workers=workers, worker_errors={})
 
@@ -171,6 +220,11 @@ class PayloadCodex:
         return CodexRunResult(
             raw_text=json.dumps(worker_payload),
             thread_id=f"{parent_thread_id}-{worker_spec.kind}",
+            stats=_codex_stats(
+                "worker_fork",
+                f"{parent_thread_id}-{worker_spec.kind}",
+                parent_thread_id=parent_thread_id,
+            ),
         )
 
 
@@ -907,6 +961,35 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         assert "codex_thread_id" not in job
         assert "codex_instruction_mode" not in job
         assert job["last_status"] == "ok"
+        run_records = [
+            json.loads(line)
+            for line in (tmp_path / "records" / "scheduled" / created["job_id"] / "runs.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        timing = run_records[-1]["timing"]
+        assert timing["telemetry_id"]
+        assert timing["breakdown"]["by_phase_ms"]["build_prompt"] >= 0
+        assert timing["codex"]["api_call_count"] == 1
+        assert [call["role"] for call in timing["codex_calls"]] == ["scheduled_job"]
+        assert timing["codex_calls"][0]["tokens"]["last"]["input_tokens"] == 12
+        stats_path = next((tmp_path / "records" / "codex_stats").glob("*.jsonl"))
+        stats_records = [
+            json.loads(line)
+            for line in stats_path.read_text(encoding="utf-8").splitlines()
+        ]
+        e2e = stats_records[0]
+        call_record = stats_records[-1]
+        assert e2e["record_type"] == "e2e"
+        assert e2e["source"] == "scheduled_job"
+        assert e2e["job_id"] == created["job_id"]
+        assert e2e["breakdown"]["by_phase_ms"]["scheduled_job_decision"] >= 0
+        assert e2e["codex"]["api_call_count"] == 1
+        assert e2e["codex"]["tokens"]["last"]["reasoning_output_tokens"] == 3
+        assert call_record["record_type"] == "codex_call"
+        assert call_record["source"] == "scheduled_job"
+        assert call_record["job_id"] == created["job_id"]
+        assert call_record["tokens"]["last"]["reasoning_output_tokens"] == 3
 
     asyncio.run(scenario())
 

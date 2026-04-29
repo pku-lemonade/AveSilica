@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from .telemetry import CodexCallTimer
 from .workspace import DECISION_SCHEMA_FILE
 
 
@@ -14,6 +15,7 @@ class CodexRunResult:
     raw_text: str
     thread_id: str | None
     raw_result: Any = None
+    stats: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -102,19 +104,33 @@ class CodexSdkAdapter:
             ) from exc
 
         self.cwd.mkdir(parents=True, exist_ok=True)
+        timer = CodexCallTimer(
+            operation="ensure_thread",
+            model=self.model,
+            effort=self.reasoning_effort,
+            model_call=False,
+            input_thread_id=thread_id,
+        )
         async with AsyncCodex(config=AppServerConfig(codex_bin=self._codex_bin(), cwd=str(self.cwd))) as codex:
             thread_kwargs = self._thread_kwargs()
             if thread_id:
-                thread = await codex.thread_resume(thread_id, **thread_kwargs)
+                with timer.phase("thread_resume"):
+                    thread = await codex.thread_resume(thread_id, **thread_kwargs)
             else:
                 if developer_instructions:
                     thread_kwargs["developer_instructions"] = developer_instructions
-                thread = await codex.thread_start(**thread_kwargs)
+                with timer.phase("thread_start"):
+                    thread = await codex.thread_start(**thread_kwargs)
 
             resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "") or None
             if not resolved_thread_id:
                 raise RuntimeError("Codex parent thread did not provide a thread id")
-            return CodexRunResult(raw_text="", thread_id=resolved_thread_id, raw_result=thread)
+            return CodexRunResult(
+                raw_text="",
+                thread_id=resolved_thread_id,
+                raw_result=thread,
+                stats=timer.finish(resolved_thread_id=resolved_thread_id),
+            )
 
     async def run_decision(
         self,
@@ -133,20 +149,35 @@ class CodexSdkAdapter:
             ) from exc
 
         self.cwd.mkdir(parents=True, exist_ok=True)
+        timer = CodexCallTimer(
+            operation="run_decision",
+            model=self.model,
+            effort=self.reasoning_effort,
+            model_call=True,
+            input_thread_id=thread_id,
+        )
         async with AsyncCodex(config=AppServerConfig(codex_bin=self._codex_bin(), cwd=str(self.cwd))) as codex:
             thread_kwargs = self._thread_kwargs()
             if thread_id:
-                thread = await codex.thread_resume(thread_id, **thread_kwargs)
+                with timer.phase("thread_resume"):
+                    thread = await codex.thread_resume(thread_id, **thread_kwargs)
             else:
                 if developer_instructions:
                     thread_kwargs["developer_instructions"] = developer_instructions
-                thread = await codex.thread_start(**thread_kwargs)
+                with timer.phase("thread_start"):
+                    thread = await codex.thread_start(**thread_kwargs)
 
-            result = await thread.run(prompt, **self._run_kwargs(output_schema_path=output_schema_path))
+            with timer.phase("model_run"):
+                result = await thread.run(prompt, **self._run_kwargs(output_schema_path=output_schema_path))
 
             raw_text = str(getattr(result, "final_response", "") or "")
             resolved_thread_id = str(getattr(thread, "id", "") or thread_id or "") or None
-            return CodexRunResult(raw_text=raw_text, thread_id=resolved_thread_id, raw_result=result)
+            return CodexRunResult(
+                raw_text=raw_text,
+                thread_id=resolved_thread_id,
+                raw_result=result,
+                stats=timer.finish(raw_result=result, resolved_thread_id=resolved_thread_id),
+            )
 
     async def run_turn_with_forks(
         self,
@@ -166,27 +197,45 @@ class CodexSdkAdapter:
             ) from exc
 
         self.cwd.mkdir(parents=True, exist_ok=True)
+        main_timer = CodexCallTimer(
+            operation="run_decision",
+            model=self.model,
+            effort=self.reasoning_effort,
+            model_call=True,
+            input_thread_id=thread_id,
+        )
         async with AsyncCodex(config=AppServerConfig(codex_bin=self._codex_bin(), cwd=str(self.cwd))) as codex:
             thread_kwargs = self._thread_kwargs()
             if thread_id:
-                parent = await codex.thread_resume(thread_id, **thread_kwargs)
+                with main_timer.phase("thread_resume"):
+                    parent = await codex.thread_resume(thread_id, **thread_kwargs)
             else:
                 if developer_instructions:
                     thread_kwargs["developer_instructions"] = developer_instructions
-                parent = await codex.thread_start(**thread_kwargs)
+                with main_timer.phase("thread_start"):
+                    parent = await codex.thread_start(**thread_kwargs)
 
             parent_id = str(getattr(parent, "id", "") or thread_id or "") or None
             if not parent_id:
                 raise RuntimeError("Codex parent thread did not provide a thread id")
 
-            main_result = await parent.run(
-                prompt,
-                **self._run_kwargs(output_schema_path=main_output_schema_path),
-            )
+            with main_timer.phase("model_run"):
+                main_result = await parent.run(
+                    prompt,
+                    **self._run_kwargs(output_schema_path=main_output_schema_path),
+                )
+            main_stats = main_timer.finish(raw_result=main_result, resolved_thread_id=parent_id)
 
             workers: dict[str, CodexRunResult] = {}
             worker_errors: dict[str, str] = {}
             for spec in worker_specs:
+                worker_timer = CodexCallTimer(
+                    operation="worker_fork",
+                    model=self.model,
+                    effort=self.reasoning_effort,
+                    model_call=True,
+                    parent_thread_id=parent_id,
+                )
                 try:
                     fork_kwargs = {
                         **self._thread_kwargs(),
@@ -194,15 +243,19 @@ class CodexSdkAdapter:
                         "ephemeral": True,
                         "exclude_turns": True,
                     }
-                    fork = await codex.thread_fork(parent_id, **fork_kwargs)
-                    result = await fork.run(
-                        spec.prompt,
-                        **self._run_kwargs(output_schema_path=spec.output_schema_path),
-                    )
+                    with worker_timer.phase("thread_fork"):
+                        fork = await codex.thread_fork(parent_id, **fork_kwargs)
+                    with worker_timer.phase("model_run"):
+                        result = await fork.run(
+                            spec.prompt,
+                            **self._run_kwargs(output_schema_path=spec.output_schema_path),
+                        )
+                    worker_thread_id = str(getattr(fork, "id", "") or "") or None
                     workers[spec.kind] = CodexRunResult(
                         raw_text=str(getattr(result, "final_response", "") or ""),
-                        thread_id=str(getattr(fork, "id", "") or "") or None,
+                        thread_id=worker_thread_id,
                         raw_result=result,
+                        stats=worker_timer.finish(raw_result=result, resolved_thread_id=worker_thread_id),
                     )
                 except Exception as exc:
                     worker_errors[spec.kind] = str(exc)
@@ -212,6 +265,7 @@ class CodexSdkAdapter:
                     raw_text=str(getattr(main_result, "final_response", "") or ""),
                     thread_id=parent_id,
                     raw_result=main_result,
+                    stats=main_stats,
                 ),
                 workers=workers,
                 worker_errors=worker_errors,
@@ -235,6 +289,13 @@ class CodexSdkAdapter:
             raise RuntimeError("Codex parent thread id is required for worker fork")
 
         self.cwd.mkdir(parents=True, exist_ok=True)
+        timer = CodexCallTimer(
+            operation="worker_fork",
+            model=self.model,
+            effort=self.reasoning_effort,
+            model_call=True,
+            parent_thread_id=parent_id,
+        )
         async with AsyncCodex(config=AppServerConfig(codex_bin=self._codex_bin(), cwd=str(self.cwd))) as codex:
             fork_kwargs = {
                 **self._thread_kwargs(),
@@ -242,15 +303,19 @@ class CodexSdkAdapter:
                 "ephemeral": True,
                 "exclude_turns": True,
             }
-            fork = await codex.thread_fork(parent_id, **fork_kwargs)
-            result = await fork.run(
-                worker_spec.prompt,
-                **self._run_kwargs(output_schema_path=worker_spec.output_schema_path),
-            )
+            with timer.phase("thread_fork"):
+                fork = await codex.thread_fork(parent_id, **fork_kwargs)
+            with timer.phase("model_run"):
+                result = await fork.run(
+                    worker_spec.prompt,
+                    **self._run_kwargs(output_schema_path=worker_spec.output_schema_path),
+                )
+            worker_thread_id = str(getattr(fork, "id", "") or "") or None
             return CodexRunResult(
                 raw_text=str(getattr(result, "final_response", "") or ""),
-                thread_id=str(getattr(fork, "id", "") or "") or None,
+                thread_id=worker_thread_id,
                 raw_result=result,
+                stats=timer.finish(raw_result=result, resolved_thread_id=worker_thread_id),
             )
 
     def _thread_kwargs(self) -> dict[str, Any]:

@@ -530,6 +530,123 @@ class FakePoster:
         return {"result": "success"}
 
 
+def _codex_stats(
+    operation: str,
+    thread_id: str,
+    *,
+    api_call_count: int = 1,
+    parent_thread_id: str | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "operation": operation,
+        "model": "gpt-test",
+        "effort": "medium",
+        "api_call_count": api_call_count,
+        "started_at": "2026-01-02T00:00:00+00:00",
+        "finished_at": "2026-01-02T00:00:01+00:00",
+        "duration_ms": 1000,
+        "overhead_ms": 0,
+        "status": "ok",
+        "thread_id": thread_id,
+    }
+    if api_call_count:
+        record["tokens"] = {
+            "last": {
+                "input_tokens": 10,
+                "cached_input_tokens": 4,
+                "output_tokens": 6,
+                "reasoning_output_tokens": 2,
+                "total_tokens": 18,
+            },
+            "total": {
+                "input_tokens": 100,
+                "cached_input_tokens": 40,
+                "output_tokens": 60,
+                "reasoning_output_tokens": 20,
+                "total_tokens": 180,
+            },
+            "model_context_window": 128000,
+        }
+    if parent_thread_id is not None:
+        record["parent_thread_id"] = parent_thread_id
+    return record
+
+
+class StatsCodex:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.worker_prompts: dict[str, str] = {}
+
+    async def ensure_thread(
+        self,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+    ) -> CodexRunResult:
+        resolved_thread_id = thread_id or "thread-1"
+        return CodexRunResult(
+            raw_text="",
+            thread_id=resolved_thread_id,
+            stats=_codex_stats("ensure_thread", resolved_thread_id, api_call_count=0),
+        )
+
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
+    ) -> CodexRunResult:
+        self.calls += 1
+        payload = {
+            "should_reply": True,
+            "reply_kind": "chat",
+            "message_to_post": "Reply with stats.",
+            "memory_ops": [],
+            "confidence": 0.9,
+        }
+        resolved_thread_id = thread_id or f"thread-{self.calls}"
+        return CodexRunResult(
+            raw_text=json.dumps(payload),
+            thread_id=resolved_thread_id,
+            stats=_codex_stats("run_decision", resolved_thread_id),
+        )
+
+    async def run_turn_with_forks(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None,
+        main_output_schema_path: Path,
+        worker_specs: list[CodexWorkerSpec],
+    ) -> CodexTurnWithForksResult:
+        main = await self.run_decision(prompt, thread_id, developer_instructions=developer_instructions)
+        workers = {
+            spec.kind: CodexRunResult(
+                raw_text=json.dumps(_worker_payload({}, spec.kind)),
+                thread_id=f"{main.thread_id}-{spec.kind}",
+                stats=_codex_stats("worker_fork", f"{main.thread_id}-{spec.kind}", parent_thread_id=main.thread_id),
+            )
+            for spec in worker_specs
+        }
+        return CodexTurnWithForksResult(main=main, workers=workers, worker_errors={})
+
+    async def run_worker_fork(
+        self,
+        parent_thread_id: str,
+        worker_spec: CodexWorkerSpec,
+    ) -> CodexRunResult:
+        self.worker_prompts[worker_spec.kind] = worker_spec.prompt
+        thread_id = f"{parent_thread_id}-{worker_spec.kind}"
+        return CodexRunResult(
+            raw_text=json.dumps(_worker_payload({}, worker_spec.kind)),
+            thread_id=thread_id,
+            stats=_codex_stats("worker_fork", thread_id, parent_thread_id=parent_thread_id),
+        )
+
+
 class FakeUploadPoster(FakePoster):
     def __init__(self, typing: FakeTypingNotifier, codex_cwd: Path) -> None:
         super().__init__()
@@ -858,6 +975,64 @@ def test_dry_run_records_memory_acknowledgement_without_posting(tmp_path):
         pending = storage.read_pending_posted_bot_updates(message.session_key)
         assert pending[-1]["source"] == "conversation_turn"
         assert pending[-1]["content"] == record["memory_acknowledgement"]
+
+    asyncio.run(scenario())
+
+
+def test_turn_records_codex_timing_and_daily_stats(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=StatsCodex(),
+            zulip=FakePoster(),
+        )
+        message = _message(1, "hello", directly_addressed=True)
+
+        await bot._handle_message(message)
+
+        turns = storage.session_path(message.session_key, "turns.jsonl").read_text(encoding="utf-8").splitlines()
+        record = json.loads(turns[-1])
+        timing = record["timing"]
+        assert timing["source"] == "conversation_turn"
+        assert timing["telemetry_id"]
+        assert timing["duration_ms"] >= 0
+        assert timing["breakdown"]["by_phase_ms"]["build_worker_prompts"] >= 0
+        assert timing["codex"]["api_call_count"] == 4
+        roles = [call["role"] for call in timing["codex_calls"]]
+        assert roles == ["reply_session", "memory", "skill", "schedule", "reply"]
+        reply_call = timing["codex_calls"][-1]
+        assert reply_call["operation"] == "run_decision"
+        assert reply_call["tokens"]["last"]["input_tokens"] == 10
+        assert reply_call["tokens"]["last"]["reasoning_output_tokens"] == 2
+        assert reply_call["turn_phase"] == "reply_decision"
+
+        stats_path = next((tmp_path / "records" / "codex_stats").glob("*.jsonl"))
+        stats_records = [json.loads(line) for line in stats_path.read_text(encoding="utf-8").splitlines()]
+        e2e = stats_records[0]
+        call_records = stats_records[1:]
+        assert e2e["record_type"] == "e2e"
+        assert e2e["telemetry_id"] == timing["telemetry_id"]
+        assert e2e["message_ids"] == [message.message_id]
+        assert e2e["breakdown"]["by_phase_ms"]["prepare_messages"] >= 0
+        assert e2e["breakdown"]["by_phase_ms"]["build_worker_prompts"] >= 0
+        assert e2e["breakdown"]["by_phase_ms"]["reply_decision"] >= 0
+        assert e2e["breakdown"]["by_phase_ms"]["apply_reply_decision"] >= 0
+        assert e2e["codex"]["call_count"] == len(roles)
+        assert e2e["codex"]["api_call_count"] == 4
+        assert e2e["codex"]["tokens"]["last"]["input_tokens"] == 40
+        assert e2e["codex"]["tokens"]["last"]["reasoning_output_tokens"] == 8
+        assert e2e["codex"]["tokens"]["total"]["total_tokens"] == 720
+        assert [item["role"] for item in call_records] == roles
+        assert all(item["record_type"] == "codex_call" for item in call_records)
+        assert all(item["session_key"] == message.session_key.value for item in stats_records)
+        assert all(item["telemetry_id"] == timing["telemetry_id"] for item in stats_records)
+        assert call_records[0]["api_call_count"] == 0
+        assert call_records[-1]["tokens"]["total"]["total_tokens"] == 180
 
     asyncio.run(scenario())
 
