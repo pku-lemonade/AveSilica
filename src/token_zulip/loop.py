@@ -667,7 +667,14 @@ class AgentLoop:
                 schedule_spec = CodexWorkerSpec(
                     kind="schedule",
                     prompt=schedule_prompt,
-                    developer_instructions=self.instructions.compose(role="schedule_worker", **instruction_kwargs),
+                    developer_instructions=self.instructions.compose(
+                        role="schedule_worker",
+                        template_values={
+                            "schedule_timezone": self.config.schedule_timezone,
+                            "schedule_default_time": self.config.schedule_default_time,
+                        },
+                        **instruction_kwargs,
+                    ),
                     output_schema_path=self.config.workspace_dir / SCHEDULE_DECISION_SCHEMA_FILE,
                 )
             with telemetry.phase("schedule_worker") as schedule_phase:

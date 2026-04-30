@@ -103,6 +103,7 @@ def test_worker_instruction_profiles_do_not_load_reply_policy(tmp_path):
         normalized_topic_hash("Launch Plan"),
         role="schedule_worker",
         stream_id=10,
+        template_values={"schedule_timezone": "Asia/Shanghai", "schedule_default_time": "09:00"},
     )
 
     assert "## Source: references/system.md" in text
@@ -113,6 +114,11 @@ def test_worker_instruction_profiles_do_not_load_reply_policy(tmp_path):
     assert "mention_targets" in text
     assert "zero, one, or multiple person targets" in text
     assert "`@**topic**` mentions topic participants" in text
+    assert "omitted timezone uses `Asia/Shanghai`" in text
+    assert 'omitted clock time or "morning" uses `09:00`' in text
+    assert '"every morning" uses `09:00` as a daily cron' in text
+    assert "$schedule_timezone" not in text
+    assert "$schedule_default_time" not in text
     assert "prefer an exact `job_id`" in text
     assert "Current Scheduled Tasks Here" in text
 

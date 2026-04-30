@@ -40,6 +40,7 @@ export TOKENZULIP_CODEX_MODEL=gpt-5.5
 export TOKENZULIP_TYPING_ENABLED=true
 export TOKENZULIP_BOT_ALIASES=Silica,Sili
 export TOKENZULIP_SCHEDULE_TIMEZONE=Asia/Shanghai
+export TOKENZULIP_SCHEDULE_DEFAULT_TIME=09:00
 ```
 
 Run without posting:
@@ -102,7 +103,7 @@ By default, the example `.env` sets `TOKENZULIP_CODEX_SANDBOX=danger-full-access
 
 The example `.env` also sets HTTP proxy variables to `http://127.0.0.1:50834`. The `--network host` flag lets the container reach that host-local proxy.
 
-For predictable scheduled tasks in containers, set `TOKENZULIP_SCHEDULE_TIMEZONE` in `.env`, for example `TOKENZULIP_SCHEDULE_TIMEZONE=Asia/Shanghai`. Setting `TZ` is useful for container logs, but TokenZulip parses schedule times from `TOKENZULIP_SCHEDULE_TIMEZONE`.
+For predictable scheduled tasks in containers, set `TOKENZULIP_SCHEDULE_TIMEZONE` in `.env`, for example `TOKENZULIP_SCHEDULE_TIMEZONE=Asia/Shanghai`. `TOKENZULIP_SCHEDULE_DEFAULT_TIME` controls omitted clock times, defaulting to `09:00`. Setting `TZ` is useful for container logs, but TokenZulip parses schedule times from `TOKENZULIP_SCHEDULE_TIMEZONE`.
 
 Install the systemd service:
 
@@ -312,6 +313,6 @@ When a stream/topic or private-chat session already has a marked Codex thread, T
 
 The reply/session thread returns only `should_reply`, `reply_kind`, `message_to_post`, and confidence. After that parent turn completes, three ephemeral forked workers return memory, skill, and schedule decisions through separate schemas and code paths. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. Schedule operations may also include multiple `mention_targets`; confirmations use silent full-name mentions, while the due job post uses normal full-name mentions. TokenZulip validates and persists applied changes, appends deterministic acknowledgements, and then posts any reply.
 
-When schedules are enabled, the listener also runs a background scheduler. Configure it with `TOKENZULIP_SCHEDULES_ENABLED`, `TOKENZULIP_SCHEDULE_TICK_SECONDS`, `TOKENZULIP_SCHEDULE_TIMEZONE`, and `TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS`. Scheduled job runs start fresh Codex threads from persisted job data, loaded skills, scoped memory, and current time, so scheduled automation history does not pollute the human Zulip conversation thread.
+When schedules are enabled, the listener also runs a background scheduler. Configure it with `TOKENZULIP_SCHEDULES_ENABLED`, `TOKENZULIP_SCHEDULE_TICK_SECONDS`, `TOKENZULIP_SCHEDULE_TIMEZONE`, `TOKENZULIP_SCHEDULE_DEFAULT_TIME`, and `TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS`. Scheduled job runs start fresh Codex threads from persisted job data, loaded skills, scoped memory, and current time, so scheduled automation history does not pollute the human Zulip conversation thread.
 
 When live posting is enabled, the bot can show Zulip typing indicators for every processed message. Silent channel decisions stop typing after Codex decides not to reply. Set `TOKENZULIP_TYPING_ENABLED=false` to disable typing indicators.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from string import Template
 
 from .models import SessionKey, safe_slug, scoped_conversation_dir, scoped_stream_dir
 from .workspace import SHARED_SYSTEM_FILE, strip_markdown_comments
@@ -56,6 +58,7 @@ class InstructionLoader:
         stream_id: int | None = None,
         conversation_type: str = "stream",
         private_recipient_key: str | None = None,
+        template_values: Mapping[str, object] | None = None,
     ) -> str:
         sources = self.sources(
             stream=stream,
@@ -68,8 +71,14 @@ class InstructionLoader:
         )
         rendered: list[str] = []
         total = 0
+        substitutions = (
+            {key: str(value).strip() for key, value in template_values.items()} if template_values else {}
+        )
         for source in sources:
-            block = f"\n\n## Source: {source.label}\n\n{source.content.strip()}\n"
+            content = source.content.strip()
+            if substitutions:
+                content = Template(content).safe_substitute(substitutions)
+            block = f"\n\n## Source: {source.label}\n\n{content}\n"
             encoded_size = len(block.encode("utf-8"))
             if total + encoded_size > self.max_bytes:
                 remaining = self.max_bytes - total

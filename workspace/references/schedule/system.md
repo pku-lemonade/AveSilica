@@ -24,10 +24,11 @@ Use `mention_targets` for scheduled reminders that should ping specific Zulip re
 
 Use decomposed `schedule_spec`, not natural-language schedule text:
 
+- Defaults: omitted timezone uses `$schedule_timezone`; omitted clock time or "morning" uses `$schedule_default_time`. Ask only if date or recurrence is unclear.
 - `once_at`: exact one-shot wall-clock time with an ISO timestamp in `run_at`.
 - `once_in`: relative one-shot delay with a duration like `30m`, `2h`, or `1d`.
 - `interval`: recurring duration like `2h`.
 - `cron`: recurring wall-clock schedule with a 5-field cron expression like `0 9 * * *`.
 - `unchanged`: update/remove/pause/resume/list/run_now operations that do not change timing.
 
-For natural recurring phrases, convert to cron. For example, "every morning at 9" is `{"kind":"cron","run_at":"","duration":"","cron":"0 9 * * *"}`. Never emit phrases such as `every morning Asia/Shanghai` in schedule fields.
+For natural recurring phrases, convert to cron; "every morning" uses `$schedule_default_time` as a daily cron. Never emit phrases such as `every morning Asia/Shanghai` in schedule fields.

@@ -545,6 +545,8 @@ def test_schedule_worker_prompt_includes_current_schedule_inventory(tmp_path):
         await bot._handle_message(_message(2, "remove the travel paperwork reminder"))
 
         schedule_prompt = bot.codex.worker_prompts["schedule"]
+        assert "- Scheduling timezone: Asia/Shanghai" in schedule_prompt
+        assert "- Default schedule time:" not in schedule_prompt
         assert "# Current Scheduled Tasks Here" in schedule_prompt
         assert f"id={created['job_id']}" in schedule_prompt
         assert "name=Travel paperwork reminder" in schedule_prompt
@@ -553,6 +555,12 @@ def test_schedule_worker_prompt_includes_current_schedule_inventory(tmp_path):
         assert "next=2030-01-02 09:00 Asia/Shanghai" in schedule_prompt
         assert "skills=[none]; mentions=[none]" in schedule_prompt
         assert "prompt: Remind Feiyang that he should submit travel paperwork." in schedule_prompt
+        schedule_instructions = bot.codex.worker_developer_instructions["schedule"]
+        assert "omitted timezone uses `Asia/Shanghai`" in schedule_instructions
+        assert 'omitted clock time or "morning" uses `09:00`' in schedule_instructions
+        assert '"every morning" uses `09:00` as a daily cron' in schedule_instructions
+        assert "$schedule_timezone" not in schedule_instructions
+        assert "$schedule_default_time" not in schedule_instructions
 
     asyncio.run(scenario())
 

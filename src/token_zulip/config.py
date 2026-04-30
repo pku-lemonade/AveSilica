@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,6 +60,14 @@ def _aliases_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return aliases
 
 
+def _time_env(name: str, default: str) -> str:
+    value = os.getenv(name)
+    result = default if value is None else value.strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", result):
+        raise ValueError(f"{name} must be HH:MM in 24-hour time")
+    return result
+
+
 @dataclass(frozen=True)
 class BotConfig:
     workspace_dir: Path
@@ -84,6 +93,7 @@ class BotConfig:
     schedules_enabled: bool = True
     schedule_tick_seconds: float = 60.0
     schedule_timezone: str = "UTC"
+    schedule_default_time: str = "09:00"
     schedule_run_timeout_seconds: float = 600.0
     schedule_skill_max_bytes: int = 32_000
     schedule_skill_max_count: int = 4
@@ -116,6 +126,7 @@ class BotConfig:
             schedules_enabled=_bool_env("TOKENZULIP_SCHEDULES_ENABLED", True),
             schedule_tick_seconds=_float_env("TOKENZULIP_SCHEDULE_TICK_SECONDS", 60.0),
             schedule_timezone=os.getenv("TOKENZULIP_SCHEDULE_TIMEZONE") or os.getenv("TZ") or "UTC",
+            schedule_default_time=_time_env("TOKENZULIP_SCHEDULE_DEFAULT_TIME", "09:00"),
             schedule_run_timeout_seconds=_float_env("TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS", 600.0),
             schedule_skill_max_bytes=_int_env("TOKENZULIP_SCHEDULE_SKILL_MAX_BYTES", 32_000),
             schedule_skill_max_count=_int_env("TOKENZULIP_SCHEDULE_SKILL_MAX_COUNT", 4),

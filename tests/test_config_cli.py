@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from token_zulip.cli import main
 from token_zulip.config import BotConfig
 from token_zulip.workspace import WORKSPACE_TEMPLATE_FILES
@@ -21,6 +23,7 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("TOKENZULIP_TYPING_REFRESH_SECONDS", raising=False)
     monkeypatch.delenv("TOKENZULIP_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.delenv("TOKENZULIP_RECENT_MESSAGES", raising=False)
+    monkeypatch.delenv("TOKENZULIP_SCHEDULE_DEFAULT_TIME", raising=False)
 
     config = BotConfig.from_env()
 
@@ -33,6 +36,7 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     assert config.typing_refresh_seconds == 8.0
     assert config.upload_max_bytes == 25_000_000
     assert config.max_recent_messages == 100
+    assert config.schedule_default_time == "09:00"
 
 
 def test_listen_all_public_streams_can_be_disabled(monkeypatch):
@@ -41,6 +45,21 @@ def test_listen_all_public_streams_can_be_disabled(monkeypatch):
     config = BotConfig.from_env()
 
     assert config.listen_all_public_streams is False
+
+
+def test_schedule_default_time_env(monkeypatch):
+    monkeypatch.setenv("TOKENZULIP_SCHEDULE_DEFAULT_TIME", "08:30")
+
+    config = BotConfig.from_env()
+
+    assert config.schedule_default_time == "08:30"
+
+
+def test_schedule_default_time_env_requires_hh_mm(monkeypatch):
+    monkeypatch.setenv("TOKENZULIP_SCHEDULE_DEFAULT_TIME", "9am")
+
+    with pytest.raises(ValueError, match="TOKENZULIP_SCHEDULE_DEFAULT_TIME must be HH:MM"):
+        BotConfig.from_env()
 
 
 def test_cli_init_creates_workspace_layout(tmp_path):
