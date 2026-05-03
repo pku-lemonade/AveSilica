@@ -15,7 +15,7 @@ from token_zulip.typing_status import TypingStatusManager
 from token_zulip.workspace import initialize_workspace
 
 
-def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
+def _config(workspace: Path, *, post_replies: bool = True, schedule_timezone: str = "UTC") -> BotConfig:
     return BotConfig(
         workspace_dir=workspace,
         zulip_config_file=None,
@@ -37,10 +37,18 @@ def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
         listen_all_public_streams=True,
         typing_enabled=True,
         typing_refresh_seconds=8.0,
+        schedule_timezone=schedule_timezone,
     )
 
 
-def _message(message_id: int, content: str = "hello", *, directly_addressed: bool = False) -> NormalizedMessage:
+def _message(
+    message_id: int,
+    content: str = "hello",
+    *,
+    directly_addressed: bool = False,
+    timestamp: int | None = None,
+    received_at: str = "now",
+) -> NormalizedMessage:
     return NormalizedMessage(
         realm_id="realm",
         message_id=message_id,
@@ -53,8 +61,8 @@ def _message(message_id: int, content: str = "hello", *, directly_addressed: boo
         sender_full_name="Alice",
         sender_id=1,
         content=content,
-        timestamp=None,
-        received_at="now",
+        timestamp=timestamp,
+        received_at=received_at,
         raw={},
         directly_addressed=directly_addressed,
     )
@@ -75,6 +83,8 @@ def _private_message(
     *,
     recipient_id: int = 1001,
     recipients: list[dict[str, object]] | None = None,
+    timestamp: int | None = None,
+    received_at: str = "now",
 ) -> NormalizedMessage:
     private_recipient_key = str(recipient_id)
     return NormalizedMessage(
@@ -93,8 +103,8 @@ def _private_message(
         sender_full_name=f"User {sender_id}",
         sender_id=sender_id,
         content="hi",
-        timestamp=None,
-        received_at="now",
+        timestamp=timestamp,
+        received_at=received_at,
         raw={},
     )
 
@@ -248,6 +258,7 @@ class BlockingCodex(ForkingCodexMixin):
         self.calls = 0
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.prompts: list[str] = []
 
     async def run_decision(
         self,
@@ -258,6 +269,7 @@ class BlockingCodex(ForkingCodexMixin):
         output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         self.calls += 1
+        self.prompts.append(prompt)
         if self.calls == 1:
             self.started.set()
             await self.release.wait()
@@ -1101,6 +1113,72 @@ def test_current_message_is_not_duplicated_and_recent_context_is_not_rendered(tm
     asyncio.run(scenario())
 
 
+def test_reply_prompt_uses_per_message_local_time_and_omits_control_metadata(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path, schedule_timezone="Asia/Shanghai"),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(_message(1, "current request", timestamp=1_767_225_600))
+
+        assert "- [1] 2026-01-01T08:00:00+08:00 Alice: current request" in codex.prompt
+        assert "- Type:" not in codex.prompt
+        assert "- Reply required:" not in codex.prompt
+        assert "- Directly addressed:" not in codex.prompt
+        assert "# Posted Bot Updates" not in codex.prompt
+        assert "# Applied Changes This Turn" not in codex.prompt
+        assert "# Scoped Memory" not in codex.prompt
+
+    asyncio.run(scenario())
+
+
+def test_reply_prompt_message_time_falls_back_to_received_at(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path, schedule_timezone="Asia/Shanghai"),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(_message(1, "received time", received_at="2026-01-01T01:02:03+00:00"))
+
+        assert "- [1] 2026-01-01T09:02:03+08:00 Alice: received time" in codex.prompt
+
+    asyncio.run(scenario())
+
+
+def test_reply_prompt_omits_time_when_message_time_is_unavailable(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path, schedule_timezone="Asia/Shanghai"),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(_message(1, "untimed", received_at="not-a-time"))
+
+        assert "- [1] Alice: untimed" in codex.prompt
+
+    asyncio.run(scenario())
+
+
 def test_resumed_thread_gets_no_recent_context_or_developer_instructions(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
@@ -1422,6 +1500,36 @@ def test_clear_in_pending_messages_splits_normal_turn_batches(tmp_path):
         assert poster.posts == [
             {"topic": "Launch", "content": "Cleared. The next normal message starts a fresh Codex thread."}
         ]
+
+    asyncio.run(scenario())
+
+
+def test_pending_messages_render_distinct_per_message_local_times(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = BlockingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path, schedule_timezone="Asia/Shanghai"),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        first = asyncio.create_task(
+            bot._handle_message(_message(1, "first", timestamp=1_767_225_600, directly_addressed=True))
+        )
+        await codex.started.wait()
+        await bot._handle_message(_message(2, "second", timestamp=1_767_225_660, directly_addressed=True))
+        await bot._handle_message(_message(3, "third", timestamp=1_767_225_720, directly_addressed=True))
+        codex.release.set()
+        await first
+
+        assert len(codex.prompts) == 2
+        pending_prompt = codex.prompts[1]
+        assert "- [2] 2026-01-01T08:01:00+08:00 Alice: second" in pending_prompt
+        assert "- [3] 2026-01-01T08:02:00+08:00 Alice: third" in pending_prompt
 
     asyncio.run(scenario())
 

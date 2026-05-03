@@ -710,6 +710,7 @@ class AgentLoop:
                     PromptParts(
                         current_messages=messages,
                         injected_context=reply_context,
+                        message_timezone=self.config.schedule_timezone,
                     ),
                     template_file=REPLY_TURN_USER_PROMPT_FILE,
                 )

@@ -158,6 +158,7 @@ def _render_prompt(args: argparse.Namespace) -> int:
     prompt = PromptBuilder(config.workspace_dir).build(
         PromptParts(
             current_messages=[message],
+            message_timezone=config.schedule_timezone,
         )
     )
     print(prompt)

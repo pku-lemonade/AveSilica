@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .models import NormalizedMessage
 from .workspace import REPLY_TURN_USER_PROMPT_FILE
@@ -12,6 +14,7 @@ from .workspace import REPLY_TURN_USER_PROMPT_FILE
 class PromptParts:
     current_messages: list[NormalizedMessage]
     injected_context: str = ""
+    message_timezone: str | None = None
 
 
 class PromptBuilder:
@@ -19,7 +22,9 @@ class PromptBuilder:
         self.root = root.expanduser().resolve()
 
     def build(self, parts: PromptParts, *, template_file: str = REPLY_TURN_USER_PROMPT_FILE) -> str:
-        current = "\n".join(self._format_message(message) for message in parts.current_messages)
+        current = "\n".join(
+            self._format_message(message, timezone_name=parts.message_timezone) for message in parts.current_messages
+        )
         template = Template(self._template_text(template_file))
         return template.safe_substitute(
             conversation_type=self._conversation_type(parts),
@@ -45,9 +50,42 @@ class PromptBuilder:
     def _directly_addressed(self, parts: PromptParts) -> str:
         return str(any(message.directly_addressed for message in parts.current_messages)).lower()
 
-    def _format_message(self, message: NormalizedMessage) -> str:
+    def _format_message(self, message: NormalizedMessage, *, timezone_name: str | None = None) -> str:
         sender = message.sender_full_name or message.sender_email or "unknown"
-        return self._with_reactions(f"- [{message.message_id}] {sender}: {message.content.strip()}", message.reactions)
+        timestamp = self._format_message_time(message, timezone_name=timezone_name)
+        prefix = f"- [{message.message_id}]"
+        if timestamp:
+            prefix = f"{prefix} {timestamp}"
+        return self._with_reactions(f"{prefix} {sender}: {message.content.strip()}", message.reactions)
+
+    def _format_message_time(self, message: NormalizedMessage, *, timezone_name: str | None) -> str:
+        if not timezone_name:
+            return ""
+        dt = self._message_datetime(message)
+        if dt is None:
+            return ""
+        try:
+            tz = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            tz = timezone.utc
+        return dt.astimezone(tz).isoformat(timespec="seconds")
+
+    def _message_datetime(self, message: NormalizedMessage) -> datetime | None:
+        if message.timestamp is not None:
+            try:
+                return datetime.fromtimestamp(int(message.timestamp), timezone.utc)
+            except (OverflowError, OSError, TypeError, ValueError):
+                pass
+        text = message.received_at.strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
 
     def _with_reactions(self, line: str, reactions: object) -> str:
         reaction_text = self._format_reactions(reactions)
