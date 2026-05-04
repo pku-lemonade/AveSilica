@@ -13,7 +13,8 @@ from .config import BotConfig
 from .instructions import InstructionLoader
 from .loop import AgentLoop
 from .memory import MemoryStore
-from .prompt import PromptBuilder, PromptParts
+from .prompt import PromptBuilder
+from .turn_context import TurnContext
 from .storage import WorkspaceStorage
 from .typing_status import NoOpTypingNotifier, TypingStatusManager
 from .workspace import DECISION_SCHEMA_FILE, initialize_workspace
@@ -156,8 +157,8 @@ def _render_prompt(args: argparse.Namespace) -> int:
         raise SystemExit("Event file does not contain a supported message event.")
 
     prompt = PromptBuilder(config.workspace_dir).build(
-        PromptParts(
-            current_messages=[message],
+        TurnContext.from_messages(
+            [message],
             message_timezone=config.schedule_timezone,
         )
     )

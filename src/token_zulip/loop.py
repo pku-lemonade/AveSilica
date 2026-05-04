@@ -24,11 +24,12 @@ from .models import (
     SessionKey,
     SkillDecision,
 )
-from .prompt import PromptBuilder, PromptParts
+from .prompt import PromptBuilder
 from .schedules import ScheduleStore, utc_now, zoneinfo_for
 from .skills import SkillStore
 from .storage import SessionMetadata, WorkspaceStorage
 from .telemetry import TurnTelemetry
+from .turn_context import TurnContext
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
 from .workspace import (
@@ -566,16 +567,16 @@ class AgentLoop:
                 memory_context, memory_hash, memory_hash_changed = self._memory_context_for_prompt(key, metadata)
                 shared_context = self._join_acknowledgements([memory_context, posted_bot_update_context])
                 memory_prompt = self.prompt_builder.build(
-                    PromptParts(
-                        current_messages=messages,
-                        injected_context=shared_context,
+                    TurnContext.from_messages(
+                        messages,
+                        runtime_context=shared_context,
                     ),
                     template_file=MEMORY_WORKER_USER_PROMPT_FILE,
                 )
                 skill_prompt = self.prompt_builder.build(
-                    PromptParts(
-                        current_messages=messages,
-                        injected_context=shared_context,
+                    TurnContext.from_messages(
+                        messages,
+                        runtime_context=shared_context,
                     ),
                     template_file=SKILL_WORKER_USER_PROMPT_FILE,
                 )
@@ -658,9 +659,9 @@ class AgentLoop:
                     ]
                 )
                 schedule_prompt = self.prompt_builder.build(
-                    PromptParts(
-                        current_messages=messages,
-                        injected_context=schedule_context,
+                    TurnContext.from_messages(
+                        messages,
+                        runtime_context=schedule_context,
                     ),
                     template_file=SCHEDULE_WORKER_USER_PROMPT_FILE,
                 )
@@ -707,9 +708,9 @@ class AgentLoop:
                     ]
                 )
                 reply_prompt = self.prompt_builder.build(
-                    PromptParts(
-                        current_messages=messages,
-                        injected_context=reply_context,
+                    TurnContext.from_messages(
+                        messages,
+                        runtime_context=reply_context,
                         message_timezone=self.config.schedule_timezone,
                     ),
                     template_file=REPLY_TURN_USER_PROMPT_FILE,

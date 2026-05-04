@@ -1,36 +1,28 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .models import NormalizedMessage
+from .turn_context import TurnContext, TurnMessage
 from .workspace import REPLY_TURN_USER_PROMPT_FILE
-
-
-@dataclass(frozen=True)
-class PromptParts:
-    current_messages: list[NormalizedMessage]
-    injected_context: str = ""
-    message_timezone: str | None = None
 
 
 class PromptBuilder:
     def __init__(self, root: Path) -> None:
         self.root = root.expanduser().resolve()
 
-    def build(self, parts: PromptParts, *, template_file: str = REPLY_TURN_USER_PROMPT_FILE) -> str:
+    def build(self, turn: TurnContext, *, template_file: str = REPLY_TURN_USER_PROMPT_FILE) -> str:
         current = "\n".join(
-            self._format_message(message, timezone_name=parts.message_timezone) for message in parts.current_messages
+            self._format_message(message, timezone_name=turn.message_timezone) for message in turn.messages
         )
         template = Template(self._template_text(template_file))
         return template.safe_substitute(
-            conversation_type=self._conversation_type(parts),
-            reply_required=self._reply_required(parts),
-            directly_addressed=self._directly_addressed(parts),
-            injected_context=parts.injected_context.strip(),
+            conversation_type=turn.conversation.conversation_type,
+            reply_required=str(turn.conversation.reply_required).lower(),
+            directly_addressed=str(turn.conversation.directly_addressed).lower(),
+            injected_context=turn.runtime_context.strip(),
             current_messages=current,
         ).rstrip() + "\n"
 
@@ -39,26 +31,14 @@ class PromptBuilder:
         substitutions = {key: str(value).strip() for key, value in values.items()}
         return template.safe_substitute(substitutions).rstrip() + "\n"
 
-    def _conversation_type(self, parts: PromptParts) -> str:
-        for message in parts.current_messages:
-            return message.conversation_type
-        return "stream"
-
-    def _reply_required(self, parts: PromptParts) -> str:
-        return str(any(message.reply_required for message in parts.current_messages)).lower()
-
-    def _directly_addressed(self, parts: PromptParts) -> str:
-        return str(any(message.directly_addressed for message in parts.current_messages)).lower()
-
-    def _format_message(self, message: NormalizedMessage, *, timezone_name: str | None = None) -> str:
-        sender = message.sender_full_name or message.sender_email or "unknown"
+    def _format_message(self, message: TurnMessage, *, timezone_name: str | None = None) -> str:
         timestamp = self._format_message_time(message, timezone_name=timezone_name)
         prefix = f"- [{message.message_id}]"
         if timestamp:
             prefix = f"{prefix} {timestamp}"
-        return self._with_reactions(f"{prefix} {sender}: {message.content.strip()}", message.reactions)
+        return self._with_reactions(f"{prefix} {message.sender_label}: {message.content.strip()}", message.reactions)
 
-    def _format_message_time(self, message: NormalizedMessage, *, timezone_name: str | None) -> str:
+    def _format_message_time(self, message: TurnMessage, *, timezone_name: str | None) -> str:
         if not timezone_name:
             return ""
         dt = self._message_datetime(message)
@@ -70,7 +50,7 @@ class PromptBuilder:
             tz = timezone.utc
         return dt.astimezone(tz).isoformat(timespec="seconds")
 
-    def _message_datetime(self, message: NormalizedMessage) -> datetime | None:
+    def _message_datetime(self, message: TurnMessage) -> datetime | None:
         if message.timestamp is not None:
             try:
                 return datetime.fromtimestamp(int(message.timestamp), timezone.utc)
