@@ -29,7 +29,7 @@ from .schedules import ScheduleStore, utc_now, zoneinfo_for
 from .skills import SkillStore
 from .storage import SessionMetadata, WorkspaceStorage
 from .telemetry import TurnTelemetry
-from .turn_context import TurnContext
+from .turn_context import RenderContext, TurnContext, WorkflowDeltas
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
 from .workspace import (
@@ -565,19 +565,20 @@ class AgentLoop:
                 pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
                 posted_bot_update_context = self._posted_bot_update_context(pending_posted_bot_updates)
                 memory_context, memory_hash, memory_hash_changed = self._memory_context_for_prompt(key, metadata)
-                shared_context = self._join_acknowledgements([memory_context, posted_bot_update_context])
                 memory_prompt = self.prompt_builder.build(
                     TurnContext.from_messages(
                         messages,
-                        runtime_context=shared_context,
+                        deltas=WorkflowDeltas(scoped_memory=memory_context),
                     ),
+                    role="memory",
                     template_file=MEMORY_WORKER_USER_PROMPT_FILE,
                 )
                 skill_prompt = self.prompt_builder.build(
                     TurnContext.from_messages(
                         messages,
-                        runtime_context=shared_context,
+                        deltas=WorkflowDeltas(skill_availability=self._skill_inventory_context()),
                     ),
+                    role="skill",
                     template_file=SKILL_WORKER_USER_PROMPT_FILE,
                 )
 
@@ -649,20 +650,18 @@ class AgentLoop:
                 )
 
             with telemetry.phase("build_schedule_prompt"):
-                schedule_context = self._join_acknowledgements(
-                    [
-                        self._schedule_context_for_prompt(),
-                        self._current_schedules_context(first),
-                        self._mentionable_participants_context(key),
-                        self._skill_availability_context(skill_applied),
-                        shared_context,
-                    ]
-                )
                 schedule_prompt = self.prompt_builder.build(
                     TurnContext.from_messages(
                         messages,
-                        runtime_context=schedule_context,
+                        deltas=WorkflowDeltas(
+                            scheduling_context=self._schedule_context_for_prompt(),
+                            current_schedules=self._current_schedules_context(first),
+                            mentionable_participants=self._mentionable_participants_context(key),
+                            skill_availability=self._skill_inventory_context(),
+                            same_turn_skill_changes=self._skill_changes_context(skill_applied),
+                        ),
                     ),
+                    role="schedule",
                     template_file=SCHEDULE_WORKER_USER_PROMPT_FILE,
                 )
                 schedule_spec = CodexWorkerSpec(
@@ -701,18 +700,17 @@ class AgentLoop:
                 acknowledgement = self._join_acknowledgements(
                     [skill_acknowledgement, schedule_acknowledgement, memory_acknowledgement]
                 )
-                reply_context = self._join_acknowledgements(
-                    [
-                        shared_context,
-                        self._applied_changes_context(acknowledgement),
-                    ]
-                )
                 reply_prompt = self.prompt_builder.build(
                     TurnContext.from_messages(
                         messages,
-                        runtime_context=reply_context,
-                        message_timezone=self.config.schedule_timezone,
+                        deltas=WorkflowDeltas(
+                            scoped_memory=memory_context,
+                            posted_bot_updates=posted_bot_update_context,
+                            applied_changes=self._applied_changes_context(acknowledgement),
+                        ),
+                        render=RenderContext(message_timezone=self.config.schedule_timezone),
                     ),
+                    role="reply",
                     template_file=REPLY_TURN_USER_PROMPT_FILE,
                 )
             reply_phase = None
@@ -940,9 +938,16 @@ class AgentLoop:
                 "delivery": f"original Zulip {origin_message.conversation_type}",
                 "task": str(job.get("prompt") or "").strip(),
                 "mention_targets": self._scheduled_mention_context(job),
-                "skill_context": skill_context.strip(),
-                "skill_errors": "\n".join(f"- {error}" for error in skill_errors),
-                "memory_context": memory_context,
+                "loaded_skills_section": self.prompt_builder.render_section("Loaded Skills", skill_context),
+                "skill_errors_section": self.prompt_builder.render_section(
+                    "Skill Loading Problems",
+                    "\n".join(f"- {error}" for error in skill_errors),
+                ),
+                "memory_context_section": self.prompt_builder.render_section(
+                    "Scoped Memory",
+                    memory_context,
+                    intro="Remembered background for the origin Zulip conversation.",
+                ),
             },
         )
 
@@ -1152,7 +1157,7 @@ class AgentLoop:
             return "all channel members"
         return ""
 
-    def _skill_availability_context(self, skill_applied: list[dict[str, Any]]) -> str:
+    def _skill_inventory_context(self) -> str:
         sections = [
             "# Skill Availability",
         ]
@@ -1169,9 +1174,12 @@ class AgentLoop:
         else:
             sections.extend(["", "## Available Skills", "- None"])
 
-        sections.extend(["", "## Skill Changes This Turn"])
+        return "\n".join(sections).rstrip()
+
+    def _skill_changes_context(self, skill_applied: list[dict[str, Any]]) -> str:
         if not skill_applied:
-            sections.append("- None")
+            return ""
+        sections = ["# Skill Changes This Turn", ""]
         for result in skill_applied:
             status = str(result.get("status") or "unknown")
             action = str(result.get("action") or "unknown")

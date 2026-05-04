@@ -413,10 +413,22 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert "Skill Availability" in schedule_prompt
         assert "`weekly-digest`: Use for weekly digests." in schedule_prompt
         assert "Summarize the topic concisely." not in schedule_prompt
+        assert "# Skill Changes This Turn" in schedule_prompt
+        assert "- applied create `weekly-digest`" in schedule_prompt
+        assert "# Applied Changes This Turn" not in schedule_prompt
+        memory_prompt = bot.codex.worker_prompts["memory"]
+        assert "# Scheduling Context" not in memory_prompt
+        assert "# Skill Availability" not in memory_prompt
+        skill_prompt = bot.codex.worker_prompts["skill"]
+        assert "# Skill Availability" in skill_prompt
+        assert "# Scheduling Context" not in skill_prompt
+        assert "# Applied Changes This Turn" not in skill_prompt
         reply_prompt = bot.codex.prompts[0]
         assert "# Applied Changes This Turn" in reply_prompt
         assert "Skill saved: weekly-digest" in reply_prompt
         assert "**Schedule created**" in reply_prompt
+        assert "# Current Scheduled Tasks Here" not in reply_prompt
+        assert "# Skill Availability" not in reply_prompt
 
     asyncio.run(scenario())
 
@@ -1049,6 +1061,9 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
         assert "# Persisted Mention Targets" in codex.prompts[0]
         assert "mention=@**Zhuohang Bian**" in codex.prompts[0]
         assert "mention=@**Feiyang Liu**" in codex.prompts[0]
+        assert "# Loaded Skills" not in codex.prompts[0]
+        assert "# Skill Loading Problems" not in codex.prompts[0]
+        assert "# Scoped Memory" not in codex.prompts[0]
 
     asyncio.run(scenario())
 

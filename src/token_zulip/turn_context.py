@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .models import NormalizedMessage
@@ -15,9 +15,6 @@ class TurnMessage:
     timestamp: int | None
     received_at: str
     reactions: list[dict[str, Any]]
-    conversation_type: str
-    reply_required: bool
-    directly_addressed: bool
 
     @classmethod
     def from_message(cls, message: NormalizedMessage) -> TurnMessage:
@@ -29,9 +26,6 @@ class TurnMessage:
             timestamp=message.timestamp,
             received_at=message.received_at,
             reactions=message.reactions,
-            conversation_type=message.conversation_type,
-            reply_required=message.reply_required,
-            directly_addressed=message.directly_addressed,
         )
 
     @property
@@ -41,48 +35,78 @@ class TurnMessage:
 
 @dataclass(frozen=True)
 class ConversationContext:
-    conversation_type: str = "stream"
+    kind: str = "stream"
     stream_id: int | None = None
     stream: str = ""
     topic: str = ""
     topic_hash: str = ""
     private_recipient_key: str | None = None
-    reply_required: bool = False
-    directly_addressed: bool = False
 
     @classmethod
     def from_messages(cls, messages: Sequence[NormalizedMessage]) -> ConversationContext:
         first = messages[0] if messages else None
         return cls(
-            conversation_type=first.conversation_type if first else "stream",
+            kind=first.conversation_type if first else "stream",
             stream_id=first.stream_id if first else None,
             stream=first.stream if first else "",
             topic=first.topic if first else "",
             topic_hash=first.topic_hash if first else "",
             private_recipient_key=first.private_recipient_key if first else None,
-            reply_required=any(message.reply_required for message in messages),
-            directly_addressed=any(message.directly_addressed for message in messages),
         )
+
+
+@dataclass(frozen=True)
+class WorkflowDeltas:
+    scoped_memory: str = ""
+    posted_bot_updates: str = ""
+    scheduling_context: str = ""
+    current_schedules: str = ""
+    mentionable_participants: str = ""
+    skill_availability: str = ""
+    same_turn_skill_changes: str = ""
+    applied_changes: str = ""
+
+    def sections_for_role(self, role: str) -> list[str]:
+        if role == "memory":
+            return [self.scoped_memory]
+        if role == "skill":
+            return [self.skill_availability]
+        if role == "schedule":
+            return [
+                self.scheduling_context,
+                self.current_schedules,
+                self.mentionable_participants,
+                self.skill_availability,
+                self.same_turn_skill_changes,
+            ]
+        if role == "reply":
+            return [self.scoped_memory, self.posted_bot_updates, self.applied_changes]
+        raise ValueError(f"unknown prompt role: {role}")
+
+
+@dataclass(frozen=True)
+class RenderContext:
+    message_timezone: str | None = None
 
 
 @dataclass(frozen=True)
 class TurnContext:
     messages: list[TurnMessage]
     conversation: ConversationContext
-    runtime_context: str = ""
-    message_timezone: str | None = None
+    deltas: WorkflowDeltas = field(default_factory=WorkflowDeltas)
+    render: RenderContext = field(default_factory=RenderContext)
 
     @classmethod
     def from_messages(
         cls,
         messages: Sequence[NormalizedMessage],
         *,
-        runtime_context: str = "",
-        message_timezone: str | None = None,
+        deltas: WorkflowDeltas | None = None,
+        render: RenderContext | None = None,
     ) -> TurnContext:
         return cls(
             messages=[TurnMessage.from_message(message) for message in messages],
             conversation=ConversationContext.from_messages(messages),
-            runtime_context=runtime_context,
-            message_timezone=message_timezone,
+            deltas=deltas or WorkflowDeltas(),
+            render=render or RenderContext(),
         )

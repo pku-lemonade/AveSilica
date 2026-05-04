@@ -15,19 +15,11 @@ $task
 
 $mention_targets
 
-# Loaded Skills
+$loaded_skills_section
 
-$skill_context
+$skill_errors_section
 
-# Skill Loading Problems
-
-$skill_errors
-
-# Scoped Memory
-
-Remembered background for the origin Zulip conversation.
-
-$memory_context
+$memory_context_section
 
 # Output Rules
 

@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 from token_zulip.models import NormalizedMessage
-from token_zulip.turn_context import TurnContext
+from token_zulip.turn_context import RenderContext, TurnContext, WorkflowDeltas
 
 
 def _message(
     message_id: int,
     *,
     content: str = "hello",
-    reply_required: bool = False,
-    directly_addressed: bool = False,
 ) -> NormalizedMessage:
     return NormalizedMessage(
         realm_id="realm",
@@ -26,35 +24,39 @@ def _message(
         timestamp=1_767_225_600 + message_id,
         received_at="2026-01-01T00:00:00+00:00",
         raw={},
-        reply_required=reply_required,
-        directly_addressed=directly_addressed,
     )
 
 
-def test_turn_context_from_messages_preserves_message_and_runtime_fields() -> None:
+def test_turn_context_from_messages_preserves_message_conversation_and_render_fields() -> None:
     turn = TurnContext.from_messages(
         [_message(1, content="first"), _message(2, content="second")],
-        runtime_context="# Existing Context\nbody",
-        message_timezone="Asia/Shanghai",
+        deltas=WorkflowDeltas(scoped_memory="# Scoped Memory\n\nbody"),
+        render=RenderContext(message_timezone="Asia/Shanghai"),
     )
 
-    assert turn.runtime_context == "# Existing Context\nbody"
-    assert turn.message_timezone == "Asia/Shanghai"
+    assert turn.deltas.scoped_memory == "# Scoped Memory\n\nbody"
+    assert turn.render.message_timezone == "Asia/Shanghai"
     assert turn.messages[0].message_id == 1
     assert turn.messages[0].sender_label == "User 1"
     assert turn.messages[1].content == "second"
-    assert turn.conversation.conversation_type == "stream"
+    assert turn.conversation.kind == "stream"
     assert turn.conversation.stream == "Engineering"
     assert turn.conversation.topic == "Launch"
 
 
-def test_turn_context_aggregates_reply_flags_across_messages() -> None:
-    turn = TurnContext.from_messages(
-        [
-            _message(1, reply_required=False, directly_addressed=False),
-            _message(2, reply_required=True, directly_addressed=True),
-        ]
+def test_workflow_deltas_select_concise_role_sections() -> None:
+    deltas = WorkflowDeltas(
+        scoped_memory="memory",
+        posted_bot_updates="posted",
+        scheduling_context="time",
+        current_schedules="jobs",
+        mentionable_participants="people",
+        skill_availability="skills",
+        same_turn_skill_changes="skill changes",
+        applied_changes="applied",
     )
 
-    assert turn.conversation.reply_required is True
-    assert turn.conversation.directly_addressed is True
+    assert deltas.sections_for_role("memory") == ["memory"]
+    assert deltas.sections_for_role("skill") == ["skills"]
+    assert deltas.sections_for_role("schedule") == ["time", "jobs", "people", "skills", "skill changes"]
+    assert deltas.sections_for_role("reply") == ["memory", "posted", "applied"]

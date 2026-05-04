@@ -13,16 +13,13 @@ class PromptBuilder:
     def __init__(self, root: Path) -> None:
         self.root = root.expanduser().resolve()
 
-    def build(self, turn: TurnContext, *, template_file: str = REPLY_TURN_USER_PROMPT_FILE) -> str:
+    def build(self, turn: TurnContext, *, role: str, template_file: str = REPLY_TURN_USER_PROMPT_FILE) -> str:
         current = "\n".join(
-            self._format_message(message, timezone_name=turn.message_timezone) for message in turn.messages
+            self._format_message(message, timezone_name=turn.render.message_timezone) for message in turn.messages
         )
         template = Template(self._template_text(template_file))
         return template.safe_substitute(
-            conversation_type=turn.conversation.conversation_type,
-            reply_required=str(turn.conversation.reply_required).lower(),
-            directly_addressed=str(turn.conversation.directly_addressed).lower(),
-            injected_context=turn.runtime_context.strip(),
+            workflow_context=self.render_sections(turn.deltas.sections_for_role(role)),
             current_messages=current,
         ).rstrip() + "\n"
 
@@ -30,6 +27,19 @@ class PromptBuilder:
         template = Template(self._template_text(template_file))
         substitutions = {key: str(value).strip() for key, value in values.items()}
         return template.safe_substitute(substitutions).rstrip() + "\n"
+
+    def render_sections(self, sections: list[str]) -> str:
+        return "\n\n".join(section.strip() for section in sections if section.strip())
+
+    def render_section(self, title: str, content: str, *, intro: str = "") -> str:
+        body = content.strip()
+        if not body:
+            return ""
+        parts = [f"# {title}", ""]
+        if intro.strip():
+            parts.extend([intro.strip(), ""])
+        parts.append(body)
+        return "\n".join(parts)
 
     def _format_message(self, message: TurnMessage, *, timezone_name: str | None = None) -> str:
         timestamp = self._format_message_time(message, timezone_name=timezone_name)

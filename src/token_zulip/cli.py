@@ -14,7 +14,7 @@ from .instructions import InstructionLoader
 from .loop import AgentLoop
 from .memory import MemoryStore
 from .prompt import PromptBuilder
-from .turn_context import TurnContext
+from .turn_context import RenderContext, TurnContext
 from .storage import WorkspaceStorage
 from .typing_status import NoOpTypingNotifier, TypingStatusManager
 from .workspace import DECISION_SCHEMA_FILE, initialize_workspace
@@ -159,8 +159,9 @@ def _render_prompt(args: argparse.Namespace) -> int:
     prompt = PromptBuilder(config.workspace_dir).build(
         TurnContext.from_messages(
             [message],
-            message_timezone=config.schedule_timezone,
-        )
+            render=RenderContext(message_timezone=config.schedule_timezone),
+        ),
+        role="reply",
     )
     print(prompt)
     return 0

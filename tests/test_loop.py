@@ -1132,6 +1132,10 @@ def test_reply_prompt_uses_per_message_local_time_and_omits_control_metadata(tmp
         assert "- Type:" not in codex.prompt
         assert "- Reply required:" not in codex.prompt
         assert "- Directly addressed:" not in codex.prompt
+        for worker_prompt in codex.worker_prompts.values():
+            assert "- Type:" not in worker_prompt
+            assert "- Reply required:" not in worker_prompt
+            assert "- Directly addressed:" not in worker_prompt
         assert "# Posted Bot Updates" not in codex.prompt
         assert "# Applied Changes This Turn" not in codex.prompt
         assert "# Scoped Memory" not in codex.prompt
@@ -1415,8 +1419,8 @@ def test_posted_bot_update_is_injected_once_on_next_turn(tmp_path):
 
         assert "Posted Bot Updates" in codex.prompts[1]
         assert "Reply 1" in codex.prompts[1]
-        assert "Reply 1" in codex.worker_prompts["memory"]
-        assert "Reply 1" in codex.worker_prompts["schedule"]
+        assert "Reply 1" not in codex.worker_prompts["memory"]
+        assert "Reply 1" not in codex.worker_prompts["schedule"]
         remaining = storage.read_pending_posted_bot_updates(first.session_key)
         assert len(remaining) == 1
         assert remaining[0]["content"] == "Reply 2"
