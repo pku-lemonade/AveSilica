@@ -94,10 +94,11 @@ podman run --rm --network host --env-file .env --volume "$PWD:/runtime" --volume
 Dry-run the container:
 
 ```bash
-podman run --rm --network host --env-file .env --volume "$PWD:/runtime" --volume "$HOME/.codex:/root/.codex" localhost/token-zulip:latest run --dry-run
+podman run --rm --init --network host --env-file .env --volume "$PWD:/runtime" --volume "$HOME/.codex:/root/.codex" localhost/token-zulip:latest run --dry-run
 ```
 
 Run live by removing `--dry-run`.
+Use `--init` for long-running `run` containers and systemd services. Without it, `token-zulip` is PID 1 in the container; Linux ignores default-handled SIGTERM for PID 1, so `podman stop` waits for its timeout and then reports a SIGKILL fallback.
 
 By default, the example `.env` sets `TOKENZULIP_CODEX_SANDBOX=danger-full-access`, `TOKENZULIP_CODEX_APPROVAL_POLICY=never`, and `TOKENZULIP_CODEX_REASONING_EFFORT=medium`. That is the low-friction Codex mode; the container and mounted paths are the boundary.
 
@@ -122,6 +123,8 @@ systemctl --user status token-zulip.service
 journalctl --user -u token-zulip.service -f
 systemctl --user restart token-zulip.service
 ```
+
+If an installed user unit predates this README, check that its `ExecStart` contains `podman run --init` and that it uses `KillMode=mixed`, not `KillMode=none`. After changing the unit, run `systemctl --user daemon-reload` before restarting the service.
 
 For auto-start after reboot without an interactive login, enable lingering once: `sudo loginctl enable-linger "$USER"`.
 

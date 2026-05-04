@@ -21,7 +21,10 @@ def test_env_example_has_codex_yolo_proxy_and_mount_settings():
 def test_systemd_example_mounts_runtime_and_codex_with_host_network():
     text = (ROOT / "examples" / "systemd" / "token-zulip.service").read_text(encoding="utf-8")
 
+    assert "--init" in text
     assert "--network host" in text
     assert "--volume /opt/token-zulip:/runtime" in text
     assert "--volume %h/.codex:/root/.codex" in text
+    assert "KillMode=mixed" in text
+    assert "KillMode=none" not in text
     assert "WantedBy=default.target" in text
