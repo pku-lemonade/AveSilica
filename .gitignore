@@ -6,6 +6,7 @@ __pycache__/
 third_party/
 workspace/records/
 workspace/schedules/
+workspace/skills/
 workspace/memory/private/
 workspace/memory/private-*/
 workspace/memory/stream-*/
