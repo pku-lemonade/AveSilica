@@ -24,6 +24,9 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("TOKENZULIP_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.delenv("TOKENZULIP_RECENT_MESSAGES", raising=False)
     monkeypatch.delenv("TOKENZULIP_SCHEDULE_DEFAULT_TIME", raising=False)
+    monkeypatch.delenv("TOKENZULIP_TRACE_RETENTION_DAYS", raising=False)
+    monkeypatch.delenv("TOKENZULIP_TRACE_AUTO_CLEANUP", raising=False)
+    monkeypatch.delenv("TOKENZULIP_TRACE_CLEANUP_INTERVAL_HOURS", raising=False)
 
     config = BotConfig.from_env()
 
@@ -37,6 +40,9 @@ def test_default_workspace_is_workspace(tmp_path, monkeypatch):
     assert config.upload_max_bytes == 25_000_000
     assert config.max_recent_messages == 100
     assert config.schedule_default_time == "09:00"
+    assert config.trace_retention_days == 30
+    assert config.trace_auto_cleanup is False
+    assert config.trace_cleanup_interval_hours == 24.0
 
 
 def test_listen_all_public_streams_can_be_disabled(monkeypatch):
@@ -60,6 +66,18 @@ def test_schedule_default_time_env_requires_hh_mm(monkeypatch):
 
     with pytest.raises(ValueError, match="TOKENZULIP_SCHEDULE_DEFAULT_TIME must be HH:MM"):
         BotConfig.from_env()
+
+
+def test_trace_cleanup_env(monkeypatch):
+    monkeypatch.setenv("TOKENZULIP_TRACE_RETENTION_DAYS", "7")
+    monkeypatch.setenv("TOKENZULIP_TRACE_AUTO_CLEANUP", "true")
+    monkeypatch.setenv("TOKENZULIP_TRACE_CLEANUP_INTERVAL_HOURS", "6")
+
+    config = BotConfig.from_env()
+
+    assert config.trace_retention_days == 7
+    assert config.trace_auto_cleanup is True
+    assert config.trace_cleanup_interval_hours == 6.0
 
 
 def test_cli_init_creates_workspace_layout(tmp_path):

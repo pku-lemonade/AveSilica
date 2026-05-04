@@ -987,6 +987,22 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
             .read_text(encoding="utf-8")
             .splitlines()
         ]
+        assert run_records[-1]["trace_id"]
+        trace_manifest = (
+            tmp_path
+            / "records"
+            / "scheduled"
+            / created["job_id"]
+            / "traces"
+            / run_records[-1]["trace_id"]
+            / "manifest.json"
+        )
+        assert trace_manifest.exists()
+        trace = json.loads(trace_manifest.read_text(encoding="utf-8"))
+        assert trace["roles"][0]["role"] == "scheduled_job"
+        assert "Scheduled Job Policy" in (
+            trace_manifest.parent / "scheduled_job" / "developer.md"
+        ).read_text(encoding="utf-8")
         timing = run_records[-1]["timing"]
         assert timing["telemetry_id"]
         assert timing["breakdown"]["by_phase_ms"]["build_prompt"] >= 0
@@ -1010,6 +1026,76 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         assert call_record["source"] == "scheduled_job"
         assert call_record["job_id"] == created["job_id"]
         assert call_record["tokens"]["last"]["reasoning_output_tokens"] == 3
+
+    asyncio.run(scenario())
+
+
+def test_failed_scheduled_job_keeps_prompt_trace(tmp_path):
+    class InvalidJsonCodex(PayloadCodex):
+        def __init__(self) -> None:
+            super().__init__({})
+
+        async def run_decision(
+            self,
+            prompt: str,
+            thread_id: str | None,
+            *,
+            developer_instructions: str | None = None,
+            output_schema_path: Path | None = None,
+        ) -> CodexRunResult:
+            self.prompts.append(prompt)
+            self.thread_ids.append(thread_id)
+            self.developer_instructions.append(developer_instructions)
+            return CodexRunResult(
+                raw_text="{not json",
+                thread_id="thread-bad",
+                stats=_codex_stats("run_decision", "thread-bad"),
+            )
+
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+        created = schedules.create_job(
+            _message(1),
+            ScheduleOperation(
+                action="create",
+                name="Broken job",
+                prompt="Post a broken response.",
+                schedule="2030-01-02T09:00:00",
+            ),
+        )
+        schedules.trigger_job(_message(1), ScheduleOperation(action="run_now", job_id=created["job_id"]))
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=InvalidJsonCodex(),
+            zulip=FakePoster(),
+            schedules=schedules,
+        )
+
+        assert await bot.run_schedules_once() == 1
+
+        run_records = [
+            json.loads(line)
+            for line in (tmp_path / "records" / "scheduled" / created["job_id"] / "runs.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert run_records[-1]["status"] == "error"
+        trace_manifest = (
+            tmp_path
+            / "records"
+            / "scheduled"
+            / created["job_id"]
+            / "traces"
+            / run_records[-1]["trace_id"]
+            / "manifest.json"
+        )
+        trace = json.loads(trace_manifest.read_text(encoding="utf-8"))
+        assert trace["roles"][0]["status"] == "error"
+        assert (trace_manifest.parent / "scheduled_job" / "output.txt").read_text(encoding="utf-8") == "{not json"
 
     asyncio.run(scenario())
 

@@ -527,6 +527,8 @@ class AgentLoop:
             return
 
         telemetry = TurnTelemetry(source="conversation_turn")
+        trace_id = telemetry.telemetry_id
+        trace_roles: list[dict[str, Any]] = []
         first = messages[0]
         metadata = self.storage.load_metadata(key)
         async with AsyncExitStack() as stack:
@@ -616,10 +618,11 @@ class AgentLoop:
                     },
                 )
                 self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
+                reply_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
                 with telemetry.phase("ensure_reply_session_restarted") as parent_phase:
                     parent_result = await self.codex.ensure_thread(
                         None,
-                        developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
+                        developer_instructions=reply_developer_instructions,
                     )
             telemetry.add_codex_result(parent_result, role="reply_session", phase=parent_phase)
             parent_thread_id = parent_result.thread_id
@@ -648,6 +651,23 @@ class AgentLoop:
                     messages,
                     worker_results.get("skill"),
                 )
+                for spec in worker_specs:
+                    result = worker_results.get(spec.kind)
+                    decision = memory_decision if spec.kind == "memory" else skill_decision
+                    trace_roles.append(
+                        self._trace_role(
+                            spec.kind,
+                            prompt=spec.prompt,
+                            developer_instructions=spec.developer_instructions,
+                            output_schema_path=spec.output_schema_path,
+                            result=result,
+                            decision=decision,
+                            parent_thread_id=parent_thread_id,
+                            worker_mode="fork",
+                            status="ok" if result is not None else "error",
+                            error=None if result is not None else "worker did not return a result",
+                        )
+                    )
 
             with telemetry.phase("build_schedule_prompt"):
                 schedule_prompt = self.prompt_builder.build(
@@ -692,6 +712,20 @@ class AgentLoop:
                     messages,
                     schedule_result,
                 )
+                trace_roles.append(
+                    self._trace_role(
+                        "schedule",
+                        prompt=schedule_spec.prompt,
+                        developer_instructions=schedule_spec.developer_instructions,
+                        output_schema_path=schedule_spec.output_schema_path,
+                        result=schedule_result,
+                        decision=schedule_decision,
+                        parent_thread_id=parent_thread_id,
+                        worker_mode="fork",
+                        status="ok" if schedule_result is not None else "error",
+                        error=None if schedule_result is not None else "worker did not return a result",
+                    )
+                )
 
             with telemetry.phase("build_reply_prompt"):
                 memory_acknowledgement = self._memory_acknowledgement(memory_applied)
@@ -714,6 +748,7 @@ class AgentLoop:
                     template_file=REPLY_TURN_USER_PROMPT_FILE,
                 )
             reply_phase = None
+            reply_trace_developer_instructions = reply_developer_instructions or ""
             try:
                 with telemetry.phase("reply_decision") as reply_phase:
                     reply_result = await self.codex.run_decision(
@@ -735,11 +770,12 @@ class AgentLoop:
                     },
                 )
                 self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
+                reply_trace_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
                 with telemetry.phase("reply_decision_restarted") as reply_phase:
                     reply_result = await self.codex.run_decision(
                         reply_prompt,
                         None,
-                        developer_instructions=self.instructions.compose(role="reply", **instruction_kwargs),
+                        developer_instructions=reply_trace_developer_instructions,
                         output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
                     )
             telemetry.add_codex_result(reply_result, role="reply", phase=reply_phase)
@@ -752,6 +788,18 @@ class AgentLoop:
 
             with telemetry.phase("apply_reply_decision"):
                 reply_decision = ReplyDecision.from_json_text(reply_result.raw_text)
+                trace_roles.append(
+                    self._trace_role(
+                        "reply",
+                        prompt=reply_prompt,
+                        developer_instructions=reply_trace_developer_instructions,
+                        output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                        result=reply_result,
+                        decision=reply_decision,
+                        parent_thread_id=parent_thread_id,
+                        worker_mode="persistent",
+                    )
+                )
                 if memory_hash_changed:
                     self.storage.set_last_injected_memory_hash(key, memory_hash)
 
@@ -801,6 +849,16 @@ class AgentLoop:
                 memory_acknowledgement=memory_acknowledgement,
                 skill_acknowledgement=skill_acknowledgement,
                 schedule_acknowledgement=schedule_acknowledgement,
+                trace_id=trace_id,
+                timing=timing,
+            )
+            self._log_trace(
+                key,
+                trace_id,
+                source="conversation_turn",
+                roles=trace_roles,
+                message_ids=[message.message_id for message in messages],
+                parent_thread_id=parent_thread_id,
                 timing=timing,
             )
             self.storage.consume_posted_bot_updates(key, pending_posted_bot_updates)
@@ -811,6 +869,7 @@ class AgentLoop:
         origin_message = self.schedules.message_for_job(job)
         key = origin_message.session_key
         telemetry = TurnTelemetry(source="scheduled_job")
+        trace_id = telemetry.telemetry_id
         developer_instructions = self.instructions.compose(
             role="scheduled_job",
             stream=origin_message.stream,
@@ -826,6 +885,9 @@ class AgentLoop:
         memory_acknowledgement = ""
         schedule_ignored: list[dict[str, Any]] = []
         skill_ignored: list[dict[str, Any]] = []
+        trace_roles: list[dict[str, Any]] = []
+        prompt = ""
+        codex_result: CodexRunResult | None = None
         try:
             with telemetry.phase("build_prompt"):
                 prompt = self._scheduled_prompt(job, origin_message)
@@ -840,9 +902,30 @@ class AgentLoop:
                     timeout=self.config.schedule_run_timeout_seconds,
                 )
             telemetry.add_codex_result(codex_result, role="scheduled_job", phase=codex_phase)
+            trace_roles.append(
+                self._trace_role(
+                    "scheduled_job",
+                    prompt=prompt,
+                    developer_instructions=developer_instructions,
+                    output_schema_path=self.config.workspace_dir / SCHEDULED_JOB_DECISION_SCHEMA_FILE,
+                    result=codex_result,
+                    decision={},
+                    worker_mode="fresh",
+                    status="captured",
+                )
+            )
 
             with telemetry.phase("apply_result"):
                 decision = AgentDecision.from_json_text(codex_result.raw_text)
+                trace_roles[-1] = self._trace_role(
+                    "scheduled_job",
+                    prompt=prompt,
+                    developer_instructions=developer_instructions,
+                    output_schema_path=self.config.workspace_dir / SCHEDULED_JOB_DECISION_SCHEMA_FILE,
+                    result=codex_result,
+                    decision=decision,
+                    worker_mode="fresh",
+                )
                 if decision.schedule_ops:
                     schedule_ignored = [op.to_record() for op in decision.schedule_ops]
                 if decision.skill_ops:
@@ -875,10 +958,19 @@ class AgentLoop:
                     )
 
             timing = telemetry.finish()
+            self._log_trace(
+                key,
+                trace_id,
+                source="scheduled_job",
+                roles=trace_roles,
+                job_id=job_id,
+                timing=timing,
+            )
             self.schedules.log_run(
                 job_id,
                 {
                     "status": "ok" if outbound_message or not should_deliver else "empty",
+                    "trace_id": trace_id,
                     "decision": decision.to_record(),
                     "post": post,
                     "memory_applied": memory_applied,
@@ -903,10 +995,36 @@ class AgentLoop:
             LOGGER.exception("Scheduled job %s failed", job_id)
             error = repr(exc)
             timing = telemetry.finish(status="error")
+            if trace_roles:
+                trace_roles[-1]["status"] = "error"
+                trace_roles[-1]["error"] = error
+            elif prompt:
+                trace_roles.append(
+                    self._trace_role(
+                        "scheduled_job",
+                        prompt=prompt,
+                        developer_instructions=developer_instructions,
+                        output_schema_path=self.config.workspace_dir / SCHEDULED_JOB_DECISION_SCHEMA_FILE,
+                        result=codex_result,
+                        decision={},
+                        worker_mode="fresh",
+                        status="error",
+                        error=error,
+                    )
+                )
+            self._log_trace(
+                key,
+                trace_id,
+                source="scheduled_job",
+                roles=trace_roles,
+                job_id=job_id,
+                timing=timing,
+            )
             self.schedules.log_run(
                 job_id,
                 {
                     "status": "error",
+                    "trace_id": trace_id,
                     "error": error,
                     "post": post,
                     "memory_applied": memory_applied,
@@ -1189,6 +1307,79 @@ class AgentLoop:
             detail = f": {reason}" if reason else ""
             sections.append(f"- {status} {action}{target}{detail}")
         return "\n".join(sections).rstrip()
+
+    def _trace_role(
+        self,
+        role: str,
+        *,
+        prompt: str,
+        developer_instructions: str,
+        output_schema_path: object,
+        result: CodexRunResult | None,
+        decision: object,
+        parent_thread_id: str | None = None,
+        worker_mode: str = "",
+        status: str = "ok",
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "role": role,
+            "prompt": prompt,
+            "developer_instructions": developer_instructions,
+            "developer_instructions_sent": bool(developer_instructions.strip()),
+            "output_schema_path": output_schema_path,
+            "raw_output": result.raw_text if result is not None else "",
+            "decision": self._trace_decision(decision),
+            "thread_id": result.thread_id if result is not None else None,
+            "parent_thread_id": parent_thread_id,
+            "worker_mode": worker_mode,
+            "status": status,
+            "error": error,
+            "stats": result.stats if result is not None else None,
+        }
+
+    def _trace_decision(self, decision: object) -> dict[str, Any]:
+        raw = getattr(decision, "raw", None)
+        if isinstance(raw, dict) and raw:
+            return raw
+        if isinstance(decision, AgentDecision):
+            return decision.to_record()
+        if isinstance(decision, ReplyDecision):
+            return decision.to_record()
+        if isinstance(decision, MemoryDecision):
+            return {"memory_ops": [item.to_record() for item in decision.memory_ops]}
+        if isinstance(decision, SkillDecision):
+            return {"skill_ops": [item.to_record() for item in decision.skill_ops]}
+        if isinstance(decision, ScheduleDecision):
+            return {"schedule_ops": [item.to_record() for item in decision.schedule_ops]}
+        return {}
+
+    def _log_trace(
+        self,
+        key: SessionKey,
+        trace_id: str,
+        *,
+        source: str,
+        roles: list[dict[str, Any]],
+        message_ids: list[int] | None = None,
+        job_id: str | None = None,
+        parent_thread_id: str | None = None,
+        timing: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            self.storage.log_trace(
+                key,
+                trace_id,
+                source=source,
+                roles=roles,
+                message_ids=message_ids,
+                job_id=job_id,
+                model=self.config.codex_model,
+                parent_thread_id=parent_thread_id,
+                timing=timing,
+            )
+        except Exception:
+            LOGGER.exception("Unable to write prompt trace %s", trace_id)
 
     async def _run_op_worker(
         self,

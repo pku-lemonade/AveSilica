@@ -29,6 +29,13 @@ def _int_env(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    result = _int_env(name, default)
+    if result <= 0:
+        raise ValueError(f"{name} must be positive")
+    return result
+
+
 def _float_env(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None:
@@ -97,6 +104,9 @@ class BotConfig:
     schedule_run_timeout_seconds: float = 600.0
     schedule_skill_max_bytes: int = 32_000
     schedule_skill_max_count: int = 4
+    trace_retention_days: int = 30
+    trace_auto_cleanup: bool = False
+    trace_cleanup_interval_hours: float = 24.0
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -130,4 +140,7 @@ class BotConfig:
             schedule_run_timeout_seconds=_float_env("TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS", 600.0),
             schedule_skill_max_bytes=_int_env("TOKENZULIP_SCHEDULE_SKILL_MAX_BYTES", 32_000),
             schedule_skill_max_count=_int_env("TOKENZULIP_SCHEDULE_SKILL_MAX_COUNT", 4),
+            trace_retention_days=_positive_int_env("TOKENZULIP_TRACE_RETENTION_DAYS", 30),
+            trace_auto_cleanup=_bool_env("TOKENZULIP_TRACE_AUTO_CLEANUP", False),
+            trace_cleanup_interval_hours=_float_env("TOKENZULIP_TRACE_CLEANUP_INTERVAL_HOURS", 24.0),
         )

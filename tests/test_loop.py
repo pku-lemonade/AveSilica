@@ -838,6 +838,46 @@ def test_silent_stream_message_starts_and_stops_typing_without_posting(tmp_path)
     asyncio.run(scenario())
 
 
+def test_conversation_turn_writes_prompt_traces(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        storage = WorkspaceStorage(tmp_path)
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            memory=MemoryStore(tmp_path / "memory"),
+            codex=PromptCapturingCodex(),
+            zulip=FakePoster(),
+        )
+        message = _message(1, content="save this as a reusable workflow")
+
+        await bot._handle_message(message)
+
+        session_dir = storage.session_dir(message.session_key)
+        trace_manifests = list((session_dir / "traces").glob("*/manifest.json"))
+        assert len(trace_manifests) == 1
+        manifest = json.loads(trace_manifests[0].read_text(encoding="utf-8"))
+        roles = {item["role"]: item for item in manifest["roles"]}
+        assert set(roles) == {"memory", "skill", "schedule", "reply"}
+
+        trace_dir = trace_manifests[0].parent
+        skill_user = (trace_dir / "skill" / "user.md").read_text(encoding="utf-8")
+        skill_developer = (trace_dir / "skill" / "developer.md").read_text(encoding="utf-8")
+        reply_developer = (trace_dir / "reply" / "developer.md").read_text(encoding="utf-8")
+        turns = [json.loads(line) for line in storage.session_path(message.session_key, "turns.jsonl").read_text(encoding="utf-8").splitlines()]
+
+        assert "# Skill Availability" in skill_user
+        assert "- [1] Alice: save this as a reusable workflow" in skill_user
+        assert "Skill Worker Policy" in skill_developer
+        assert "Codex Thread Contract" in reply_developer
+        assert (trace_dir / "skill" / "schema.json").exists()
+        assert (trace_dir / "skill" / "output.txt").read_text(encoding="utf-8").strip()
+        assert turns[0]["trace_id"] == manifest["trace_id"]
+
+    asyncio.run(scenario())
+
+
 def test_dry_run_does_not_show_typing(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 from token_zulip.memory import MemoryStore
 from token_zulip.models import (
@@ -136,6 +137,63 @@ def test_storage_uses_readable_session_messages_pending_and_turns(tmp_path):
     )
     assert not (tmp_path / "records" / "sessions").exists()
     assert not (tmp_path / "state").exists()
+
+
+def test_trace_sidecars_are_pruneable_without_touching_conversation_history(tmp_path):
+    initialize_workspace(tmp_path)
+    storage = WorkspaceStorage(tmp_path)
+    message = _message(1)
+    key = message.session_key
+    storage.append_message(message)
+    storage.log_turn(
+        key,
+        [message],
+        AgentDecision(False, "silent", ""),
+        post=None,
+        memory_applied=[],
+    )
+
+    manifest = storage.log_trace(
+        key,
+        "trace-1",
+        source="conversation_turn",
+        message_ids=[1],
+        model="gpt-test",
+        parent_thread_id="thread-1",
+        roles=[
+            {
+                "role": "skill",
+                "developer_instructions": "Skill Worker Policy",
+                "prompt": "# Skill Availability\n\n# New Zulip Message(s)\n\n- [1] Alice: message 1",
+                "output_schema_path": tmp_path / "references" / "skill" / "schema.json",
+                "raw_output": '{"skill_ops":[]}',
+                "decision": {"skill_ops": []},
+                "thread_id": "thread-1-skill",
+                "parent_thread_id": "thread-1",
+                "worker_mode": "fork",
+                "status": "ok",
+                "developer_instructions_sent": True,
+            }
+        ],
+    )
+    trace_dir = storage.trace_dir(key, "trace-1")
+    assert manifest["trace_id"] == "trace-1"
+    assert (trace_dir / "skill" / "developer.md").read_text(encoding="utf-8") == "Skill Worker Policy"
+    assert "Skill Availability" in (trace_dir / "skill" / "user.md").read_text(encoding="utf-8")
+    assert (trace_dir / "skill" / "schema.json").exists()
+    assert storage.list_traces()[0]["trace_id"] == "trace-1"
+
+    manifest_path = trace_dir / "manifest.json"
+    old_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    old_manifest["created_at"] = "2000-01-01T00:00:00+00:00"
+    manifest_path.write_text(json.dumps(old_manifest), encoding="utf-8")
+
+    summary = storage.cleanup_traces_older_than(timedelta(days=1))
+
+    assert summary["deleted"] == 1
+    assert not trace_dir.exists()
+    assert storage.session_path(key, "messages.jsonl").exists()
+    assert storage.session_path(key, "turns.jsonl").exists()
 
 
 def test_safe_slug_preserves_unicode_and_useful_punctuation():

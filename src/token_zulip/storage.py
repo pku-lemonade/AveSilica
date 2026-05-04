@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import shutil
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ ENTRY_DELIMITER = "\n§\n"
 POSTED_BOT_UPDATES_FILENAME = "posted_bot_updates.jsonl"
 ZULIP_PERSON_MENTION_RE = re.compile(r"@_?\*\*([^|\n]+?)(?:\|(\d+))?\*\*")
 CODEX_STATS_DIRNAME = "codex_stats"
+TRACES_DIRNAME = "traces"
 
 
 @dataclass
@@ -545,6 +548,7 @@ class WorkspaceStorage:
         memory_acknowledgement: str = "",
         skill_acknowledgement: str = "",
         schedule_acknowledgement: str = "",
+        trace_id: str = "",
         timing: dict[str, Any] | None = None,
     ) -> None:
         message_ids = [message.message_id for message in messages]
@@ -565,6 +569,8 @@ class WorkspaceStorage:
             record["skill_acknowledgement"] = skill_acknowledgement
         if schedule_acknowledgement:
             record["schedule_acknowledgement"] = schedule_acknowledgement
+        if trace_id:
+            record["trace_id"] = trace_id
         if timing:
             record["timing"] = timing
         self._append_jsonl(self.session_path(key, "turns.jsonl"), record)
@@ -638,6 +644,207 @@ class WorkspaceStorage:
             if job_id:
                 record["job_id"] = job_id
             self._append_jsonl(path, record)
+
+    def log_trace(
+        self,
+        key: SessionKey,
+        trace_id: str,
+        *,
+        source: str,
+        roles: list[dict[str, Any]],
+        message_ids: list[int] | None = None,
+        job_id: str | None = None,
+        model: str = "",
+        parent_thread_id: str | None = None,
+        timing: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        trace_dir = self.trace_dir(key, trace_id, job_id=job_id)
+        if trace_dir.exists():
+            shutil.rmtree(trace_dir)
+        trace_dir.mkdir(parents=True, exist_ok=True)
+
+        role_records = [
+            self._write_trace_role(trace_dir, role)
+            for role in roles
+            if str(role.get("role") or "").strip()
+        ]
+        created_at = utc_now_iso()
+        manifest: dict[str, Any] = {
+            "trace_id": trace_id,
+            "created_at": created_at,
+            "source": source,
+            "session_id": key.storage_id,
+            "session_key": key.value,
+            "message_ids": message_ids or [],
+            "job_id": job_id,
+            "model": model,
+            "parent_thread_id": parent_thread_id,
+            "roles": role_records,
+        }
+        if timing:
+            manifest["timing"] = timing
+        self._write_json(trace_dir / "manifest.json", manifest)
+
+        index_record = {
+            "trace_id": trace_id,
+            "created_at": created_at,
+            "source": source,
+            "session_id": key.storage_id,
+            "session_key": key.value,
+            "message_ids": message_ids or [],
+            "job_id": job_id,
+            "model": model,
+            "parent_thread_id": parent_thread_id,
+            "roles": [
+                {
+                    "role": role.get("role"),
+                    "status": role.get("status"),
+                    "thread_id": role.get("thread_id"),
+                    "bytes": role.get("bytes"),
+                }
+                for role in role_records
+            ],
+            "path": self._relative_trace_path(trace_dir),
+        }
+        self._append_jsonl(self._trace_index_path(key, job_id=job_id), index_record)
+        return manifest
+
+    def trace_dir(self, key: SessionKey, trace_id: str, *, job_id: str | None = None) -> Path:
+        base = self._scheduled_record_dir(job_id) if job_id else self.session_dir(key)
+        return base / TRACES_DIRNAME / safe_slug(trace_id)
+
+    def list_traces(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for path in sorted(self.records_dir.glob(f"**/{TRACES_DIRNAME}/index.jsonl")):
+            for record in self._read_jsonl(path):
+                trace_path = self.workspace_dir / str(record.get("path") or "")
+                if trace_path.exists():
+                    records.append(record)
+        records.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        return records[:limit] if limit > 0 else records
+
+    def read_trace_manifest(self, trace_id: str) -> dict[str, Any] | None:
+        slug = safe_slug(trace_id)
+        for path in sorted(self.records_dir.glob(f"**/{TRACES_DIRNAME}/{slug}/manifest.json")):
+            return self._read_json(path)
+        return None
+
+    def cleanup_traces_older_than(self, max_age: timedelta) -> dict[str, Any]:
+        cutoff = datetime.now(timezone.utc) - max_age
+        deleted: list[str] = []
+        for traces_dir in sorted(self.records_dir.glob(f"**/{TRACES_DIRNAME}")):
+            if not traces_dir.is_dir() or traces_dir.name != TRACES_DIRNAME:
+                continue
+            for trace_dir in sorted(path for path in traces_dir.iterdir() if path.is_dir()):
+                created_at = self._trace_created_at(trace_dir)
+                if created_at is None or created_at >= cutoff:
+                    continue
+                rel = self._relative_trace_path(trace_dir)
+                shutil.rmtree(trace_dir)
+                deleted.append(rel)
+            self._rewrite_trace_index(traces_dir)
+        return {
+            "deleted": len(deleted),
+            "deleted_paths": deleted,
+            "cutoff": cutoff.isoformat(),
+        }
+
+    def _write_trace_role(self, trace_dir: Path, role: dict[str, Any]) -> dict[str, Any]:
+        role_name = safe_slug(str(role.get("role") or "unknown"))
+        role_dir = trace_dir / role_name
+        role_dir.mkdir(parents=True, exist_ok=True)
+
+        files: dict[str, str] = {}
+        bytes_record: dict[str, int] = {}
+        for key, filename in [
+            ("developer_instructions", "developer.md"),
+            ("prompt", "user.md"),
+            ("raw_output", "output.txt"),
+        ]:
+            text = str(role.get(key) or "")
+            path = role_dir / filename
+            self._write_text_atomic(path, text)
+            files[filename] = path.relative_to(trace_dir).as_posix()
+            bytes_record[filename] = len(text.encode("utf-8"))
+
+        decision = role.get("decision")
+        if isinstance(decision, dict):
+            path = role_dir / "decision.json"
+            self._write_json(path, decision)
+            files["decision.json"] = path.relative_to(trace_dir).as_posix()
+            bytes_record["decision.json"] = len(json.dumps(decision, ensure_ascii=False).encode("utf-8"))
+
+        schema_record = self._write_trace_schema(role_dir, role.get("output_schema_path"))
+        if schema_record:
+            files["schema.json"] = (role_dir / "schema.json").relative_to(trace_dir).as_posix()
+            bytes_record["schema.json"] = int(schema_record.get("bytes") or 0)
+
+        return {
+            "role": str(role.get("role") or ""),
+            "status": str(role.get("status") or "ok"),
+            "worker_mode": role.get("worker_mode"),
+            "thread_id": role.get("thread_id"),
+            "parent_thread_id": role.get("parent_thread_id"),
+            "developer_instructions_sent": bool(role.get("developer_instructions_sent")),
+            "output_schema": schema_record,
+            "files": files,
+            "bytes": bytes_record,
+            "error": role.get("error"),
+            "stats": role.get("stats"),
+        }
+
+    def _write_trace_schema(self, role_dir: Path, output_schema_path: object) -> dict[str, Any] | None:
+        if not isinstance(output_schema_path, Path):
+            return None
+        path = output_schema_path.expanduser().resolve()
+        if not path.exists():
+            return None
+        data = path.read_bytes()
+        target = role_dir / "schema.json"
+        target.write_bytes(data)
+        return {
+            "path": self._relative_or_absolute(path),
+            "sha256": _sha256(data),
+            "bytes": len(data),
+        }
+
+    def _trace_index_path(self, key: SessionKey, *, job_id: str | None) -> Path:
+        base = self._scheduled_record_dir(job_id) if job_id else self.session_dir(key)
+        return base / TRACES_DIRNAME / "index.jsonl"
+
+    def _scheduled_record_dir(self, job_id: str | None) -> Path:
+        return self.records_dir / "scheduled" / safe_slug(job_id or "unknown")
+
+    def _relative_trace_path(self, path: Path) -> str:
+        return path.relative_to(self.workspace_dir).as_posix()
+
+    def _relative_or_absolute(self, path: Path) -> str:
+        try:
+            return path.relative_to(self.workspace_dir).as_posix()
+        except ValueError:
+            return str(path)
+
+    def _trace_created_at(self, trace_dir: Path) -> datetime | None:
+        manifest = self._read_json(trace_dir / "manifest.json")
+        created_at = str((manifest or {}).get("created_at") or "")
+        try:
+            dt = datetime.fromisoformat(created_at)
+        except ValueError:
+            return datetime.fromtimestamp(trace_dir.stat().st_mtime, timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _rewrite_trace_index(self, traces_dir: Path) -> None:
+        index_path = traces_dir / "index.jsonl"
+        if not index_path.exists():
+            return
+        records = [
+            record
+            for record in self._read_jsonl(index_path)
+            if (self.workspace_dir / str(record.get("path") or "")).exists()
+        ]
+        self._write_jsonl(index_path, records)
 
     def _telemetry_context(self, key: SessionKey, *, source: str) -> dict[str, Any]:
         return {
@@ -1174,3 +1381,7 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()

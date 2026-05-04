@@ -4,7 +4,9 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "render-prompt":
         return _render_prompt(args)
 
+    if args.command == "traces":
+        return _traces(args)
+
     if args.command == "run":
         return asyncio.run(_run(args))
 
@@ -57,6 +62,16 @@ def _parser() -> argparse.ArgumentParser:
 
     render = subparsers.add_parser("render-prompt", help="Render the prompt for one saved Zulip event")
     render.add_argument("event_file", type=Path)
+
+    traces = subparsers.add_parser("traces", help="Inspect or clean prompt traces")
+    trace_subparsers = traces.add_subparsers(dest="trace_command")
+    trace_list = trace_subparsers.add_parser("list", help="List recent prompt traces")
+    trace_list.add_argument("--limit", type=int, default=20)
+    trace_inspect = trace_subparsers.add_parser("inspect", help="Print one prompt trace manifest")
+    trace_inspect.add_argument("trace_id")
+    trace_inspect.add_argument("--role", help="Print file paths for a single role")
+    trace_cleanup = trace_subparsers.add_parser("cleanup", help="Delete old prompt traces only")
+    trace_cleanup.add_argument("--older-than", help="Age such as 30d, 12h, or 90m")
     return parser
 
 
@@ -127,8 +142,11 @@ async def _run(args: argparse.Namespace) -> int:
 
     workers = asyncio.create_task(loop.run_workers())
     scheduler: asyncio.Task[None] | None = None
+    trace_cleanup: asyncio.Task[None] | None = None
     if config.schedules_enabled:
         scheduler = asyncio.create_task(loop.run_scheduler())
+    if config.trace_auto_cleanup:
+        trace_cleanup = asyncio.create_task(_run_trace_cleanup(storage, config))
     try:
         await asyncio.to_thread(
             zulip.listen,
@@ -139,7 +157,20 @@ async def _run(args: argparse.Namespace) -> int:
         workers.cancel()
         if scheduler is not None:
             scheduler.cancel()
+        if trace_cleanup is not None:
+            trace_cleanup.cancel()
     return 0
+
+
+async def _run_trace_cleanup(storage: WorkspaceStorage, config: BotConfig) -> None:
+    max_age = timedelta(days=config.trace_retention_days)
+    interval = config.trace_cleanup_interval_hours * 3600
+    while True:
+        summary = storage.cleanup_traces_older_than(max_age)
+        deleted = int(summary.get("deleted") or 0)
+        if deleted:
+            logging.info("Deleted %s prompt trace(s) older than %s day(s)", deleted, config.trace_retention_days)
+        await asyncio.sleep(interval)
 
 
 def _render_prompt(args: argparse.Namespace) -> int:
@@ -165,6 +196,54 @@ def _render_prompt(args: argparse.Namespace) -> int:
     )
     print(prompt)
     return 0
+
+
+def _traces(args: argparse.Namespace) -> int:
+    config = _config_from_args(args)
+    storage = WorkspaceStorage(config.workspace_dir)
+    command = getattr(args, "trace_command", None)
+    if command == "cleanup":
+        age = _parse_age(getattr(args, "older_than", None)) or timedelta(days=config.trace_retention_days)
+        summary = storage.cleanup_traces_older_than(age)
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    if command == "list":
+        records = storage.list_traces(limit=max(0, int(getattr(args, "limit", 20))))
+        print(json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    if command == "inspect":
+        manifest = storage.read_trace_manifest(str(args.trace_id))
+        if manifest is None:
+            raise SystemExit(f"Trace not found: {args.trace_id}")
+        role = str(getattr(args, "role", "") or "").strip()
+        if role:
+            roles = [item for item in manifest.get("roles", []) if isinstance(item, dict)]
+            selected = next((item for item in roles if item.get("role") == role), None)
+            if selected is None:
+                raise SystemExit(f"Role not found in trace {args.trace_id}: {role}")
+            print(json.dumps(selected, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    raise SystemExit("Use one of: traces list, traces inspect, traces cleanup")
+
+
+def _parse_age(value: str | None) -> timedelta | None:
+    if value is None or not value.strip():
+        return None
+    text = value.strip().lower()
+    match = re.fullmatch(r"(\d+)\s*([mhd])?", text)
+    if not match:
+        raise SystemExit("--older-than must look like 30d, 12h, or 90m")
+    amount = int(match.group(1))
+    if amount <= 0:
+        raise SystemExit("--older-than must be positive")
+    unit = match.group(2) or "d"
+    if unit == "m":
+        return timedelta(minutes=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    return timedelta(days=amount)
 
 
 if __name__ == "__main__":
