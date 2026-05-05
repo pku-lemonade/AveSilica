@@ -408,7 +408,6 @@ class ScheduleOperation:
     name: str = ""
     match: str = ""
     prompt: str = ""
-    schedule: str = ""
     schedule_spec: ScheduleSpec = field(default_factory=ScheduleSpec)
     repeat: int | None = None
     skills: tuple[str, ...] = ()
@@ -418,8 +417,6 @@ class ScheduleOperation:
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "ScheduleOperation":
         action = str(value.get("action") or "").strip().lower()
-        if action == "modify":
-            action = "update"
         if action not in SCHEDULE_OPS:
             raise ValueError(f"invalid schedule op: {action!r}")
 
@@ -454,7 +451,6 @@ class ScheduleOperation:
             name=str(value.get("name") or ""),
             match=str(value.get("match") or ""),
             prompt=str(value.get("prompt") or ""),
-            schedule=str(value.get("schedule") or ""),
             schedule_spec=ScheduleSpec.from_mapping(value.get("schedule_spec")),
             repeat=repeat,
             skills=skills,
@@ -469,7 +465,6 @@ class ScheduleOperation:
             "name": self.name,
             "match": self.match,
             "prompt": self.prompt,
-            "schedule": self.schedule,
             "schedule_spec": self.schedule_spec.to_record(),
             "repeat": self.repeat,
             "skills": list(self.skills),

@@ -63,6 +63,30 @@ class EnqueueResult:
     message_id: int | None = None
 
 
+@dataclass(frozen=True)
+class TurnPromptState:
+    active_thread_id: str | None
+    instruction_kwargs: dict[str, Any]
+    reply_developer_instructions: str | None
+    pending_posted_bot_updates: list[dict[str, Any]]
+    posted_bot_update_context: str
+    worker_specs: list[CodexWorkerSpec]
+
+
+@dataclass(frozen=True)
+class ReplySessionState:
+    thread_id: str | None
+    developer_instructions: str | None
+
+
+@dataclass(frozen=True)
+class ReflectionsSkillResult:
+    reflection_decision: ReflectionDecision
+    reflection_applied: list[dict[str, Any]]
+    skill_decision: SkillDecision
+    skill_applied: list[dict[str, Any]]
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -545,166 +569,52 @@ class AgentLoop:
                 first = messages[0]
 
             with telemetry.phase("build_worker_prompts"):
-                if metadata.codex_thread_id and metadata.codex_instruction_mode != CODEX_INSTRUCTION_MODE:
-                    metadata = self.storage.clear_session_context(key, first)
-                active_thread_id = (
-                    metadata.codex_thread_id
-                    if metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE and metadata.codex_thread_id
-                    else None
-                )
-                starting_new_thread = active_thread_id is None
-                instruction_kwargs = {
-                    "stream": first.stream,
-                    "topic_hash": first.topic_hash,
-                    "topic": first.topic,
-                    "stream_id": first.stream_id,
-                    "conversation_type": first.conversation_type,
-                    "private_recipient_key": first.private_recipient_key,
-                }
-                reply_developer_instructions = None
-                if starting_new_thread:
-                    reply_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
+                prompt_state = self._build_turn_prompt_state(key, messages, first, metadata)
 
-                pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
-                posted_bot_update_context = self._posted_bot_update_context(pending_posted_bot_updates)
-                reflections_prompt = self.prompt_builder.build(
-                    TurnContext.from_messages(
-                        messages,
-                        deltas=WorkflowDeltas(reflection_context=self._reflection_context_for_prompt(first)),
-                    ),
-                    role="reflections",
-                    template_file=REFLECTIONS_WORKER_USER_PROMPT_FILE,
-                )
-                skill_prompt = self.prompt_builder.build(
-                    TurnContext.from_messages(
-                        messages,
-                        deltas=WorkflowDeltas(skill_availability=self._skill_inventory_context()),
-                    ),
-                    role="skill",
-                    template_file=SKILL_WORKER_USER_PROMPT_FILE,
-                )
-
-                worker_specs = [
-                    CodexWorkerSpec(
-                        kind="reflections",
-                        prompt=reflections_prompt,
-                        developer_instructions=self.instructions.compose(role="reflections_worker", **instruction_kwargs),
-                        output_schema_path=self.config.workspace_dir / REFLECTIONS_DECISION_SCHEMA_FILE,
-                    ),
-                    CodexWorkerSpec(
-                        kind="skill",
-                        prompt=skill_prompt,
-                        developer_instructions=self.instructions.compose(role="skill_worker", **instruction_kwargs),
-                        output_schema_path=self.config.workspace_dir / SKILL_DECISION_SCHEMA_FILE,
-                    ),
-                ]
-            parent_phase = None
-            try:
-                with telemetry.phase("ensure_reply_session") as parent_phase:
-                    parent_result = await self.codex.ensure_thread(
-                        active_thread_id,
-                        developer_instructions=reply_developer_instructions,
-                    )
-            except Exception as exc:
-                if active_thread_id is None or not self._is_missing_codex_rollout_error(exc):
-                    raise
-                self.storage.log_error(
-                    key,
-                    {
-                        "kind": "codex_thread_restarted",
-                        "thread_id": active_thread_id,
-                        "error": repr(exc),
-                        "message_ids": [message.message_id for message in messages],
-                    },
-                )
-                self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-                reply_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
-                with telemetry.phase("ensure_reply_session_restarted") as parent_phase:
-                    parent_result = await self.codex.ensure_thread(
-                        None,
-                        developer_instructions=reply_developer_instructions,
-                    )
-            telemetry.add_codex_result(parent_result, role="reply_session", phase=parent_phase)
-            parent_thread_id = parent_result.thread_id
-            if parent_thread_id:
-                self.storage.set_codex_thread_state(
-                    key,
-                    thread_id=parent_thread_id,
-                    instruction_mode=CODEX_INSTRUCTION_MODE,
-                )
-
-            worker_results: dict[str, CodexRunResult | None] = {}
-            for spec in worker_specs:
-                with telemetry.phase(f"{spec.kind}_worker") as worker_phase:
-                    worker_result = await self._run_op_worker(key, messages, parent_thread_id, spec)
-                telemetry.add_codex_result(worker_result, role=spec.kind, phase=worker_phase)
-                worker_results[spec.kind] = worker_result
+            reply_session = await self._ensure_reply_session(key, messages, prompt_state, telemetry)
+            parent_thread_id = reply_session.thread_id
+            worker_results = await self._run_worker_specs(
+                key,
+                messages,
+                parent_thread_id,
+                prompt_state.worker_specs,
+                telemetry,
+            )
 
             with telemetry.phase("apply_reflections_skill"):
-                reflection_decision, reflection_applied = self._apply_reflections_worker_result(
+                op_result = self._apply_reflections_and_skill_workers(
                     key,
                     messages,
-                    worker_results.get("reflections"),
+                    worker_results,
                 )
-                skill_decision, skill_applied = self._apply_skill_worker_result(
-                    key,
-                    messages,
-                    worker_results.get("skill"),
-                )
-                for spec in worker_specs:
-                    result = worker_results.get(spec.kind)
-                    decision = reflection_decision if spec.kind == "reflections" else skill_decision
-                    trace_roles.append(
-                        self._trace_role(
-                            spec.kind,
-                            prompt=spec.prompt,
-                            developer_instructions=spec.developer_instructions,
-                            output_schema_path=spec.output_schema_path,
-                            result=result,
-                            decision=decision,
-                            parent_thread_id=parent_thread_id,
-                            worker_mode="fork",
-                            status="ok" if result is not None else "error",
-                            error=None if result is not None else "worker did not return a result",
-                        )
+                trace_roles.extend(
+                    self._worker_trace_roles(
+                        parent_thread_id,
+                        prompt_state.worker_specs,
+                        worker_results,
+                        {
+                            "reflections": op_result.reflection_decision,
+                            "skill": op_result.skill_decision,
+                        },
                     )
+                )
 
             with telemetry.phase("build_schedule_prompt"):
-                schedule_prompt = self.prompt_builder.build(
-                    TurnContext.from_messages(
-                        messages,
-                        deltas=WorkflowDeltas(
-                            scheduling_context=self._schedule_context_for_prompt(),
-                            current_schedules=self._current_schedules_context(first),
-                            mentionable_participants=self._mentionable_participants_context(key),
-                            skill_availability=self._skill_inventory_context(),
-                            same_turn_skill_changes=self._skill_changes_context(skill_applied),
-                        ),
-                    ),
-                    role="schedule",
-                    template_file=SCHEDULE_WORKER_USER_PROMPT_FILE,
-                )
-                schedule_spec = CodexWorkerSpec(
-                    kind="schedule",
-                    prompt=schedule_prompt,
-                    developer_instructions=self.instructions.compose(
-                        role="schedule_worker",
-                        template_values={
-                            "schedule_timezone": self.config.schedule_timezone,
-                            "schedule_default_time": self.config.schedule_default_time,
-                        },
-                        **instruction_kwargs,
-                    ),
-                    output_schema_path=self.config.workspace_dir / SCHEDULE_DECISION_SCHEMA_FILE,
-                )
-            with telemetry.phase("schedule_worker") as schedule_phase:
-                schedule_result = await self._run_op_worker(
+                schedule_spec = self._build_schedule_worker_spec(
                     key,
                     messages,
-                    parent_thread_id,
-                    schedule_spec,
+                    first,
+                    op_result.skill_applied,
+                    prompt_state.instruction_kwargs,
                 )
-            telemetry.add_codex_result(schedule_result, role="schedule", phase=schedule_phase)
+            schedule_results = await self._run_worker_specs(
+                key,
+                messages,
+                parent_thread_id,
+                [schedule_spec],
+                telemetry,
+            )
+            schedule_result = schedule_results.get("schedule")
             with telemetry.phase("apply_schedule"):
                 schedule_decision, schedule_applied = self._apply_schedule_worker_result(
                     key,
@@ -728,61 +638,25 @@ class AgentLoop:
                 )
 
             with telemetry.phase("build_reply_prompt"):
-                skill_acknowledgement = self._skill_acknowledgement(skill_applied)
+                skill_acknowledgement = self._skill_acknowledgement(op_result.skill_applied)
                 schedule_acknowledgement = self._schedule_acknowledgement(schedule_applied)
                 acknowledgement = self._join_acknowledgements(
                     [skill_acknowledgement, schedule_acknowledgement]
                 )
-                reply_prompt = self.prompt_builder.build(
-                    TurnContext.from_messages(
-                        messages,
-                        deltas=WorkflowDeltas(
-                            posted_bot_updates=posted_bot_update_context,
-                            applied_changes=self._applied_changes_context(acknowledgement),
-                        ),
-                        render=RenderContext(message_timezone=self.config.schedule_timezone),
-                    ),
-                    role="reply",
-                    template_file=REPLY_TURN_USER_PROMPT_FILE,
+                reply_prompt = self._build_reply_prompt(
+                    messages,
+                    prompt_state.posted_bot_update_context,
+                    acknowledgement,
                 )
-            reply_phase = None
-            reply_trace_developer_instructions = reply_developer_instructions or ""
-            try:
-                with telemetry.phase("reply_decision") as reply_phase:
-                    reply_result = await self.codex.run_decision(
-                        reply_prompt,
-                        parent_thread_id,
-                        developer_instructions=None,
-                        output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
-                    )
-            except Exception as exc:
-                if parent_thread_id is None or not self._is_missing_codex_rollout_error(exc):
-                    raise
-                self.storage.log_error(
-                    key,
-                    {
-                        "kind": "codex_thread_restarted",
-                        "thread_id": parent_thread_id,
-                        "error": repr(exc),
-                        "message_ids": [message.message_id for message in messages],
-                    },
-                )
-                self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-                reply_trace_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
-                with telemetry.phase("reply_decision_restarted") as reply_phase:
-                    reply_result = await self.codex.run_decision(
-                        reply_prompt,
-                        None,
-                        developer_instructions=reply_trace_developer_instructions,
-                        output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
-                    )
-            telemetry.add_codex_result(reply_result, role="reply", phase=reply_phase)
-            if reply_result.thread_id:
-                self.storage.set_codex_thread_state(
-                    key,
-                    thread_id=reply_result.thread_id,
-                    instruction_mode=CODEX_INSTRUCTION_MODE,
-                )
+            reply_result, reply_trace_developer_instructions = await self._run_reply_decision(
+                key,
+                messages,
+                parent_thread_id,
+                reply_session.developer_instructions,
+                prompt_state.instruction_kwargs,
+                reply_prompt,
+                telemetry,
+            )
 
             with telemetry.phase("apply_reply_decision"):
                 reply_decision = ReplyDecision.from_json_text(reply_result.raw_text)
@@ -800,7 +674,7 @@ class AgentLoop:
                 )
                 decision = AgentDecision.from_parts(
                     reply_decision,
-                    skill_ops=skill_decision.skill_ops,
+                    skill_ops=op_result.skill_decision.skill_ops,
                     schedule_ops=schedule_decision.schedule_ops,
                 )
                 message_to_post = self._message_to_post(
@@ -837,8 +711,8 @@ class AgentLoop:
                 messages=messages,
                 decision=decision,
                 post=post,
-                reflection_applied=reflection_applied,
-                skill_applied=skill_applied,
+                reflection_applied=op_result.reflection_applied,
+                skill_applied=op_result.skill_applied,
                 schedule_applied=schedule_applied,
                 skill_acknowledgement=skill_acknowledgement,
                 schedule_acknowledgement=schedule_acknowledgement,
@@ -854,8 +728,299 @@ class AgentLoop:
                 parent_thread_id=parent_thread_id,
                 timing=timing,
             )
-            self.storage.consume_posted_bot_updates(key, pending_posted_bot_updates)
+            self.storage.consume_posted_bot_updates(key, prompt_state.pending_posted_bot_updates)
         self.storage.mark_processed(key, [message.message_id for message in messages])
+
+    def _build_turn_prompt_state(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        first: NormalizedMessage,
+        metadata: SessionMetadata,
+    ) -> TurnPromptState:
+        if metadata.codex_thread_id and metadata.codex_instruction_mode != CODEX_INSTRUCTION_MODE:
+            metadata = self.storage.clear_session_context(key, first)
+        active_thread_id = (
+            metadata.codex_thread_id
+            if metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE and metadata.codex_thread_id
+            else None
+        )
+        instruction_kwargs = self._conversation_instruction_kwargs(first)
+        reply_developer_instructions = (
+            None if active_thread_id else self.instructions.compose(role="reply", **instruction_kwargs)
+        )
+        pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
+        return TurnPromptState(
+            active_thread_id=active_thread_id,
+            instruction_kwargs=instruction_kwargs,
+            reply_developer_instructions=reply_developer_instructions,
+            pending_posted_bot_updates=pending_posted_bot_updates,
+            posted_bot_update_context=self._posted_bot_update_context(pending_posted_bot_updates),
+            worker_specs=self._build_reflections_skill_worker_specs(messages, first, instruction_kwargs),
+        )
+
+    def _conversation_instruction_kwargs(self, message: NormalizedMessage) -> dict[str, Any]:
+        return {
+            "stream": message.stream,
+            "topic_hash": message.topic_hash,
+            "topic": message.topic,
+            "stream_id": message.stream_id,
+            "conversation_type": message.conversation_type,
+            "private_recipient_key": message.private_recipient_key,
+        }
+
+    def _build_reflections_skill_worker_specs(
+        self,
+        messages: list[NormalizedMessage],
+        first: NormalizedMessage,
+        instruction_kwargs: dict[str, Any],
+    ) -> list[CodexWorkerSpec]:
+        reflections_prompt = self.prompt_builder.build(
+            TurnContext.from_messages(
+                messages,
+                deltas=WorkflowDeltas(reflection_context=self._reflection_context_for_prompt(first)),
+            ),
+            role="reflections",
+            template_file=REFLECTIONS_WORKER_USER_PROMPT_FILE,
+        )
+        skill_prompt = self.prompt_builder.build(
+            TurnContext.from_messages(
+                messages,
+                deltas=WorkflowDeltas(skill_availability=self._skill_inventory_context()),
+            ),
+            role="skill",
+            template_file=SKILL_WORKER_USER_PROMPT_FILE,
+        )
+        return [
+            CodexWorkerSpec(
+                kind="reflections",
+                prompt=reflections_prompt,
+                developer_instructions=self.instructions.compose(role="reflections_worker", **instruction_kwargs),
+                output_schema_path=self.config.workspace_dir / REFLECTIONS_DECISION_SCHEMA_FILE,
+            ),
+            CodexWorkerSpec(
+                kind="skill",
+                prompt=skill_prompt,
+                developer_instructions=self.instructions.compose(role="skill_worker", **instruction_kwargs),
+                output_schema_path=self.config.workspace_dir / SKILL_DECISION_SCHEMA_FILE,
+            ),
+        ]
+
+    async def _ensure_reply_session(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        prompt_state: TurnPromptState,
+        telemetry: TurnTelemetry,
+    ) -> ReplySessionState:
+        phase = None
+        reply_developer_instructions = prompt_state.reply_developer_instructions
+        try:
+            with telemetry.phase("ensure_reply_session") as phase:
+                result = await self.codex.ensure_thread(
+                    prompt_state.active_thread_id,
+                    developer_instructions=reply_developer_instructions,
+                )
+        except Exception as exc:
+            if prompt_state.active_thread_id is None or not self._is_missing_codex_rollout_error(exc):
+                raise
+            self.storage.log_error(
+                key,
+                {
+                    "kind": "codex_thread_restarted",
+                    "thread_id": prompt_state.active_thread_id,
+                    "error": repr(exc),
+                    "message_ids": [message.message_id for message in messages],
+                },
+            )
+            self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
+            reply_developer_instructions = self.instructions.compose(
+                role="reply",
+                **prompt_state.instruction_kwargs,
+            )
+            with telemetry.phase("ensure_reply_session_restarted") as phase:
+                result = await self.codex.ensure_thread(
+                    None,
+                    developer_instructions=reply_developer_instructions,
+                )
+        telemetry.add_codex_result(result, role="reply_session", phase=phase)
+        if result.thread_id:
+            self.storage.set_codex_thread_state(
+                key,
+                thread_id=result.thread_id,
+                instruction_mode=CODEX_INSTRUCTION_MODE,
+            )
+        return ReplySessionState(result.thread_id, reply_developer_instructions)
+
+    async def _run_worker_specs(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        parent_thread_id: str | None,
+        worker_specs: list[CodexWorkerSpec],
+        telemetry: TurnTelemetry,
+    ) -> dict[str, CodexRunResult | None]:
+        worker_results: dict[str, CodexRunResult | None] = {}
+        for spec in worker_specs:
+            with telemetry.phase(f"{spec.kind}_worker") as phase:
+                result = await self._run_op_worker(key, messages, parent_thread_id, spec)
+            telemetry.add_codex_result(result, role=spec.kind, phase=phase)
+            worker_results[spec.kind] = result
+        return worker_results
+
+    def _apply_reflections_and_skill_workers(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        worker_results: dict[str, CodexRunResult | None],
+    ) -> ReflectionsSkillResult:
+        reflection_decision, reflection_applied = self._apply_reflections_worker_result(
+            key,
+            messages,
+            worker_results.get("reflections"),
+        )
+        skill_decision, skill_applied = self._apply_skill_worker_result(
+            key,
+            messages,
+            worker_results.get("skill"),
+        )
+        return ReflectionsSkillResult(
+            reflection_decision=reflection_decision,
+            reflection_applied=reflection_applied,
+            skill_decision=skill_decision,
+            skill_applied=skill_applied,
+        )
+
+    def _worker_trace_roles(
+        self,
+        parent_thread_id: str | None,
+        worker_specs: list[CodexWorkerSpec],
+        worker_results: dict[str, CodexRunResult | None],
+        decisions: dict[str, object],
+    ) -> list[dict[str, Any]]:
+        trace_roles: list[dict[str, Any]] = []
+        for spec in worker_specs:
+            result = worker_results.get(spec.kind)
+            trace_roles.append(
+                self._trace_role(
+                    spec.kind,
+                    prompt=spec.prompt,
+                    developer_instructions=spec.developer_instructions,
+                    output_schema_path=spec.output_schema_path,
+                    result=result,
+                    decision=decisions.get(spec.kind) or {},
+                    parent_thread_id=parent_thread_id,
+                    worker_mode="fork",
+                    status="ok" if result is not None else "error",
+                    error=None if result is not None else "worker did not return a result",
+                )
+            )
+        return trace_roles
+
+    def _build_schedule_worker_spec(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        first: NormalizedMessage,
+        skill_applied: list[dict[str, Any]],
+        instruction_kwargs: dict[str, Any],
+    ) -> CodexWorkerSpec:
+        schedule_prompt = self.prompt_builder.build(
+            TurnContext.from_messages(
+                messages,
+                deltas=WorkflowDeltas(
+                    scheduling_context=self._schedule_context_for_prompt(),
+                    current_schedules=self._current_schedules_context(first),
+                    mentionable_participants=self._mentionable_participants_context(key),
+                    skill_availability=self._skill_inventory_context(),
+                    same_turn_skill_changes=self._skill_changes_context(skill_applied),
+                ),
+            ),
+            role="schedule",
+            template_file=SCHEDULE_WORKER_USER_PROMPT_FILE,
+        )
+        return CodexWorkerSpec(
+            kind="schedule",
+            prompt=schedule_prompt,
+            developer_instructions=self.instructions.compose(
+                role="schedule_worker",
+                template_values={
+                    "schedule_timezone": self.config.schedule_timezone,
+                    "schedule_default_time": self.config.schedule_default_time,
+                },
+                **instruction_kwargs,
+            ),
+            output_schema_path=self.config.workspace_dir / SCHEDULE_DECISION_SCHEMA_FILE,
+        )
+
+    def _build_reply_prompt(
+        self,
+        messages: list[NormalizedMessage],
+        posted_bot_update_context: str,
+        acknowledgement: str,
+    ) -> str:
+        return self.prompt_builder.build(
+            TurnContext.from_messages(
+                messages,
+                deltas=WorkflowDeltas(
+                    posted_bot_updates=posted_bot_update_context,
+                    applied_changes=self._applied_changes_context(acknowledgement),
+                ),
+                render=RenderContext(message_timezone=self.config.schedule_timezone),
+            ),
+            role="reply",
+            template_file=REPLY_TURN_USER_PROMPT_FILE,
+        )
+
+    async def _run_reply_decision(
+        self,
+        key: SessionKey,
+        messages: list[NormalizedMessage],
+        parent_thread_id: str | None,
+        initial_developer_instructions: str | None,
+        instruction_kwargs: dict[str, Any],
+        reply_prompt: str,
+        telemetry: TurnTelemetry,
+    ) -> tuple[CodexRunResult, str]:
+        phase = None
+        trace_developer_instructions = initial_developer_instructions or ""
+        try:
+            with telemetry.phase("reply_decision") as phase:
+                result = await self.codex.run_decision(
+                    reply_prompt,
+                    parent_thread_id,
+                    developer_instructions=None,
+                    output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                )
+        except Exception as exc:
+            if parent_thread_id is None or not self._is_missing_codex_rollout_error(exc):
+                raise
+            self.storage.log_error(
+                key,
+                {
+                    "kind": "codex_thread_restarted",
+                    "thread_id": parent_thread_id,
+                    "error": repr(exc),
+                    "message_ids": [message.message_id for message in messages],
+                },
+            )
+            self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
+            trace_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
+            with telemetry.phase("reply_decision_restarted") as phase:
+                result = await self.codex.run_decision(
+                    reply_prompt,
+                    None,
+                    developer_instructions=trace_developer_instructions,
+                    output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                )
+        telemetry.add_codex_result(result, role="reply", phase=phase)
+        if result.thread_id:
+            self.storage.set_codex_thread_state(
+                key,
+                thread_id=result.thread_id,
+                instruction_mode=CODEX_INSTRUCTION_MODE,
+            )
+        return result, trace_developer_instructions
 
     async def _run_scheduled_job(self, job: dict[str, Any]) -> None:
         job_id = str(job.get("id") or "")

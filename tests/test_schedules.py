@@ -10,7 +10,7 @@ from token_zulip.instructions import InstructionLoader
 from token_zulip.loop import AgentLoop
 from token_zulip.reflections import ReflectionStore
 from token_zulip.models import NormalizedMessage, ScheduleMentionTarget, ScheduleOperation, ScheduleSpec
-from token_zulip.schedules import ScheduleStore, parse_schedule, parse_schedule_spec
+from token_zulip.schedules import ScheduleStore, parse_schedule_spec
 from token_zulip.skills import SkillStore
 from token_zulip.storage import WorkspaceStorage
 from token_zulip.workspace import initialize_workspace
@@ -248,14 +248,6 @@ def _silent_payload() -> dict[str, object]:
     }
 
 
-def test_parse_schedule_uses_configured_timezone_for_naive_iso():
-    schedule = parse_schedule("2030-01-02T09:00:00", "Asia/Shanghai")
-
-    assert schedule["kind"] == "once"
-    assert schedule["run_at"] == "2030-01-02T01:00:00+00:00"
-    assert "Asia" not in schedule["run_at"]
-
-
 def test_parse_schedule_spec_supports_decomposed_kinds():
     once_at = parse_schedule_spec(ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"), "Asia/Shanghai")
     once_in = parse_schedule_spec(ScheduleSpec(kind="once_in", duration="30m"), "Asia/Shanghai")
@@ -296,6 +288,53 @@ def test_active_schema_requires_decomposed_schedule_spec():
     ]
 
 
+def test_schedule_operation_rejects_legacy_modify_action():
+    try:
+        ScheduleOperation.from_mapping(
+            {
+                "action": "modify",
+                "job_id": "",
+                "name": "",
+                "match": "",
+                "prompt": "",
+                "schedule_spec": {"kind": "unchanged", "run_at": "", "duration": "", "cron": ""},
+                "repeat": None,
+                "skills": [],
+                "mention_targets": [],
+                "confidence": 0.9,
+            }
+        )
+    except ValueError as exc:
+        assert "invalid schedule op" in str(exc)
+    else:
+        raise AssertionError("legacy modify action should be rejected")
+
+
+def test_schedule_operation_ignores_legacy_freeform_schedule_input(tmp_path):
+    store = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+    result = store.create_job(
+        _message(1),
+        ScheduleOperation.from_mapping(
+            {
+                "action": "create",
+                "job_id": "",
+                "name": "Legacy schedule",
+                "match": "",
+                "prompt": "Do the thing.",
+                "schedule": "2030-01-02T09:00:00",
+                "schedule_spec": {"kind": "unchanged", "run_at": "", "duration": "", "cron": ""},
+                "repeat": None,
+                "skills": [],
+                "mention_targets": [],
+                "confidence": 0.9,
+            }
+        ),
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "schedule is required"
+
+
 def test_schedule_create_validates_referenced_skills(tmp_path):
     initialize_workspace(tmp_path)
     skills = SkillStore(tmp_path / "skills")
@@ -319,7 +358,7 @@ def test_schedule_create_validates_referenced_skills(tmp_path):
             action="create",
             name="Weekly digest",
             prompt="Prepare a digest.",
-            schedule="2030-01-02T09:00:00",
+            schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
             skills=("weekly-digest",),
         ),
         skills=skills,
@@ -340,7 +379,7 @@ def test_schedule_origin_preserves_private_recipient_delivery(tmp_path):
             action="create",
             name="DM reminder",
             prompt="Remind the group.",
-            schedule="2030-01-02T09:00:00",
+            schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
         ),
     )
     job = store.load_jobs()[0]
@@ -537,7 +576,7 @@ def test_schedule_worker_prompt_includes_current_schedule_inventory(tmp_path):
                 action="create",
                 name="Travel paperwork reminder",
                 prompt="Remind Feiyang that he should submit travel paperwork.",
-                schedule="2030-01-02T09:00:00",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
             ),
         )
         payload = _silent_payload()
@@ -890,7 +929,7 @@ def test_schedule_store_requires_explicit_broadcast_mention_scope(tmp_path):
                 action="create",
                 name="Broadcast reminder",
                 prompt="Remind everyone to update the topic.",
-                schedule="2030-01-02T09:00:00",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
                 mention_targets=(ScheduleMentionTarget(kind="all", confidence=0.9),),
             )
         ],
@@ -906,7 +945,7 @@ def test_schedule_store_requires_explicit_broadcast_mention_scope(tmp_path):
             action="create",
             name="Broadcast reminder",
             prompt="Remind @**all** to update the topic.",
-            schedule="2030-01-02T09:00:00",
+            schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
             mention_targets=(ScheduleMentionTarget(kind="all", confidence=0.9),),
         ),
     )
@@ -940,7 +979,7 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
                 action="create",
                 name="Weekly digest",
                 prompt="Prepare a digest.",
-                schedule="2030-01-02T09:00:00",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
                 skills=("weekly-digest",),
             ),
             skills=skills,
@@ -1060,7 +1099,7 @@ def test_failed_scheduled_job_keeps_prompt_trace(tmp_path):
                 action="create",
                 name="Broken job",
                 prompt="Post a broken response.",
-                schedule="2030-01-02T09:00:00",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
             ),
         )
         schedules.trigger_job(_message(1), ScheduleOperation(action="run_now", job_id=created["job_id"]))
@@ -1109,7 +1148,7 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
                 action="create",
                 name="Tokencake follow-up",
                 prompt="Remind Zhuohang Bian and Feiyang Liu to handle tokencake.",
-                schedule="2030-01-02T09:00:00",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
                 mention_targets=(
                     ScheduleMentionTarget(kind="person", user_id=2, full_name="Zhuohang Bian", confidence=0.9),
                     ScheduleMentionTarget(kind="person", user_id=3, full_name="Feiyang Liu", confidence=0.9),

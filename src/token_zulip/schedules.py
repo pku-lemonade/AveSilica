@@ -76,45 +76,6 @@ def parse_duration(value: str) -> int:
     return amount * {"m": 1, "h": 60, "d": 1440}[unit]
 
 
-def parse_schedule(value: str, timezone_name: str) -> dict[str, Any]:
-    schedule = value.strip()
-    if not schedule:
-        raise ValueError("schedule is required")
-    schedule_lower = schedule.lower()
-    tz = zoneinfo_for(timezone_name)
-
-    if schedule_lower.startswith("every "):
-        minutes = parse_duration(schedule[6:].strip())
-        return {
-            "kind": "interval",
-            "minutes": minutes,
-            "display": f"every {minutes}m",
-            "timezone": timezone_name,
-        }
-
-    parts = schedule.split()
-    if len(parts) in {5, 6} and all(re.fullmatch(r"[\d*/,\-]+", part) for part in parts[:5]):
-        _validate_cron_expr(schedule, tz)
-        return {
-            "kind": "cron",
-            "expr": schedule,
-            "display": schedule,
-            "timezone": timezone_name,
-        }
-
-    if "T" in schedule or re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", schedule):
-        return _parse_once_at(schedule, timezone_name)
-
-    minutes = parse_duration(schedule)
-    run_at = utc_now() + timedelta(minutes=minutes)
-    return {
-        "kind": "once",
-        "run_at": utc_iso(run_at),
-        "display": f"once in {schedule}",
-        "timezone": timezone_name,
-    }
-
-
 def parse_schedule_spec(spec: ScheduleSpec, timezone_name: str) -> dict[str, Any]:
     kind = spec.kind
     if kind == "unchanged":
@@ -181,13 +142,11 @@ def _format_local_dt(dt: datetime, timezone_name: str) -> str:
 
 
 def _operation_has_schedule(op: ScheduleOperation) -> bool:
-    return op.schedule_spec.has_schedule() or bool(op.schedule.strip())
+    return op.schedule_spec.has_schedule()
 
 
 def _parse_operation_schedule(op: ScheduleOperation, timezone_name: str) -> dict[str, Any]:
-    if op.schedule_spec.has_schedule():
-        return parse_schedule_spec(op.schedule_spec, timezone_name)
-    return parse_schedule(op.schedule, timezone_name)
+    return parse_schedule_spec(op.schedule_spec, timezone_name)
 
 
 def compute_next_run(schedule: dict[str, Any], timezone_name: str, last_run_at: str | None = None) -> str | None:
@@ -319,7 +278,7 @@ class ScheduleStore:
             "skills": skill_names,
             "mention_targets": mention_targets,
             "schedule": schedule,
-            "schedule_display": schedule.get("display", op.schedule),
+            "schedule_display": schedule.get("display", ""),
             "repeat": {"times": repeat_times, "completed": 0},
             "enabled": True,
             "state": "scheduled",
@@ -376,7 +335,7 @@ class ScheduleStore:
             if _operation_has_schedule(op):
                 schedule = _parse_operation_schedule(op, self.timezone_name)
                 updated["schedule"] = schedule
-                updated["schedule_display"] = schedule.get("display", op.schedule)
+                updated["schedule_display"] = schedule.get("display", "")
                 if updated.get("state") != "paused":
                     updated["enabled"] = True
                     updated["state"] = "scheduled"

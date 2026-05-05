@@ -187,6 +187,8 @@ Skill persistence is owned by the skill worker code path: its forked Codex decis
 
 TokenZulip keeps one persistent Codex thread per Zulip conversation as the reply/session thread. On each Zulip update, the runtime resumes or creates that parent thread, then forks worker threads from it for independent operation decisions. Worker forks receive role-specific developer instructions plus only the current message batch and concise role-specific runtime deltas as the explicit run prompt. The Codex `exclude_turns` fork option is used to avoid returning populated turn lists in the fork response; it is not treated as a guarantee that parent model context is absent from the fork.
 
+Naming note: older code and reference paths still use `reply` for the assisting-message session because the runtime began as a reply generator. Treat that as legacy vocabulary; a later cleanup should rename these surfaces toward session/assistance language without changing the runtime contract.
+
 ```text
 Zulip event
     |
