@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from token_zulip.instructions import InstructionLoader
-from token_zulip.models import normalized_topic_hash, private_scope_dir_name, stream_scope_dir_name, topic_scope_dir_name
+from token_zulip.models import normalized_topic_hash, private_scope_dir_name, stream_scope_dir_name
 from token_zulip.workspace import initialize_workspace
 
 
 def test_instruction_layers_are_ordered(tmp_path):
     initialize_workspace(tmp_path)
-    stream_dir = tmp_path / "instructions" / stream_scope_dir_name(10, "engineering")
+    stream_dir = tmp_path / "realm" / stream_scope_dir_name(10, "engineering")
     topic_hash = normalized_topic_hash("Launch Plan")
-    topic_dir = stream_dir / topic_scope_dir_name(topic_hash, "launch-plan")
+    topic_dir = stream_dir / f"topic-launch-plan-{topic_hash}"
     topic_dir.mkdir(parents=True)
     (stream_dir / "AGENTS.md").write_text("stream rule", encoding="utf-8")
     (topic_dir / "AGENTS.md").write_text("topic rule", encoding="utf-8")
@@ -17,17 +17,15 @@ def test_instruction_layers_are_ordered(tmp_path):
     text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, topic="Launch Plan", stream_id=10)
 
     assert "## Source: references/system.md" in text
-    assert text.index("## Source: references/system.md") < text.index("## Source: AGENTS.md")
-    assert text.index("## Source: AGENTS.md") < text.index("## Source: references/post/system.md")
+    assert text.index("## Source: references/system.md") < text.index("## Source: realm/AGENTS.md")
+    assert text.index("## Source: realm/AGENTS.md") < text.index("## Source: references/post/system.md")
     assert "Do not try to write files" not in text
     assert "references/reflections/system.md" not in text
     assert "references/schedule/system.md" not in text
-    stream_label = "instructions/stream-engineering-10/AGENTS.md"
-    topic_label = f"instructions/stream-engineering-10/topic-launch-plan-{topic_hash}/AGENTS.md"
+    stream_label = "realm/stream-engineering-10/AGENTS.md"
     assert text.index("## Source: references/post/system.md") < text.index(stream_label)
-    assert text.index(stream_label) < text.index(topic_label)
     assert "stream rule" in text
-    assert "topic rule" in text
+    assert "topic rule" not in text
 
 
 def test_default_instruction_content_names_silica_and_research_guardrails(tmp_path):
@@ -49,7 +47,7 @@ def test_default_instruction_content_names_silica_and_research_guardrails(tmp_pa
 def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_path):
     initialize_workspace(tmp_path)
 
-    global_text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    global_text = (tmp_path / "realm" / "AGENTS.md").read_text(encoding="utf-8")
     post_system_text = (tmp_path / "references" / "post" / "system.md").read_text(encoding="utf-8")
     reflections_system_text = (tmp_path / "references" / "reflections" / "system.md").read_text(encoding="utf-8")
 
@@ -77,7 +75,7 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
 
 def test_private_instruction_loads_scoped_agents(tmp_path):
     initialize_workspace(tmp_path)
-    private_dir = tmp_path / "instructions" / private_scope_dir_name("42")
+    private_dir = tmp_path / "realm" / private_scope_dir_name("42")
     private_dir.mkdir(parents=True)
     (private_dir / "AGENTS.md").write_text("private rule", encoding="utf-8")
 
@@ -88,7 +86,7 @@ def test_private_instruction_loads_scoped_agents(tmp_path):
         private_recipient_key="42",
     )
 
-    assert f"instructions/{private_scope_dir_name('42')}/AGENTS.md" in text
+    assert f"realm/{private_scope_dir_name('42')}/AGENTS.md" in text
     assert "private rule" in text
 
 
@@ -104,9 +102,9 @@ def test_worker_instruction_profiles_do_not_load_post_policy(tmp_path):
     )
 
     assert "## Source: references/system.md" in text
+    assert "## Source: realm/AGENTS.md" in text
     assert "## Source: references/schedule/system.md" in text
     assert "## Source: references/post/system.md" not in text
-    assert "## Source: AGENTS.md" not in text
     assert "schedule_ops" in text
     assert "mention_targets" in text
     assert "zero, one, or multiple person targets" in text

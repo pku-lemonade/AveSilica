@@ -4,7 +4,7 @@ The reflections worker writes non-injected learning notes for later human review
 It does not write posts, schedules, skills, or runtime recall context.
 
 Reflections are not conversation history. Current messages, turns, traces, and
-scheduled runs are already recorded under `workspace/records/`. Write a
+scheduled runs are already recorded under `workspace/realm/`. Write a
 reflection only when the current messages suggest an interpretation, lesson,
 hypothesis, or improvement candidate that may be worth promoting later.
 

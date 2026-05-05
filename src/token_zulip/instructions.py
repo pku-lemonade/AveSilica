@@ -5,26 +5,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
-from .models import SessionKey, safe_slug, scoped_conversation_dir, scoped_stream_dir
-from .workspace import SHARED_SYSTEM_FILE, strip_markdown_comments
+from .layout import WorkspaceLayout
+from .models import SessionKey, safe_slug
+from .workspace import GLOBAL_AGENTS_FILE, SHARED_SYSTEM_FILE, strip_markdown_comments
 
 
 ROLE_SYSTEM_FILES: dict[str, tuple[str, ...]] = {
     "post": (
-        "AGENTS.md",
+        GLOBAL_AGENTS_FILE,
         "references/post/system.md",
     ),
     "reflections_worker": (
+        GLOBAL_AGENTS_FILE,
         "references/reflections/system.md",
     ),
     "skill_worker": (
+        GLOBAL_AGENTS_FILE,
         "references/skill/system.md",
     ),
     "schedule_worker": (
+        GLOBAL_AGENTS_FILE,
         "references/schedule/system.md",
     ),
     "scheduled_job": (
-        "AGENTS.md",
+        GLOBAL_AGENTS_FILE,
         "references/scheduled_job/system.md",
     ),
 }
@@ -40,6 +44,7 @@ class InstructionSource:
 class InstructionLoader:
     def __init__(self, root: Path, max_bytes: int = 96_000) -> None:
         self.root = root.expanduser().resolve()
+        self.layout = WorkspaceLayout(self.root)
         self.max_bytes = max_bytes
 
     def compose(
@@ -139,7 +144,7 @@ class InstructionLoader:
             topic_slug=safe_slug(topic or topic_hash),
         )
         if conversation_type == "private":
-            private_path = scoped_conversation_dir(self.root / "instructions", key)
+            private_path = self.layout.source_dir(key)
             return [
                 (
                     f"{private_path.relative_to(self.root).as_posix()}/AGENTS.md",
@@ -147,15 +152,10 @@ class InstructionLoader:
                 )
             ]
 
-        stream_path = scoped_stream_dir(self.root / "instructions", key)
-        topic_path = scoped_conversation_dir(self.root / "instructions", key)
+        stream_path = self.layout.source_dir(key)
         return [
             (
                 f"{stream_path.relative_to(self.root).as_posix()}/AGENTS.md",
                 stream_path / "AGENTS.md",
-            ),
-            (
-                f"{topic_path.relative_to(self.root).as_posix()}/AGENTS.md",
-                topic_path / "AGENTS.md",
             ),
         ]

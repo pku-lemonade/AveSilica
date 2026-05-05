@@ -11,3 +11,16 @@ workspace/reflections/*.lock
 workspace/reflections/**/*.lock
 workspace/reflections/private-*/
 workspace/reflections/stream-*/
+workspace/realm/runtime/
+workspace/realm/stream-*/*.lock
+workspace/realm/stream-*/REFLECTIONS.md
+workspace/realm/stream-*/topic-*/
+workspace/realm/private-recipient-*/*.lock
+workspace/realm/private-recipient-*/REFLECTIONS.md
+workspace/realm/private-recipient-*/messages.jsonl
+workspace/realm/private-recipient-*/pending.json
+workspace/realm/private-recipient-*/posted_bot_updates.jsonl
+workspace/realm/private-recipient-*/session.json
+workspace/realm/private-recipient-*/traces/
+workspace/realm/private-recipient-*/turns.jsonl
+workspace/realm/private-recipient-*/uploads/

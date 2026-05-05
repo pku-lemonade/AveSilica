@@ -69,8 +69,8 @@ def test_markdown_uploads_are_downloaded_and_rewritten(tmp_path):
         processed = await processor.process_message(message)
 
         assert processed.content == (
-            "see [report](records/stream-engineering-10/topic-launch-topic123/uploads/42/01-report.pdf) "
-            "and ![diagram](records/stream-engineering-10/topic-launch-topic123/uploads/42/02-diagram.png); "
+            "see [report](realm/stream-engineering-10/topic-launch-topic123/uploads/42/01-report.pdf) "
+            "and ![diagram](realm/stream-engineering-10/topic-launch-topic123/uploads/42/02-diagram.png); "
             "[external](https://example.com/file.pdf)"
         )
         assert [call[0] for call in downloader.calls] == [

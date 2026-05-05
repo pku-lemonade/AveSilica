@@ -132,9 +132,9 @@ def test_storage_uses_readable_session_messages_pending_and_turns(tmp_path):
     assert storage.session_path(key, "session.json").exists()
     assert storage.session_path(key, "turns.jsonl").exists()
     assert storage.session_path(key, "messages.jsonl").is_relative_to(
-        tmp_path / "records" / "stream-engineering-10" / "topic-launch-topic123"
+        tmp_path / "realm" / "stream-engineering-10" / "topic-launch-topic123"
     )
-    assert not (tmp_path / "records" / "sessions").exists()
+    assert not (tmp_path / "records").exists()
     assert not (tmp_path / "state").exists()
 
 
@@ -195,6 +195,91 @@ def test_trace_sidecars_are_pruneable_without_touching_conversation_history(tmp_
     assert storage.session_path(key, "turns.jsonl").exists()
 
 
+def test_storage_migrates_legacy_mirrored_trees_to_realm_layout(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("global rule\n", encoding="utf-8")
+    (tmp_path / "reflections").mkdir()
+    (tmp_path / "reflections" / "REFLECTIONS.md").write_text("global reflection\n", encoding="utf-8")
+    (tmp_path / "reflections" / "stream-engineering-10").mkdir()
+    (tmp_path / "reflections" / "stream-engineering-10" / "REFLECTIONS.md").write_text(
+        "channel reflection\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "instructions" / "stream-engineering-10" / "topic-launch-topic123").mkdir(parents=True)
+    (tmp_path / "instructions" / "stream-engineering-10" / "AGENTS.md").write_text(
+        "channel rule\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "instructions" / "stream-engineering-10" / "topic-launch-topic123" / "AGENTS.md").write_text(
+        "topic rule deleted\n",
+        encoding="utf-8",
+    )
+    legacy_session = tmp_path / "records" / "stream-engineering-10" / "topic-launch-topic123"
+    legacy_session.mkdir(parents=True)
+    (legacy_session / "session.json").write_text(
+        json.dumps(
+            {
+                "realm_id": "realm",
+                "conversation_type": "stream",
+                "stream_id": 10,
+                "stream": "Engineering",
+                "stream_slug": "engineering",
+                "topic": "Launch",
+                "topic_hash": "topic123",
+                "topic_slug": "launch",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (legacy_session / "messages.jsonl").write_text(
+        json.dumps(
+            {
+                "message_id": 1,
+                "reply_required": True,
+                "content": "see records/stream-engineering-10/topic-launch-topic123/uploads/1/a.png",
+                "uploads": [
+                    {
+                        "local_path": "records/stream-engineering-10/topic-launch-topic123/uploads/1/a.png",
+                        "rewritten_target": "records/stream-engineering-10/topic-launch-topic123/uploads/1/a.png",
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "records" / "errors").mkdir()
+    (tmp_path / "records" / "errors" / "2026-01-01.jsonl").write_text('{"kind":"error"}\n', encoding="utf-8")
+    (tmp_path / "records" / "codex_stats").mkdir()
+    (tmp_path / "records" / "codex_stats" / "2026-01-01.jsonl").write_text('{"record_type":"e2e"}\n', encoding="utf-8")
+    (tmp_path / "records" / "scheduled" / "job-1").mkdir(parents=True)
+    (tmp_path / "records" / "scheduled" / "job-1" / "runs.jsonl").write_text('{"status":"ok"}\n', encoding="utf-8")
+
+    WorkspaceStorage(tmp_path)
+
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert not (tmp_path / "instructions").exists()
+    assert not (tmp_path / "reflections").exists()
+    assert not (tmp_path / "records").exists()
+    assert (tmp_path / "realm" / "AGENTS.md").read_text(encoding="utf-8") == "global rule\n"
+    assert (tmp_path / "realm" / "REFLECTIONS.md").read_text(encoding="utf-8") == "global reflection\n"
+    assert (tmp_path / "realm" / "stream-engineering-10" / "AGENTS.md").read_text(encoding="utf-8") == "channel rule\n"
+    assert "channel reflection" in (
+        tmp_path / "realm" / "stream-engineering-10" / "REFLECTIONS.md"
+    ).read_text(encoding="utf-8")
+    assert not (tmp_path / "realm" / "stream-engineering-10" / "topic-launch-topic123" / "AGENTS.md").exists()
+    migrated_message = json.loads(
+        (tmp_path / "realm" / "stream-engineering-10" / "topic-launch-topic123" / "messages.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert migrated_message["post_required"] is True
+    assert "reply_required" not in migrated_message
+    assert "realm/stream-engineering-10/topic-launch-topic123/uploads/1/a.png" in migrated_message["content"]
+    assert (tmp_path / "realm" / "runtime" / "errors" / "2026-01-01.jsonl").exists()
+    assert (tmp_path / "realm" / "runtime" / "codex_stats" / "2026-01-01.jsonl").exists()
+    assert (tmp_path / "realm" / "runtime" / "scheduled" / "job-1" / "runs.jsonl").exists()
+
+
 def test_safe_slug_preserves_unicode_and_useful_punctuation():
     assert safe_slug("阿里服务器") == "阿里服务器"
     assert safe_slug("Dynamic.hls") == "dynamic.hls"
@@ -245,42 +330,33 @@ def test_read_conversation_participants_extracts_silent_and_id_mentions(tmp_path
     }
 
 
-def test_channel_rename_moves_records_instructions_and_reflections_by_stream_id(tmp_path):
+def test_channel_rename_moves_source_records_agents_and_reflections_by_stream_id(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)
     first = _topic_message(1, stream="Engineering", topic="Launch")
     storage.append_message(first)
-    old_instructions = tmp_path / "instructions" / "stream-engineering-10" / f"topic-launch-{first.topic_hash}"
-    old_instructions.mkdir(parents=True)
-    (old_instructions / "AGENTS.md").write_text("topic rule\n", encoding="utf-8")
-    old_reflections = tmp_path / "reflections" / "stream-engineering-10"
-    old_reflections.mkdir(parents=True)
-    (old_reflections / "REFLECTIONS.md").write_text("channel reflection\n", encoding="utf-8")
+    old_source = tmp_path / "realm" / "stream-engineering-10"
+    (old_source / "AGENTS.md").write_text("channel rule\n", encoding="utf-8")
+    (old_source / "REFLECTIONS.md").write_text("channel reflection\n", encoding="utf-8")
 
     renamed = _topic_message(2, stream="Platform", topic="Launch")
     storage.append_message(renamed)
 
     new_key = renamed.session_key
-    assert not (tmp_path / "records" / "stream-engineering-10").exists()
+    assert not old_source.exists()
     assert storage.read_recent_messages(new_key, 10)[0]["message_id"] == 1
     assert storage.load_metadata(new_key).stream == "Platform"
-    assert (
-        tmp_path / "instructions" / "stream-platform-10" / f"topic-launch-{first.topic_hash}" / "AGENTS.md"
-    ).read_text(encoding="utf-8") == "topic rule\n"
-    assert (
-        tmp_path / "reflections" / "stream-platform-10" / "REFLECTIONS.md"
-    ).read_text(encoding="utf-8") == "channel reflection\n"
+    new_source = tmp_path / "realm" / "stream-platform-10"
+    assert (new_source / "AGENTS.md").read_text(encoding="utf-8") == "channel rule\n"
+    assert (new_source / "REFLECTIONS.md").read_text(encoding="utf-8") == "channel reflection\n"
 
 
-def test_full_topic_rename_moves_records_instructions_and_preserves_thread(tmp_path):
+def test_full_topic_rename_moves_records_and_preserves_thread(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)
     source = _topic_message(1, topic="Launch")
     storage.append_message(source)
     storage.set_codex_thread_state(source.session_key, thread_id="thread-1", instruction_mode="developer-v1")
-    instruction_dir = tmp_path / "instructions" / "stream-engineering-10" / f"topic-launch-{source.topic_hash}"
-    instruction_dir.mkdir(parents=True)
-    (instruction_dir / "AGENTS.md").write_text("launch rule\n", encoding="utf-8")
 
     result = storage.apply_message_move(_move([1], propagate_mode="change_all"))
     destination = _topic_message(2, topic="Release").session_key
@@ -288,16 +364,13 @@ def test_full_topic_rename_moves_records_instructions_and_preserves_thread(tmp_p
     assert result["status"] == "applied"
     assert storage.read_recent_messages(destination, 10)[0]["message_id"] == 1
     assert storage.load_metadata(destination).codex_thread_id == "thread-1"
-    assert (
-        tmp_path / "instructions" / "stream-engineering-10" / f"topic-release-{destination.topic_hash}" / "AGENTS.md"
-    ).read_text(encoding="utf-8") == "launch rule\n"
 
 
 def test_full_topic_rename_rewrites_message_upload_paths(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)
     source = _topic_message(1, topic="Launch")
-    old_rel = f"records/stream-engineering-10/topic-launch-{source.topic_hash}/uploads/1/01-figure.png"
+    old_rel = f"realm/stream-engineering-10/topic-launch-{source.topic_hash}/uploads/1/01-figure.png"
     source = NormalizedMessage(
         **{
             **source.__dict__,
@@ -319,7 +392,7 @@ def test_full_topic_rename_rewrites_message_upload_paths(tmp_path):
     assert (storage.session_dir(destination) / "uploads" / "1" / "01-figure.png").exists()
 
 
-def test_full_topic_rename_into_existing_destination_merges_messages_and_archives_instruction_conflicts(tmp_path):
+def test_full_topic_rename_into_existing_destination_merges_messages_and_preserves_destination_thread(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)
     source = _topic_message(1, topic="Launch")
@@ -327,24 +400,12 @@ def test_full_topic_rename_into_existing_destination_merges_messages_and_archive
     storage.append_message(source)
     storage.append_message(destination_message)
     storage.set_codex_thread_state(destination_message.session_key, thread_id="destination-thread", instruction_mode="developer-v1")
-    source_instructions = tmp_path / "instructions" / "stream-engineering-10" / f"topic-launch-{source.topic_hash}"
-    destination_instructions = (
-        tmp_path / "instructions" / "stream-engineering-10" / f"topic-release-{destination_message.topic_hash}"
-    )
-    source_instructions.mkdir(parents=True)
-    destination_instructions.mkdir(parents=True)
-    (source_instructions / "AGENTS.md").write_text("source rule\n", encoding="utf-8")
-    (destination_instructions / "AGENTS.md").write_text("destination rule\n", encoding="utf-8")
 
     storage.apply_message_move(_move([1], propagate_mode="change_all"))
 
     records = storage.read_recent_messages(destination_message.session_key, 10)
     assert [record["message_id"] for record in records] == [1, 2]
     assert storage.load_metadata(destination_message.session_key).codex_thread_id == "destination-thread"
-    assert (destination_instructions / "AGENTS.md").read_text(encoding="utf-8") == "destination rule\n"
-    assert (destination_instructions / f"AGENTS.merged-{source_instructions.name}.md").read_text(
-        encoding="utf-8"
-    ) == "source rule\n"
 
 
 def test_partial_topic_move_moves_only_matching_message_records(tmp_path):
@@ -436,7 +497,7 @@ def test_apply_reaction_unknown_message_returns_none(tmp_path):
 
 def test_reflection_store_writes_global_channel_and_private_inboxes(tmp_path):
     initialize_workspace(tmp_path)
-    store = ReflectionStore(tmp_path / "reflections")
+    store = ReflectionStore(tmp_path)
     stream_key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
     private_key = SessionKey(
         "realm",
@@ -486,23 +547,22 @@ def test_reflection_store_writes_global_channel_and_private_inboxes(tmp_path):
     assert global_result[0]["scope"] == "global"
     assert channel_result[0]["scope"] == "channel"
     assert private_result[0]["scope"] == "private"
-    assert "context-free public-thread" in (tmp_path / "reflections" / "REFLECTIONS.md").read_text(encoding="utf-8")
+    assert "context-free public-thread" in (tmp_path / "realm" / "REFLECTIONS.md").read_text(encoding="utf-8")
     assert "concise architecture" in (
-        tmp_path / "reflections" / "stream-engineering-10" / "REFLECTIONS.md"
+        tmp_path / "realm" / "stream-engineering-10" / "REFLECTIONS.md"
     ).read_text(encoding="utf-8")
     assert "shorter operational posts" in (
-        tmp_path / "reflections" / "private-recipient-1001" / "REFLECTIONS.md"
+        tmp_path / "realm" / "private-recipient-1001" / "REFLECTIONS.md"
     ).read_text(encoding="utf-8")
-    assert not (tmp_path / "reflections" / "stream-engineering-10" / "topic-launch-topic123").exists()
+    assert not (tmp_path / "realm" / "stream-engineering-10" / "topic-launch-topic123" / "REFLECTIONS.md").exists()
 
 
 def test_reflection_store_serializes_concurrent_global_appends(tmp_path):
     initialize_workspace(tmp_path)
-    reflections_dir = tmp_path / "reflections"
     key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
 
     def append(index: int) -> list[dict]:
-        store = ReflectionStore(reflections_dir)
+        store = ReflectionStore(tmp_path)
         return store.apply_ops(
             key,
             [
@@ -522,20 +582,19 @@ def test_reflection_store_serializes_concurrent_global_appends(tmp_path):
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = list(executor.map(append, range(40)))
 
-    text = (reflections_dir / "REFLECTIONS.md").read_text(encoding="utf-8")
+    text = (tmp_path / "realm" / "REFLECTIONS.md").read_text(encoding="utf-8")
     assert all(result[0]["status"] == "applied" for result in results)
     for index in range(40):
         assert text.count(f"Unique global candidate token {index:03d}.") == 1
-    assert not (reflections_dir / "REFLECTIONS.md.tmp").exists()
+    assert not (tmp_path / "realm" / "REFLECTIONS.md.tmp").exists()
 
 
 def test_reflection_store_serializes_concurrent_channel_appends(tmp_path):
     initialize_workspace(tmp_path)
-    reflections_dir = tmp_path / "reflections"
     key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
 
     def append(index: int) -> list[dict]:
-        store = ReflectionStore(reflections_dir)
+        store = ReflectionStore(tmp_path)
         return store.apply_ops(
             key,
             [
@@ -555,7 +614,7 @@ def test_reflection_store_serializes_concurrent_channel_appends(tmp_path):
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = list(executor.map(append, range(40)))
 
-    reflection_file = reflections_dir / "stream-engineering-10" / "REFLECTIONS.md"
+    reflection_file = tmp_path / "realm" / "stream-engineering-10" / "REFLECTIONS.md"
     text = reflection_file.read_text(encoding="utf-8")
     assert all(result[0]["status"] == "applied" for result in results)
     for index in range(40):
@@ -565,7 +624,7 @@ def test_reflection_store_serializes_concurrent_channel_appends(tmp_path):
 
 def test_reflection_store_skips_archival_summaries(tmp_path):
     initialize_workspace(tmp_path)
-    store = ReflectionStore(tmp_path / "reflections")
+    store = ReflectionStore(tmp_path)
     key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
 
     result = store.apply_ops(
@@ -582,4 +641,4 @@ def test_reflection_store_skips_archival_summaries(tmp_path):
     )
 
     assert result[0]["status"] == "skipped"
-    assert not (tmp_path / "reflections" / "stream-engineering-10" / "REFLECTIONS.md").exists()
+    assert not (tmp_path / "realm" / "stream-engineering-10" / "REFLECTIONS.md").exists()

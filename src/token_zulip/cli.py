@@ -107,7 +107,7 @@ async def _run(args: argparse.Namespace) -> int:
         config=config,
         storage=storage,
         instructions=InstructionLoader(config.workspace_dir, max_bytes=config.instruction_max_bytes),
-        reflections=ReflectionStore(config.workspace_dir / "reflections"),
+        reflections=ReflectionStore(config.workspace_dir),
         codex=CodexSdkAdapter(
             model=config.codex_model,
             cwd=config.codex_cwd,

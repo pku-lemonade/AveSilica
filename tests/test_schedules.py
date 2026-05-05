@@ -432,7 +432,7 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -499,7 +499,7 @@ def test_schedule_worker_runs_without_skill_output_for_prompt_only_job(tmp_path)
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -551,7 +551,7 @@ def test_schedule_rejects_skill_reference_when_same_turn_skill_is_rejected(tmp_p
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -585,7 +585,7 @@ def test_schedule_worker_prompt_includes_current_schedule_inventory(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PayloadCodex(payload),
             zulip=poster,
             schedules=schedules,
@@ -707,7 +707,7 @@ def test_schedule_remove_confirmation_is_injected_before_post_and_suppresses_con
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
             schedules=schedules,
@@ -767,7 +767,7 @@ def test_schedule_list_confirmation_is_injected_before_post_and_suppresses_confl
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
             schedules=schedules,
@@ -845,7 +845,7 @@ def test_schedule_can_store_multiple_person_mentions_without_pinging_confirmatio
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -906,7 +906,7 @@ def test_schedule_rejects_unknown_person_mention_target(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -998,7 +998,7 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
             skills=skills,
@@ -1021,14 +1021,15 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         assert job["last_status"] == "ok"
         run_records = [
             json.loads(line)
-            for line in (tmp_path / "records" / "scheduled" / created["job_id"] / "runs.jsonl")
+            for line in (tmp_path / "realm" / "runtime" / "scheduled" / created["job_id"] / "runs.jsonl")
             .read_text(encoding="utf-8")
             .splitlines()
         ]
         assert run_records[-1]["trace_id"]
         trace_manifest = (
             tmp_path
-            / "records"
+            / "realm"
+            / "runtime"
             / "scheduled"
             / created["job_id"]
             / "traces"
@@ -1047,7 +1048,7 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         assert timing["codex"]["api_call_count"] == 1
         assert [call["role"] for call in timing["codex_calls"]] == ["scheduled_job"]
         assert timing["codex_calls"][0]["tokens"]["last"]["input_tokens"] == 12
-        stats_path = next((tmp_path / "records" / "codex_stats").glob("*.jsonl"))
+        stats_path = next((tmp_path / "realm" / "runtime" / "codex_stats").glob("*.jsonl"))
         stats_records = [
             json.loads(line)
             for line in stats_path.read_text(encoding="utf-8").splitlines()
@@ -1107,7 +1108,7 @@ def test_failed_scheduled_job_keeps_prompt_trace(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=InvalidJsonCodex(),
             zulip=FakePoster(),
             schedules=schedules,
@@ -1117,14 +1118,15 @@ def test_failed_scheduled_job_keeps_prompt_trace(tmp_path):
 
         run_records = [
             json.loads(line)
-            for line in (tmp_path / "records" / "scheduled" / created["job_id"] / "runs.jsonl")
+            for line in (tmp_path / "realm" / "runtime" / "scheduled" / created["job_id"] / "runs.jsonl")
             .read_text(encoding="utf-8")
             .splitlines()
         ]
         assert run_records[-1]["status"] == "error"
         trace_manifest = (
             tmp_path
-            / "records"
+            / "realm"
+            / "runtime"
             / "scheduled"
             / created["job_id"]
             / "traces"
@@ -1168,7 +1170,7 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
             schedules=schedules,
@@ -1198,7 +1200,7 @@ def test_due_scheduled_job_does_not_duplicate_existing_mentions(tmp_path):
         config=_config(tmp_path),
         storage=WorkspaceStorage(tmp_path),
         instructions=InstructionLoader(tmp_path),
-        reflections=ReflectionStore(tmp_path / "reflections"),
+        reflections=ReflectionStore(tmp_path),
         codex=PayloadCodex(_silent_payload()),
         zulip=FakePoster(),
     )

@@ -17,19 +17,15 @@ from .models import (
     NormalizedReaction,
     SessionKey,
     safe_slug,
-    scoped_conversation_dir,
     utc_now_iso,
 )
+from .layout import CODEX_STATS_DIRNAME, TRACES_DIRNAME, WorkspaceLayout, migrate_legacy_workspace
 from .telemetry import timing_codex_call_stats_records, timing_e2e_stats_record
 
 
 REACTION_EVENTS_CAP = 20
 POSTED_BOT_UPDATES_FILENAME = "posted_bot_updates.jsonl"
 ZULIP_PERSON_MENTION_RE = re.compile(r"@_?\*\*([^|\n]+?)(?:\|(\d+))?\*\*")
-CODEX_STATS_DIRNAME = "codex_stats"
-TRACES_DIRNAME = "traces"
-
-
 @dataclass
 class SessionMetadata:
     session_id: str
@@ -153,15 +149,22 @@ class SessionMetadata:
 class WorkspaceStorage:
     def __init__(self, workspace_dir: Path) -> None:
         self.workspace_dir = workspace_dir.expanduser().resolve()
-        self.records_dir = self.workspace_dir / "records"
-        self.instructions_dir = self.workspace_dir / "instructions"
-        self.reflections_dir = self.workspace_dir / "reflections"
-        self.errors_dir = self.records_dir / "errors"
-        self.codex_stats_dir = self.records_dir / CODEX_STATS_DIRNAME
+        migrate_legacy_workspace(self.workspace_dir)
+        self.layout = WorkspaceLayout(self.workspace_dir)
+        self.realm_dir = self.layout.realm_dir
+        self.runtime_dir = self.layout.runtime_dir
+        self.errors_dir = self.layout.errors_dir
+        self.codex_stats_dir = self.layout.codex_stats_dir
         self.ensure_dirs()
 
     def ensure_dirs(self) -> None:
-        for path in [self.records_dir, self.instructions_dir, self.reflections_dir, self.errors_dir, self.codex_stats_dir]:
+        for path in [
+            self.realm_dir,
+            self.runtime_dir,
+            self.errors_dir,
+            self.codex_stats_dir,
+            self.layout.scheduled_records_dir,
+        ]:
             path.mkdir(parents=True, exist_ok=True)
 
     def log_ignored_event(self, event: dict[str, Any], reason: str, key: SessionKey | None = None) -> None:
@@ -233,8 +236,7 @@ class WorkspaceStorage:
         if message.conversation_type == "private" or message.stream_id is None:
             return
         new_slug = safe_slug(message.stream)
-        for root in [self.records_dir, self.instructions_dir, self.reflections_dir]:
-            self._rename_stream_dirs(root, message.stream_id, new_slug)
+        self._rename_stream_dirs(self.realm_dir, message.stream_id, new_slug)
         self._update_stream_metadata(message.stream_id, message.stream, new_slug)
 
     def apply_message_move(self, move: NormalizedMessageMove) -> dict[str, Any]:
@@ -698,7 +700,7 @@ class WorkspaceStorage:
 
     def list_traces(self, *, limit: int = 50) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
-        for path in sorted(self.records_dir.glob(f"**/{TRACES_DIRNAME}/index.jsonl")):
+        for path in sorted(self.realm_dir.glob(f"**/{TRACES_DIRNAME}/index.jsonl")):
             for record in self._read_jsonl(path):
                 trace_path = self.workspace_dir / str(record.get("path") or "")
                 if trace_path.exists():
@@ -708,14 +710,14 @@ class WorkspaceStorage:
 
     def read_trace_manifest(self, trace_id: str) -> dict[str, Any] | None:
         slug = safe_slug(trace_id)
-        for path in sorted(self.records_dir.glob(f"**/{TRACES_DIRNAME}/{slug}/manifest.json")):
+        for path in sorted(self.realm_dir.glob(f"**/{TRACES_DIRNAME}/{slug}/manifest.json")):
             return self._read_json(path)
         return None
 
     def cleanup_traces_older_than(self, max_age: timedelta) -> dict[str, Any]:
         cutoff = datetime.now(timezone.utc) - max_age
         deleted: list[str] = []
-        for traces_dir in sorted(self.records_dir.glob(f"**/{TRACES_DIRNAME}")):
+        for traces_dir in sorted(self.realm_dir.glob(f"**/{TRACES_DIRNAME}")):
             if not traces_dir.is_dir() or traces_dir.name != TRACES_DIRNAME:
                 continue
             for trace_dir in sorted(path for path in traces_dir.iterdir() if path.is_dir()):
@@ -796,7 +798,7 @@ class WorkspaceStorage:
         return base / TRACES_DIRNAME / "index.jsonl"
 
     def _scheduled_record_dir(self, job_id: str | None) -> Path:
-        return self.records_dir / "scheduled" / safe_slug(job_id or "unknown")
+        return self.layout.scheduled_records_dir / safe_slug(job_id or "unknown")
 
     def _relative_trace_path(self, path: Path) -> str:
         return path.relative_to(self.workspace_dir).as_posix()
@@ -848,7 +850,7 @@ class WorkspaceStorage:
         return directory / filename
 
     def session_dir(self, key: SessionKey) -> Path:
-        return scoped_conversation_dir(self.records_dir, key, readable_topic=True)
+        return self.layout.session_dir(key)
 
     def _resolved_move_key(self, key: SessionKey) -> SessionKey:
         if key.conversation_type == "private" or key.stream_id is None:
@@ -866,12 +868,9 @@ class WorkspaceStorage:
 
     def _existing_stream_slug(self, stream_id: int) -> str | None:
         suffix = f"-{stream_id}"
-        for root in [self.records_dir, self.instructions_dir, self.reflections_dir]:
-            if not root.exists():
-                continue
-            for path in sorted(root.glob(f"stream-*{suffix}")):
-                if path.is_dir() and path.name.endswith(suffix):
-                    return path.name[len("stream-") : -len(suffix)]
+        for path in sorted(self.realm_dir.glob(f"stream-*{suffix}")):
+            if path.is_dir() and path.name.endswith(suffix):
+                return path.name[len("stream-") : -len(suffix)]
         return None
 
     def _rename_stream_dirs(self, root: Path, stream_id: int, new_slug: str) -> None:
@@ -889,7 +888,7 @@ class WorkspaceStorage:
                 self._rewrite_message_paths(destination, old_base=source, new_base=destination)
 
     def _update_stream_metadata(self, stream_id: int, stream: str, stream_slug: str) -> None:
-        for session_path in sorted(self.records_dir.glob(f"stream-*-{stream_id}/topic-*/session.json")):
+        for session_path in sorted(self.realm_dir.glob(f"stream-*-{stream_id}/topic-*/session.json")):
             try:
                 record = json.loads(session_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
@@ -927,27 +926,7 @@ class WorkspaceStorage:
             source_dir.rename(destination_dir)
             self._rewrite_message_paths(destination_dir, old_base=source_dir, new_base=destination_dir)
         self._save_destination_metadata(destination_dir, destination_key, move, preserve_existing_thread=True)
-        self._move_scoped_instruction_dir(move, destination_key)
         return True
-
-    def _move_scoped_instruction_dir(
-        self,
-        move: NormalizedMessageMove,
-        destination_key: SessionKey,
-    ) -> None:
-        source = scoped_conversation_dir(
-            self.instructions_dir,
-            self._resolved_move_key(move.source_key),
-            readable_topic=True,
-        )
-        destination = scoped_conversation_dir(self.instructions_dir, destination_key, readable_topic=True)
-        if not source.exists() or source == destination:
-            return
-        if destination.exists():
-            self._merge_directory(source, destination, old_base=source, new_base=destination)
-            return
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        source.rename(destination)
 
     def _move_message_records(
         self,
@@ -1031,10 +1010,14 @@ class WorkspaceStorage:
         if source.read_bytes() == destination.read_bytes():
             source.unlink()
             return
-        if source.name == "AGENTS.md":
-            archive = destination.with_name(f"AGENTS.merged-{source.parent.name}.md")
-            if not archive.exists():
-                source.rename(archive)
+        if source.name in {"AGENTS.md", "REFLECTIONS.md"}:
+            existing = destination.read_text(encoding="utf-8") if destination.exists() else ""
+            extra = source.read_text(encoding="utf-8")
+            merged = "\n\n".join(part.strip() for part in [existing, extra] if part.strip()).rstrip() + "\n"
+            self._write_text_atomic(destination, merged)
+            source.unlink()
+            return
+        source.unlink()
 
     def _save_destination_metadata(
         self,
@@ -1085,6 +1068,8 @@ class WorkspaceStorage:
 
     def _rewrite_record_paths(self, record: dict[str, Any], *, old_base: Path, new_base: Path) -> dict[str, Any]:
         rewritten = dict(record)
+        if "reply_required" in rewritten:
+            rewritten["post_required"] = bool(rewritten.pop("reply_required"))
         old_rel = old_base.relative_to(self.workspace_dir).as_posix()
         new_rel = new_base.relative_to(self.workspace_dir).as_posix()
         if isinstance(rewritten.get("content"), str):
@@ -1097,6 +1082,9 @@ class WorkspaceStorage:
             upload = dict(item)
             if isinstance(upload.get("local_path"), str):
                 upload["local_path"] = upload["local_path"].replace(old_rel, new_rel)
+                changed_uploads = True
+            if isinstance(upload.get("rewritten_target"), str):
+                upload["rewritten_target"] = upload["rewritten_target"].replace(old_rel, new_rel)
                 changed_uploads = True
             uploads.append(upload)
         if uploads and changed_uploads:
@@ -1155,7 +1143,7 @@ class WorkspaceStorage:
         return record if isinstance(record, dict) else None
 
     def _remove_empty_dir(self, path: Path) -> None:
-        roots = {self.records_dir, self.instructions_dir, self.reflections_dir}
+        roots = {self.realm_dir, self.runtime_dir}
         while path.exists() and path not in roots:
             try:
                 path.rmdir()
@@ -1199,7 +1187,7 @@ class WorkspaceStorage:
         self,
         message_id: int,
     ) -> tuple[Path, list[dict[str, Any]], int, SessionKey] | None:
-        for path in sorted(self.records_dir.glob("**/messages.jsonl")):
+        for path in sorted(self.realm_dir.glob("**/messages.jsonl")):
             records = self._read_jsonl(path)
             for index, record in enumerate(records):
                 if self._optional_message_id(record) != message_id:

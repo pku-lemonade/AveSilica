@@ -741,7 +741,7 @@ def test_messages_for_active_topic_are_persisted_and_run_as_followup(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -772,7 +772,7 @@ def test_private_message_starts_typing_before_blocked_codex_and_stops(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
             typing=_typing(typing),
@@ -797,7 +797,7 @@ def test_stream_messages_type_for_directly_addressed_and_ordinary_messages(tmp_p
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=ThreadingCodex(),
             zulip=FakePoster(),
             typing=_typing(typing),
@@ -824,7 +824,7 @@ def test_silent_stream_message_starts_and_stops_typing_without_posting(tmp_path)
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=SilentCodex(),
             zulip=poster,
             typing=_typing(typing),
@@ -846,7 +846,7 @@ def test_conversation_turn_writes_prompt_traces(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PromptCapturingCodex(),
             zulip=FakePoster(),
         )
@@ -886,7 +886,7 @@ def test_dry_run_does_not_show_typing(tmp_path):
             config=_config(tmp_path, posting_enabled=False),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=ThreadingCodex(),
             zulip=FakePoster(),
             typing=_typing(typing),
@@ -908,7 +908,7 @@ def test_typing_stops_when_codex_or_posting_fails(tmp_path):
             config=_config(workspace),
             storage=WorkspaceStorage(workspace),
             instructions=InstructionLoader(workspace),
-            reflections=ReflectionStore(workspace / "reflections"),
+            reflections=ReflectionStore(workspace),
             codex=FailingCodex(),
             zulip=FakePoster(),
             typing=_typing(typing),
@@ -925,7 +925,7 @@ def test_typing_stops_when_codex_or_posting_fails(tmp_path):
             config=_config(workspace),
             storage=WorkspaceStorage(workspace),
             instructions=InstructionLoader(workspace),
-            reflections=ReflectionStore(workspace / "reflections"),
+            reflections=ReflectionStore(workspace),
             codex=ThreadingCodex(),
             zulip=FailingPoster(),
             typing=_typing(typing),
@@ -957,7 +957,7 @@ def test_reflection_ops_are_recorded_without_posting_acknowledgement(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=ReflectionCheckingCodex(),
             zulip=poster,
         )
@@ -965,7 +965,7 @@ def test_reflection_ops_are_recorded_without_posting_acknowledgement(tmp_path):
         await bot._handle_message(_message(1, "reflect on this"))
 
         assert poster.posts == [{"topic": "Launch", "content": "Recorded."}]
-        reflection_file = tmp_path / "reflections" / "stream-engineering-10" / "REFLECTIONS.md"
+        reflection_file = tmp_path / "realm" / "stream-engineering-10" / "REFLECTIONS.md"
         assert "explicit launch-date handling" in reflection_file.read_text(encoding="utf-8")
         record = json.loads(storage.session_path(_message(1).session_key, "turns.jsonl").read_text(encoding="utf-8").splitlines()[-1])
         assert record["reflection_applied"][0]["status"] == "applied"
@@ -982,7 +982,7 @@ def test_silent_turn_with_only_reflection_stays_silent(tmp_path):
             config=_config(tmp_path, posting_enabled=False),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=SilentReflectionCodex(),
             zulip=FakePoster(),
         )
@@ -995,7 +995,7 @@ def test_silent_turn_with_only_reflection_stays_silent(tmp_path):
         assert record["post"] is None
         assert record["reflection_applied"][0]["scope"] == "global"
         assert storage.read_pending_posted_bot_updates(message.session_key) == []
-        assert "silent turns" in (tmp_path / "reflections" / "REFLECTIONS.md").read_text(encoding="utf-8")
+        assert "silent turns" in (tmp_path / "realm" / "REFLECTIONS.md").read_text(encoding="utf-8")
 
     asyncio.run(scenario())
 
@@ -1008,7 +1008,7 @@ def test_turn_records_codex_timing_and_daily_stats(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=StatsCodex(),
             zulip=FakePoster(),
         )
@@ -1032,7 +1032,7 @@ def test_turn_records_codex_timing_and_daily_stats(tmp_path):
         assert post_call["tokens"]["last"]["reasoning_output_tokens"] == 2
         assert post_call["turn_phase"] == "post_decision"
 
-        stats_path = next((tmp_path / "records" / "codex_stats").glob("*.jsonl"))
+        stats_path = next((tmp_path / "realm" / "runtime" / "codex_stats").glob("*.jsonl"))
         stats_records = [json.loads(line) for line in stats_path.read_text(encoding="utf-8").splitlines()]
         e2e = stats_records[0]
         call_records = stats_records[1:]
@@ -1070,7 +1070,7 @@ def test_current_message_is_not_duplicated_and_recent_context_is_not_rendered(tm
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1098,7 +1098,7 @@ def test_post_prompt_uses_per_message_local_time_and_omits_control_metadata(tmp_
             config=_config(tmp_path, schedule_timezone="Asia/Shanghai"),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1128,7 +1128,7 @@ def test_post_prompt_message_time_falls_back_to_received_at(tmp_path):
             config=_config(tmp_path, schedule_timezone="Asia/Shanghai"),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1148,7 +1148,7 @@ def test_post_prompt_omits_time_when_message_time_is_unavailable(tmp_path):
             config=_config(tmp_path, schedule_timezone="Asia/Shanghai"),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1168,7 +1168,7 @@ def test_resumed_thread_gets_no_recent_context_or_developer_instructions(tmp_pat
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1205,7 +1205,7 @@ def test_legacy_thread_without_instruction_marker_auto_clears_and_starts_fresh(t
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1249,7 +1249,7 @@ def test_stale_post_instruction_mode_auto_clears_and_starts_fresh_thread(tmp_pat
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1285,7 +1285,7 @@ def test_missing_codex_rollout_restarts_marked_session_thread(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1293,7 +1293,7 @@ def test_missing_codex_rollout_restarts_marked_session_thread(tmp_path):
         await bot._handle_message(message)
 
         metadata = storage.load_metadata(message.session_key)
-        errors = (tmp_path / "records" / "errors").glob("*.jsonl")
+        errors = (tmp_path / "realm" / "runtime" / "errors").glob("*.jsonl")
         error_records = [
             json.loads(line)
             for path in errors
@@ -1321,7 +1321,7 @@ def test_missing_codex_rollout_during_post_restarts_session_thread(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )
@@ -1331,7 +1331,7 @@ def test_missing_codex_rollout_during_post_restarts_session_thread(tmp_path):
         metadata = storage.load_metadata(message.session_key)
         error_records = [
             json.loads(line)
-            for path in (tmp_path / "records" / "errors").glob("*.jsonl")
+            for path in (tmp_path / "realm" / "runtime" / "errors").glob("*.jsonl")
             for line in path.read_text(encoding="utf-8").splitlines()
         ]
         assert codex.ensure_thread_ids == [None]
@@ -1352,7 +1352,7 @@ def test_existing_reflections_are_not_injected_into_codex_prompts(tmp_path):
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
         message = _message(1, "hello")
-        reflection_file = tmp_path / "reflections" / "stream-engineering-10" / "REFLECTIONS.md"
+        reflection_file = tmp_path / "realm" / "stream-engineering-10" / "REFLECTIONS.md"
         reflection_file.parent.mkdir(parents=True, exist_ok=True)
         reflection_file.write_text("User may prefer terse launch reminders.\n", encoding="utf-8")
         storage = WorkspaceStorage(tmp_path)
@@ -1360,7 +1360,7 @@ def test_existing_reflections_are_not_injected_into_codex_prompts(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1388,7 +1388,7 @@ def test_posted_bot_update_is_injected_once_on_next_turn(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )
@@ -1423,7 +1423,7 @@ def test_clear_resets_codex_thread_and_starts_fresh_on_next_message(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )
@@ -1467,7 +1467,7 @@ def test_clear_in_pending_messages_splits_normal_turn_batches(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )
@@ -1500,7 +1500,7 @@ def test_pending_messages_render_distinct_per_message_local_times(tmp_path):
             config=_config(tmp_path, schedule_timezone="Asia/Shanghai"),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1531,7 +1531,7 @@ def test_status_reports_silent_decision_without_codex_call(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )
@@ -1559,7 +1559,7 @@ def test_status_reports_posted_message(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )
@@ -1588,7 +1588,7 @@ def test_status_reports_worker_error_surface(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )
@@ -1611,7 +1611,7 @@ def test_status_reports_post_failure_without_calling_codex_again(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=FailingCodex(),
             zulip=poster,
         )
@@ -1636,7 +1636,7 @@ def test_status_after_clear_reports_fresh_next_message(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=ThreadingCodex(),
             zulip=poster,
         )
@@ -1663,7 +1663,7 @@ def test_unaddressed_stream_clear_is_not_control_command(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )
@@ -1686,7 +1686,7 @@ def test_uploads_are_downloaded_after_typing_starts_and_rewritten_in_prompt(tmp_
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakeUploadPoster(typing, tmp_path),
             typing=_typing(typing),
@@ -1695,7 +1695,7 @@ def test_uploads_are_downloaded_after_typing_starts_and_rewritten_in_prompt(tmp_
         await bot._handle_message(_message(1, "inspect ![diagram](/user_uploads/7/Ab/diagram.png)"))
 
         assert typing.events == [("start", 1), ("stop", 1)]
-        assert "![diagram](records/stream-engineering-10/topic-launch-topic123/uploads/1/01-diagram.png)" in codex.prompt
+        assert "![diagram](realm/stream-engineering-10/topic-launch-topic123/uploads/1/01-diagram.png)" in codex.prompt
         message_record = bot.storage.read_recent_messages(_message(1).session_key, 1)[0]
         assert message_record["uploads"][0]["status"] == "downloaded"
 
@@ -1710,7 +1710,7 @@ def test_bot_authored_events_are_ignored_without_raw_event_storage(tmp_path):
             config=config,
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=ReflectionCheckingCodex(),
             zulip=FakePoster(),
         )
@@ -1733,7 +1733,7 @@ def test_bot_authored_events_are_ignored_without_raw_event_storage(tmp_path):
         assert result.accepted is False
         assert bot.queue.empty()
         assert not (tmp_path / "state").exists()
-        assert "ignored bot-authored message" in next((tmp_path / "records" / "errors").glob("*.jsonl")).read_text(
+        assert "ignored bot-authored message" in next((tmp_path / "realm" / "runtime" / "errors").glob("*.jsonl")).read_text(
             encoding="utf-8"
         )
 
@@ -1790,7 +1790,7 @@ def test_private_zulip_event_is_accepted_and_posted_to(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=ThreadingCodex(),
             zulip=poster,
             typing=TypingStatusManager(typing, enabled=True, refresh_seconds=60),
@@ -1841,7 +1841,7 @@ def test_reaction_event_updates_message_without_codex_turn(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
             typing=_typing(typing),
@@ -1872,7 +1872,7 @@ def test_reaction_remove_deletes_active_reaction_without_queueing(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PromptCapturingCodex(),
             zulip=FakePoster(),
         )
@@ -1896,7 +1896,7 @@ def test_unknown_reaction_event_is_ignored_without_queueing(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PromptCapturingCodex(),
             zulip=FakePoster(),
         )
@@ -1907,7 +1907,7 @@ def test_unknown_reaction_event_is_ignored_without_queueing(tmp_path):
         assert result.reason == "ignored reaction for unknown message"
         assert result.message_id == 404
         assert bot.queue.empty()
-        error_text = next((tmp_path / "records" / "errors").glob("*.jsonl")).read_text(encoding="utf-8")
+        error_text = next((tmp_path / "realm" / "runtime" / "errors").glob("*.jsonl")).read_text(encoding="utf-8")
         assert "ignored reaction for unknown message" in error_text
 
     asyncio.run(scenario())
@@ -1922,7 +1922,7 @@ def test_bot_authored_reaction_event_is_ignored(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=PromptCapturingCodex(),
             zulip=FakePoster(),
         )
@@ -1951,7 +1951,7 @@ def test_active_reaction_on_prior_message_is_not_replayed_as_recent_context(tmp_
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -1977,7 +1977,7 @@ def test_update_message_move_event_relocates_records_without_codex_turn(tmp_path
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=FakePoster(),
         )
@@ -2011,7 +2011,7 @@ def test_private_message_posts_fallback_when_codex_is_silent(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=SilentCodex(),
             zulip=poster,
         )
@@ -2033,7 +2033,7 @@ def test_private_reflection_only_decision_posts_fallback_without_acknowledgement
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=SilentReflectionCodex(),
             zulip=poster,
         )
@@ -2058,7 +2058,7 @@ def test_group_private_messages_from_different_senders_share_session(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            reflections=ReflectionStore(tmp_path / "reflections"),
+            reflections=ReflectionStore(tmp_path),
             codex=codex,
             zulip=poster,
         )

@@ -11,16 +11,10 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX fallback
     fcntl = None
 
-from .models import (
-    ReflectionOperation,
-    SessionKey,
-    scoped_private_dir,
-    scoped_stream_dir,
-    utc_now_iso,
-)
+from .layout import REFLECTIONS_FILENAME, WorkspaceLayout
+from .models import ReflectionOperation, SessionKey, utc_now_iso
 
 
-REFLECTIONS_FILENAME = "REFLECTIONS.md"
 _REFLECTION_APPEND_LOCKS: dict[Path, threading.Lock] = {}
 _REFLECTION_APPEND_LOCKS_GUARD = threading.Lock()
 
@@ -52,9 +46,9 @@ _ARCHIVAL_PATTERNS = (
 
 
 class ReflectionStore:
-    def __init__(self, reflections_dir: Path) -> None:
-        self.reflections_dir = reflections_dir.expanduser().resolve()
-        self.reflections_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, workspace_dir: Path) -> None:
+        self.layout = WorkspaceLayout(workspace_dir)
+        self.layout.realm_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_ops(
         self,
@@ -71,12 +65,12 @@ class ReflectionStore:
 
     def _destination(self, session_key: SessionKey, requested_scope: str) -> tuple[str, Path]:
         if requested_scope == "global":
-            return "global", self.reflections_dir
+            return "global", self.layout.realm_dir
         if requested_scope != "source":
             raise ValueError(f"invalid reflection scope: {requested_scope!r}")
         if session_key.conversation_type == "private":
-            return "private", scoped_private_dir(self.reflections_dir, session_key)
-        return "channel", scoped_stream_dir(self.reflections_dir, session_key)
+            return "private", self.layout.source_dir(session_key)
+        return "channel", self.layout.source_dir(session_key)
 
     def _append(
         self,
@@ -102,7 +96,7 @@ class ReflectionStore:
             "kind": op.kind,
             "suggested_target": op.suggested_target,
             "content": content,
-            "path": str(path.relative_to(self.reflections_dir.parent)),
+            "path": self.layout.relative(path),
         }
         if source_message_ids:
             result["source_message_ids"] = source_message_ids

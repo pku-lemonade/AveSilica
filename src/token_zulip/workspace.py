@@ -4,6 +4,8 @@ import re
 import shutil
 from pathlib import Path
 
+from .layout import AGENTS_FILENAME, REALM_DIRNAME, REFLECTIONS_FILENAME, migrate_legacy_workspace
+
 
 WORKSPACE_DIRS: tuple[str, ...] = (
     "references",
@@ -12,16 +14,18 @@ WORKSPACE_DIRS: tuple[str, ...] = (
     "references/skill",
     "references/schedule",
     "references/scheduled_job",
-    "instructions",
-    "reflections",
+    REALM_DIRNAME,
+    f"{REALM_DIRNAME}/runtime",
+    f"{REALM_DIRNAME}/runtime/errors",
+    f"{REALM_DIRNAME}/runtime/scheduled",
+    f"{REALM_DIRNAME}/runtime/codex_stats",
     "skills",
     "schedules",
-    "records",
-    "records/errors",
-    "records/scheduled",
 )
 
 SHARED_SYSTEM_FILE = "references/system.md"
+GLOBAL_AGENTS_FILE = f"{REALM_DIRNAME}/{AGENTS_FILENAME}"
+GLOBAL_REFLECTIONS_FILE = f"{REALM_DIRNAME}/{REFLECTIONS_FILENAME}"
 POST_TURN_USER_PROMPT_FILE = "references/post/user.md"
 REFLECTIONS_WORKER_USER_PROMPT_FILE = "references/reflections/user.md"
 SKILL_WORKER_USER_PROMPT_FILE = "references/skill/user.md"
@@ -46,18 +50,19 @@ WORKSPACE_TEMPLATE_FILES: tuple[str, ...] = (
     SKILL_DECISION_SCHEMA_FILE,
     SCHEDULE_DECISION_SCHEMA_FILE,
     SCHEDULED_JOB_DECISION_SCHEMA_FILE,
-    "AGENTS.md",
+    GLOBAL_AGENTS_FILE,
     "references/post/system.md",
     "references/reflections/system.md",
     "references/skill/system.md",
     "references/schedule/system.md",
     "references/scheduled_job/system.md",
-    "reflections/REFLECTIONS.md",
+    GLOBAL_REFLECTIONS_FILE,
 )
 
 
 def initialize_workspace(root: Path, overwrite: bool = False) -> list[Path]:
     root = root.expanduser().resolve()
+    migrate_legacy_workspace(root)
     template_root = _workspace_template_root(root)
     created: list[Path] = []
 

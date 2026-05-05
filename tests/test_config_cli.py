@@ -85,15 +85,15 @@ def test_cli_init_creates_workspace_layout(tmp_path):
 
     assert main(["--workspace", str(workspace), "init"]) == 0
 
-    assert (workspace / "AGENTS.md").exists()
+    assert (workspace / "realm" / "AGENTS.md").exists()
+    assert (workspace / "realm" / "REFLECTIONS.md").exists()
     assert (workspace / "references" / "post" / "system.md").exists()
     assert (workspace / "references" / "reflections" / "system.md").exists()
     assert (workspace / "references" / "schedule" / "user.md").exists()
-    assert (workspace / "instructions").exists()
-    assert (workspace / "reflections" / "REFLECTIONS.md").exists()
-    assert (workspace / "records").exists()
-    assert not (workspace / "records" / "sessions").exists()
-    assert (workspace / "records" / "errors").exists()
+    assert not (workspace / "instructions").exists()
+    assert not (workspace / "reflections").exists()
+    assert not (workspace / "records").exists()
+    assert (workspace / "realm" / "runtime" / "errors").exists()
     assert not (workspace / "state").exists()
     assert not (workspace / "roles").exists()
     assert not (workspace / "loop").exists()

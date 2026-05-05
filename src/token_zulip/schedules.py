@@ -32,6 +32,7 @@ from .models import (
     safe_slug,
     utc_now_iso,
 )
+from .layout import WorkspaceLayout
 
 
 SCHEDULES_FILENAME = "jobs.json"
@@ -181,16 +182,17 @@ def compute_next_run(schedule: dict[str, Any], timezone_name: str, last_run_at: 
 class ScheduleStore:
     def __init__(self, workspace_dir: Path, *, timezone_name: str = "UTC") -> None:
         self.workspace_dir = workspace_dir.expanduser().resolve()
+        self.layout = WorkspaceLayout(self.workspace_dir)
         self.timezone_name = timezone_name
         self.schedules_dir = self.workspace_dir / "schedules"
-        self.records_dir = self.workspace_dir / "records" / "scheduled"
+        self.run_records_dir = self.layout.scheduled_records_dir
         self.jobs_file = self.schedules_dir / SCHEDULES_FILENAME
         self.lock_file = self.schedules_dir / ".jobs.lock"
         self.ensure_dirs()
 
     def ensure_dirs(self) -> None:
         self.schedules_dir.mkdir(parents=True, exist_ok=True)
-        self.records_dir.mkdir(parents=True, exist_ok=True)
+        self.run_records_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_ops(
         self,
@@ -554,7 +556,7 @@ class ScheduleStore:
                 return
 
     def log_run(self, job_id: str, record: dict[str, Any]) -> None:
-        directory = self.records_dir / safe_slug(job_id)
+        directory = self.run_records_dir / safe_slug(job_id)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / SCHEDULE_OUTPUT_FILENAME
         with path.open("a", encoding="utf-8") as handle:
