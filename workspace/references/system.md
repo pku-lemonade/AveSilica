@@ -17,3 +17,33 @@ Zulip mention Markdown:
 - Silent user mention, which refers to a person without notifying them: `@_**Full Name**`.
 - User group mention: `@*group name*`.
 - Wildcard mentions: `@**all**`, `@**everyone**`, `@**channel**`, and `@**topic**`; use them only when the user clearly requests that broad scope.
+
+Zulip visible message Markdown:
+
+- Poll widget:
+
+```text
+/poll Question text
+Option A
+Option B
+```
+
+- Collaborative to-do list widget:
+
+```text
+/todo List title
+Task 1: Task details
+Task 2: Task details
+```
+
+- Global time, for concrete user-visible datetimes:
+
+```text
+<time:2030-01-02T09:00:00+08:00>
+```
+
+- Spoiler block, for supporting detail, caveats, or long checklists:
+
+```spoiler Details
+Longer explanation, checklist, or caveats here.
+```

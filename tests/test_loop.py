@@ -1186,7 +1186,7 @@ def test_resumed_thread_gets_no_recent_context_or_developer_instructions(tmp_pat
     asyncio.run(scenario())
 
 
-def test_legacy_thread_without_instruction_marker_starts_fresh_without_recent_context(tmp_path):
+def test_legacy_thread_without_instruction_marker_auto_clears_and_starts_fresh(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -1195,6 +1195,12 @@ def test_legacy_thread_without_instruction_marker_starts_fresh_without_recent_co
         current = _message(2, "current after migration")
         storage.append_message(previous)
         storage.set_codex_thread_id(previous.session_key, "legacy-thread")
+        storage.append_posted_bot_update(
+            previous.session_key,
+            source="conversation_turn",
+            content="Legacy visible bot update",
+            post={"status": "sent"},
+        )
         bot = AgentLoop(
             config=_config(tmp_path),
             storage=storage,
@@ -1211,13 +1217,17 @@ def test_legacy_thread_without_instruction_marker_starts_fresh_without_recent_co
         assert codex.developer_instructions[0] is None
         assert codex.ensure_developer_instructions[0] is not None
         assert "legacy context" not in codex.prompt
+        assert "Legacy visible bot update" not in codex.prompt
         assert metadata.codex_thread_id == "thread-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
+        assert metadata.previous_codex_thread_id == "legacy-thread"
+        assert metadata.cleared_at_message_id == 2
+        assert storage.read_pending_posted_bot_updates(current.session_key) == []
 
     asyncio.run(scenario())
 
 
-def test_stale_reply_instruction_mode_starts_fresh_thread(tmp_path):
+def test_stale_reply_instruction_mode_auto_clears_and_starts_fresh_thread(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -1226,8 +1236,14 @@ def test_stale_reply_instruction_mode_starts_fresh_thread(tmp_path):
         storage.append_message(message)
         storage.set_codex_thread_state(
             message.session_key,
-            thread_id="old-v2-thread",
-            instruction_mode="reply-session-v2",
+            thread_id="old-v3-thread",
+            instruction_mode="reply-session-v3",
+        )
+        storage.append_posted_bot_update(
+            message.session_key,
+            source="conversation_turn",
+            content="Old visible bot update",
+            post={"status": "sent"},
         )
         bot = AgentLoop(
             config=_config(tmp_path),
@@ -1243,8 +1259,12 @@ def test_stale_reply_instruction_mode_starts_fresh_thread(tmp_path):
         metadata = storage.load_metadata(message.session_key)
         assert codex.ensure_thread_ids == [None]
         assert codex.ensure_developer_instructions[0] is not None
+        assert "Old visible bot update" not in codex.prompt
         assert metadata.codex_thread_id == "thread-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
+        assert metadata.previous_codex_thread_id == "old-v3-thread"
+        assert metadata.cleared_at_message_id == 1
+        assert storage.read_pending_posted_bot_updates(message.session_key) == []
 
     asyncio.run(scenario())
 

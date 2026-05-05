@@ -53,9 +53,14 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     reply_system_text = (tmp_path / "references" / "reply" / "system.md").read_text(encoding="utf-8")
     reflections_system_text = (tmp_path / "references" / "reflections" / "system.md").read_text(encoding="utf-8")
 
-    assert "```spoiler Details" in global_text
-    assert "Keep replies chat-sized" in global_text
-    assert "long useful public-channel replies" in global_text
+    assert "Zulip spoiler block" in global_text
+    assert "```spoiler Details" not in global_text
+    assert "Sili is a copilot in the Zulip conversation" in global_text
+    assert "Keep assisting messages chat-sized" in global_text
+    assert "formalized to-do list" in global_text
+    assert "Use Zulip poll syntax" in global_text
+    assert "Use Zulip to-do syntax" in global_text
+    assert "long useful public-channel assisting messages" in global_text
     assert "supporting detail, caveats, or long checklists" in global_text
     assert "when Silica can materially improve" not in global_text
     assert "```spoiler Details" not in reply_system_text
@@ -133,6 +138,22 @@ def test_shared_instruction_includes_zulip_mention_semantics_for_reply_and_worke
         assert "`@_**Full Name**`" in text
         assert "`@*group name*`" in text
         assert "`@**topic**`" in text
+
+
+def test_shared_instruction_includes_zulip_visible_markdown(tmp_path):
+    initialize_workspace(tmp_path)
+
+    system_text = (tmp_path / "references" / "system.md").read_text(encoding="utf-8")
+    reply_prompt = (tmp_path / "references" / "reply" / "user.md").read_text(encoding="utf-8")
+    scheduled_prompt = (tmp_path / "references" / "scheduled_job" / "user.md").read_text(encoding="utf-8")
+
+    assert "Zulip visible message Markdown" in system_text
+    assert "/poll Question text" in system_text
+    assert "/todo List title" in system_text
+    assert "<time:2030-01-02T09:00:00+08:00>" in system_text
+    assert "```spoiler Details" in system_text
+    assert "/poll Question text" not in reply_prompt
+    assert "/todo List title" not in scheduled_prompt
 
 
 def test_scheduled_job_instruction_mentions_persisted_mentions_only(tmp_path):

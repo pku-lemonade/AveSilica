@@ -47,7 +47,7 @@ from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, nor
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_REPLY_FALLBACK = "I saw this, but couldn't produce a useful reply. Please try again."
-CODEX_INSTRUCTION_MODE = "reply-session-v3"
+CODEX_INSTRUCTION_MODE = "reply-session-v4"
 
 
 class ZulipPoster(Protocol):
@@ -545,6 +545,8 @@ class AgentLoop:
                 first = messages[0]
 
             with telemetry.phase("build_worker_prompts"):
+                if metadata.codex_thread_id and metadata.codex_instruction_mode != CODEX_INSTRUCTION_MODE:
+                    metadata = self.storage.clear_session_context(key, first)
                 active_thread_id = (
                     metadata.codex_thread_id
                     if metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE and metadata.codex_thread_id
@@ -1631,8 +1633,8 @@ class AgentLoop:
                         item_id = str(item.get("id") or "")
                         id_suffix = f" (`{item_id}`)" if item_id else ""
                         lines.append(
-                            f"- **{item_name}**{id_suffix}: {self._schedule_trigger_label(item)}; "
-                            f"{state}; next {self._format_schedule_time(item.get('next_run_at'))}"
+                            f"- **{item_name}**{id_suffix}: {self._schedule_trigger_label(item, visible=True)}; "
+                            f"{state}; next {self._format_visible_schedule_time(item.get('next_run_at'))}"
                         )
                     changes.append("\n".join(lines))
                 continue
@@ -1668,9 +1670,9 @@ class AgentLoop:
         if action == "pause":
             lines.append("- State: paused")
         elif action in {"create", "update", "resume", "run_now"}:
-            lines.append(f"- Trigger: {self._schedule_trigger_label(job or result)}")
+            lines.append(f"- Trigger: {self._schedule_trigger_label(job or result, visible=True)}")
             next_run_at = result.get("next_run_at") or job.get("next_run_at")
-            lines.append(f"- Next run: {self._format_schedule_time(next_run_at)}")
+            lines.append(f"- Next run: {self._format_visible_schedule_time(next_run_at)}")
         confirmation_mentions = self._confirmation_mentions(job)
         if confirmation_mentions:
             lines.append(f"- Mentions on run: {', '.join(confirmation_mentions)}")
@@ -1678,22 +1680,23 @@ class AgentLoop:
             lines.append(f"- Job ID: `{job_id}`")
         return "\n".join(lines)
 
-    def _schedule_trigger_label(self, job: dict[str, Any]) -> str:
+    def _schedule_trigger_label(self, job: dict[str, Any], *, visible: bool = False) -> str:
         detail = job.get("schedule_detail")
         if not isinstance(detail, dict):
             detail = job.get("schedule") if isinstance(job.get("schedule"), dict) else {}
         if detail:
-            described = self._describe_schedule_detail(detail)
+            described = self._describe_schedule_detail(detail, visible=visible)
             if described:
                 return described
         schedule = str(job.get("schedule") or "").strip()
         return schedule or "unscheduled"
 
-    def _describe_schedule_detail(self, schedule: dict[str, Any]) -> str:
+    def _describe_schedule_detail(self, schedule: dict[str, Any], *, visible: bool = False) -> str:
         timezone_name = str(schedule.get("timezone") or self.config.schedule_timezone)
         kind = str(schedule.get("kind") or "")
         if kind == "once":
-            return f"once at {self._format_schedule_time(schedule.get('run_at'), timezone_name=timezone_name)}"
+            formatter = self._format_visible_schedule_time if visible else self._format_schedule_time
+            return f"once at {formatter(schedule.get('run_at'), timezone_name=timezone_name)}"
         if kind == "interval":
             return f"every {self._duration_label(int(schedule.get('minutes') or 0))}"
         if kind == "cron":
@@ -1728,6 +1731,19 @@ class AgentLoop:
                 dt = dt.replace(tzinfo=zoneinfo_for(tz_name))
             local_dt = dt.astimezone(zoneinfo_for(tz_name))
             return f"{local_dt.strftime('%Y-%m-%d %H:%M')} {tz_name}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _format_visible_schedule_time(self, value: object, *, timezone_name: str | None = None) -> str:
+        if not value:
+            return "none"
+        tz_name = timezone_name or self.config.schedule_timezone
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=zoneinfo_for(tz_name))
+            local_dt = dt.astimezone(zoneinfo_for(tz_name))
+            return f"<time:{local_dt.isoformat(timespec='seconds')}>"
         except (TypeError, ValueError):
             return str(value)
 

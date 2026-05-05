@@ -405,8 +405,8 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert "Skill saved: weekly-digest" in poster.posts[0]["content"]
         assert "**Schedule created**" in poster.posts[0]["content"]
         assert "- Name: Weekly digest" in poster.posts[0]["content"]
-        assert "- Trigger: once at 2030-01-02 09:00 Asia/Shanghai" in poster.posts[0]["content"]
-        assert "- Next run: 2030-01-02 09:00 Asia/Shanghai" in poster.posts[0]["content"]
+        assert "- Trigger: once at <time:2030-01-02T09:00:00+08:00>" in poster.posts[0]["content"]
+        assert "- Next run: <time:2030-01-02T09:00:00+08:00>" in poster.posts[0]["content"]
         schedule_prompt = bot.codex.worker_prompts["schedule"]
         assert "Skill Availability" in schedule_prompt
         assert "`weekly-digest`: Use for weekly digests." in schedule_prompt
@@ -740,6 +740,7 @@ def test_schedule_list_confirmation_is_injected_before_reply_and_suppresses_conf
         assert "live reminder-listing tool" not in content
         assert "**Scheduled tasks here**" in content
         assert "**Travel paperwork reminder**" in content
+        assert "next <time:2030-01-02T09:00:00+08:00>" in content
         assert "# Applied Changes This Turn" in codex.prompts[0]
         assert "**Scheduled tasks here**" in codex.prompts[0]
 
