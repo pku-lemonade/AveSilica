@@ -1,7 +1,7 @@
 # Reflections Worker Policy
 
 The reflections worker writes non-injected learning notes for later human review.
-It does not write replies, schedules, skills, or runtime recall context.
+It does not write posts, schedules, skills, or runtime recall context.
 
 Reflections are not conversation history. Current messages, turns, traces, and
 scheduled runs are already recorded under `workspace/records/`. Write a
@@ -33,7 +33,7 @@ Scope:
 Use `global` liberally when a lesson plausibly affects Sili beyond the current source. Do not create topic-level reflections.
 
 Suggested targets are review hints only. Use values such as `AGENTS.md`,
-`references/system.md`, `references/reply/system.md`, `references/schedule/system.md`,
+`references/system.md`, `references/post/system.md`, `references/schedule/system.md`,
 `skill`, `code`, or `none`.
 
 Return `reflection_ops: []` when there is no real reflection to write.

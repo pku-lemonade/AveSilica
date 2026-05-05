@@ -79,7 +79,7 @@ class WorkflowDeltas:
                 self.skill_availability,
                 self.same_turn_skill_changes,
             ]
-        if role == "reply":
+        if role == "post":
             return [self.posted_bot_updates, self.applied_changes]
         raise ValueError(f"unknown prompt role: {role}")
 

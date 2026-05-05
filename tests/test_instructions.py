@@ -18,13 +18,13 @@ def test_instruction_layers_are_ordered(tmp_path):
 
     assert "## Source: references/system.md" in text
     assert text.index("## Source: references/system.md") < text.index("## Source: AGENTS.md")
-    assert text.index("## Source: AGENTS.md") < text.index("## Source: references/reply/system.md")
+    assert text.index("## Source: AGENTS.md") < text.index("## Source: references/post/system.md")
     assert "Do not try to write files" not in text
     assert "references/reflections/system.md" not in text
     assert "references/schedule/system.md" not in text
     stream_label = "instructions/stream-engineering-10/AGENTS.md"
     topic_label = f"instructions/stream-engineering-10/topic-launch-plan-{topic_hash}/AGENTS.md"
-    assert text.index("## Source: references/reply/system.md") < text.index(stream_label)
+    assert text.index("## Source: references/post/system.md") < text.index(stream_label)
     assert text.index(stream_label) < text.index(topic_label)
     assert "stream rule" in text
     assert "topic rule" in text
@@ -50,7 +50,7 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     initialize_workspace(tmp_path)
 
     global_text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
-    reply_system_text = (tmp_path / "references" / "reply" / "system.md").read_text(encoding="utf-8")
+    post_system_text = (tmp_path / "references" / "post" / "system.md").read_text(encoding="utf-8")
     reflections_system_text = (tmp_path / "references" / "reflections" / "system.md").read_text(encoding="utf-8")
 
     assert "Zulip spoiler block" in global_text
@@ -63,12 +63,12 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     assert "long useful public-channel assisting messages" in global_text
     assert "supporting detail, caveats, or long checklists" in global_text
     assert "when Silica can materially improve" not in global_text
-    assert "```spoiler Details" not in reply_system_text
-    assert "when Silica can materially improve" in reply_system_text
-    assert "use available lookup tools" in reply_system_text
-    assert "named tools/frameworks" in reply_system_text
-    assert "include source links in the visible reply" in reply_system_text
-    assert "instead of suggesting search terms" in reply_system_text
+    assert "```spoiler Details" not in post_system_text
+    assert "when Silica can materially improve" in post_system_text
+    assert "use available lookup tools" in post_system_text
+    assert "named tools/frameworks" in post_system_text
+    assert "include source links in the visible post" in post_system_text
+    assert "instead of suggesting search terms" in post_system_text
     assert "unsupported claims" in reflections_system_text
     assert "reflection_ops: []" in reflections_system_text
     assert "Do not create topic-level reflections" in reflections_system_text
@@ -92,7 +92,7 @@ def test_private_instruction_loads_scoped_agents(tmp_path):
     assert "private rule" in text
 
 
-def test_worker_instruction_profiles_do_not_load_reply_policy(tmp_path):
+def test_worker_instruction_profiles_do_not_load_post_policy(tmp_path):
     initialize_workspace(tmp_path)
 
     text = InstructionLoader(tmp_path).compose(
@@ -105,7 +105,7 @@ def test_worker_instruction_profiles_do_not_load_reply_policy(tmp_path):
 
     assert "## Source: references/system.md" in text
     assert "## Source: references/schedule/system.md" in text
-    assert "## Source: references/reply/system.md" not in text
+    assert "## Source: references/post/system.md" not in text
     assert "## Source: AGENTS.md" not in text
     assert "schedule_ops" in text
     assert "mention_targets" in text
@@ -120,11 +120,11 @@ def test_worker_instruction_profiles_do_not_load_reply_policy(tmp_path):
     assert "Current Scheduled Tasks Here" in text
 
 
-def test_shared_instruction_includes_zulip_mention_semantics_for_reply_and_workers(tmp_path):
+def test_shared_instruction_includes_zulip_mention_semantics_for_post_and_workers(tmp_path):
     initialize_workspace(tmp_path)
     topic_hash = normalized_topic_hash("Launch Plan")
 
-    reply_text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, stream_id=10)
+    post_text = InstructionLoader(tmp_path).compose("Engineering", topic_hash, stream_id=10)
     schedule_text = InstructionLoader(tmp_path).compose(
         "Engineering",
         topic_hash,
@@ -132,7 +132,7 @@ def test_shared_instruction_includes_zulip_mention_semantics_for_reply_and_worke
         stream_id=10,
     )
 
-    for text in (reply_text, schedule_text):
+    for text in (post_text, schedule_text):
         assert "Zulip mention Markdown" in text
         assert "`@**Full Name**`" in text
         assert "`@_**Full Name**`" in text
@@ -144,7 +144,7 @@ def test_shared_instruction_includes_zulip_visible_markdown(tmp_path):
     initialize_workspace(tmp_path)
 
     system_text = (tmp_path / "references" / "system.md").read_text(encoding="utf-8")
-    reply_prompt = (tmp_path / "references" / "reply" / "user.md").read_text(encoding="utf-8")
+    post_prompt = (tmp_path / "references" / "post" / "user.md").read_text(encoding="utf-8")
     scheduled_prompt = (tmp_path / "references" / "scheduled_job" / "user.md").read_text(encoding="utf-8")
 
     assert "Zulip visible message Markdown" in system_text
@@ -152,7 +152,7 @@ def test_shared_instruction_includes_zulip_visible_markdown(tmp_path):
     assert "/todo List title" in system_text
     assert "<time:2030-01-02T09:00:00+08:00>" in system_text
     assert "```spoiler Details" in system_text
-    assert "/poll Question text" not in reply_prompt
+    assert "/poll Question text" not in post_prompt
     assert "/todo List title" not in scheduled_prompt
 
 

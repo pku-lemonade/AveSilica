@@ -452,8 +452,8 @@ def test_reflection_store_writes_global_channel_and_private_inboxes(tmp_path):
             ReflectionOperation(
                 scope="global",
                 kind="policy_candidate",
-                suggested_target="references/reply/system.md",
-                content="User seems to dislike context-free public-thread suggestions; consider tightening reply policy.",
+                suggested_target="references/post/system.md",
+                content="User seems to dislike context-free public-thread suggestions; consider tightening post policy.",
             )
         ],
         [1],
@@ -477,7 +477,7 @@ def test_reflection_store_writes_global_channel_and_private_inboxes(tmp_path):
                 scope="source",
                 kind="style_preference",
                 suggested_target="AGENTS.md",
-                content="Private chats might need shorter operational replies when the user is scheduling reminders.",
+                content="Private chats might need shorter operational posts when the user is scheduling reminders.",
             )
         ],
         [3],
@@ -490,7 +490,7 @@ def test_reflection_store_writes_global_channel_and_private_inboxes(tmp_path):
     assert "concise architecture" in (
         tmp_path / "reflections" / "stream-engineering-10" / "REFLECTIONS.md"
     ).read_text(encoding="utf-8")
-    assert "shorter operational replies" in (
+    assert "shorter operational posts" in (
         tmp_path / "reflections" / "private-recipient-1001" / "REFLECTIONS.md"
     ).read_text(encoding="utf-8")
     assert not (tmp_path / "reflections" / "stream-engineering-10" / "topic-launch-topic123").exists()
@@ -509,7 +509,7 @@ def test_reflection_store_serializes_concurrent_global_appends(tmp_path):
                 ReflectionOperation(
                     scope="global",
                     kind="workflow_lesson",
-                    suggested_target="references/reply/system.md",
+                    suggested_target="references/post/system.md",
                     content=(
                         "Future reflection writes may need append serialization.\n"
                         f"Unique global candidate token {index:03d}."

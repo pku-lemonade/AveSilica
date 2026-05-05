@@ -7,7 +7,7 @@ from pathlib import Path
 
 WORKSPACE_DIRS: tuple[str, ...] = (
     "references",
-    "references/reply",
+    "references/post",
     "references/reflections",
     "references/skill",
     "references/schedule",
@@ -22,32 +22,32 @@ WORKSPACE_DIRS: tuple[str, ...] = (
 )
 
 SHARED_SYSTEM_FILE = "references/system.md"
-REPLY_TURN_USER_PROMPT_FILE = "references/reply/user.md"
+POST_TURN_USER_PROMPT_FILE = "references/post/user.md"
 REFLECTIONS_WORKER_USER_PROMPT_FILE = "references/reflections/user.md"
 SKILL_WORKER_USER_PROMPT_FILE = "references/skill/user.md"
 SCHEDULE_WORKER_USER_PROMPT_FILE = "references/schedule/user.md"
 SCHEDULED_JOB_USER_PROMPT_FILE = "references/scheduled_job/user.md"
-REPLY_DECISION_SCHEMA_FILE = "references/reply/schema.json"
+POST_DECISION_SCHEMA_FILE = "references/post/schema.json"
 REFLECTIONS_DECISION_SCHEMA_FILE = "references/reflections/schema.json"
 SKILL_DECISION_SCHEMA_FILE = "references/skill/schema.json"
 SCHEDULE_DECISION_SCHEMA_FILE = "references/schedule/schema.json"
 SCHEDULED_JOB_DECISION_SCHEMA_FILE = "references/scheduled_job/schema.json"
-DECISION_SCHEMA_FILE = REPLY_DECISION_SCHEMA_FILE
+DECISION_SCHEMA_FILE = POST_DECISION_SCHEMA_FILE
 
 WORKSPACE_TEMPLATE_FILES: tuple[str, ...] = (
     SHARED_SYSTEM_FILE,
-    REPLY_TURN_USER_PROMPT_FILE,
+    POST_TURN_USER_PROMPT_FILE,
     REFLECTIONS_WORKER_USER_PROMPT_FILE,
     SKILL_WORKER_USER_PROMPT_FILE,
     SCHEDULE_WORKER_USER_PROMPT_FILE,
     SCHEDULED_JOB_USER_PROMPT_FILE,
-    REPLY_DECISION_SCHEMA_FILE,
+    POST_DECISION_SCHEMA_FILE,
     REFLECTIONS_DECISION_SCHEMA_FILE,
     SKILL_DECISION_SCHEMA_FILE,
     SCHEDULE_DECISION_SCHEMA_FILE,
     SCHEDULED_JOB_DECISION_SCHEMA_FILE,
     "AGENTS.md",
-    "references/reply/system.md",
+    "references/post/system.md",
     "references/reflections/system.md",
     "references/skill/system.md",
     "references/schedule/system.md",

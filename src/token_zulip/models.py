@@ -11,7 +11,7 @@ from typing import Any
 from slugify import slugify
 
 
-REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
+POST_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
 REFLECTION_SCOPES = {"global", "source"}
 SCHEDULE_OPS = {"create", "update", "remove", "pause", "resume", "list", "run_now"}
 SCHEDULE_SPEC_KINDS = {"unchanged", "once_at", "once_in", "interval", "cron"}
@@ -119,7 +119,7 @@ class NormalizedMessage:
     conversation_type: str = "stream"
     private_recipient_key: str | None = None
     private_recipients: list[dict[str, Any]] = field(default_factory=list)
-    reply_required: bool = False
+    post_required: bool = False
     directly_addressed: bool = False
     uploads: list[dict[str, Any]] = field(default_factory=list)
     reactions: list[dict[str, Any]] = field(default_factory=list)
@@ -140,7 +140,7 @@ class NormalizedMessage:
     def to_record(self) -> dict[str, Any]:
         record: dict[str, Any] = {
             "message_id": self.message_id,
-            "reply_required": self.reply_required,
+            "post_required": self.post_required,
             "sender_email": self.sender_email,
             "sender_full_name": self.sender_full_name,
             "sender_id": self.sender_id,
@@ -474,46 +474,46 @@ class ScheduleOperation:
 
 
 @dataclass(frozen=True)
-class ReplyDecision:
-    should_reply: bool
-    reply_kind: str
+class PostDecision:
+    should_post: bool
+    post_kind: str
     message_to_post: str
     confidence: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def silent(cls, raw: dict[str, Any] | None = None) -> "ReplyDecision":
+    def silent(cls, raw: dict[str, Any] | None = None) -> "PostDecision":
         return cls(
-            should_reply=False,
-            reply_kind="silent",
+            should_post=False,
+            post_kind="silent",
             message_to_post="",
             confidence=0.0,
             raw=raw or {},
         )
 
     @classmethod
-    def from_json_text(cls, text: str) -> "ReplyDecision":
+    def from_json_text(cls, text: str) -> "PostDecision":
         payload = _extract_json_object(text)
         data = json.loads(payload)
         if not isinstance(data, dict):
             raise ValueError("decision JSON must be an object")
 
-        reply_kind = str(data.get("reply_kind") or "silent")
-        if reply_kind not in REPLY_KINDS:
-            raise ValueError(f"invalid reply_kind: {reply_kind!r}")
+        post_kind = str(data.get("post_kind") or "silent")
+        if post_kind not in POST_KINDS:
+            raise ValueError(f"invalid post_kind: {post_kind!r}")
 
         confidence = float(data.get("confidence") or 0.0)
         confidence = max(0.0, min(1.0, confidence))
 
-        should_reply = bool(data.get("should_reply"))
+        should_post = bool(data.get("should_post"))
         message_to_post = str(data.get("message_to_post") or "")
-        if reply_kind == "silent":
-            should_reply = False
+        if post_kind == "silent":
+            should_post = False
             message_to_post = ""
 
         return cls(
-            should_reply=should_reply,
-            reply_kind=reply_kind,
+            should_post=should_post,
+            post_kind=post_kind,
             message_to_post=message_to_post,
             confidence=confidence,
             raw=data,
@@ -521,8 +521,8 @@ class ReplyDecision:
 
     def to_record(self) -> dict[str, Any]:
         return {
-            "should_reply": self.should_reply,
-            "reply_kind": self.reply_kind,
+            "should_post": self.should_post,
+            "post_kind": self.post_kind,
             "message_to_post": self.message_to_post,
             "confidence": self.confidence,
         }
@@ -586,15 +586,15 @@ class ScheduleDecision:
 
 
 @dataclass(frozen=True)
-class AgentDecision(ReplyDecision):
+class AgentDecision(PostDecision):
     schedule_ops: list[ScheduleOperation] = field(default_factory=list)
     skill_ops: list[SkillOperation] = field(default_factory=list)
 
     @classmethod
     def silent(cls, raw: dict[str, Any] | None = None) -> "AgentDecision":
         return cls(
-            should_reply=False,
-            reply_kind="silent",
+            should_post=False,
+            post_kind="silent",
             message_to_post="",
             confidence=0.0,
             raw=raw or {},
@@ -607,35 +607,35 @@ class AgentDecision(ReplyDecision):
         if not isinstance(data, dict):
             raise ValueError("decision JSON must be an object")
 
-        reply = ReplyDecision.from_json_text(payload)
+        post = PostDecision.from_json_text(payload)
         schedule = ScheduleDecision.from_json_text(payload)
         skill = SkillDecision.from_json_text(payload)
         return cls(
-            should_reply=reply.should_reply,
-            reply_kind=reply.reply_kind,
-            message_to_post=reply.message_to_post,
+            should_post=post.should_post,
+            post_kind=post.post_kind,
+            message_to_post=post.message_to_post,
             schedule_ops=schedule.schedule_ops,
             skill_ops=skill.skill_ops,
-            confidence=reply.confidence,
+            confidence=post.confidence,
             raw=data,
         )
 
     @classmethod
     def from_parts(
         cls,
-        reply: ReplyDecision,
+        post: PostDecision,
         *,
         schedule_ops: list[ScheduleOperation] | None = None,
         skill_ops: list[SkillOperation] | None = None,
     ) -> "AgentDecision":
         return cls(
-            should_reply=reply.should_reply,
-            reply_kind=reply.reply_kind,
-            message_to_post=reply.message_to_post,
+            should_post=post.should_post,
+            post_kind=post.post_kind,
+            message_to_post=post.message_to_post,
             schedule_ops=schedule_ops or [],
             skill_ops=skill_ops or [],
-            confidence=reply.confidence,
-            raw=reply.raw,
+            confidence=post.confidence,
+            raw=post.raw,
         )
 
     def to_record(self) -> dict[str, Any]:

@@ -58,7 +58,7 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--overwrite", action="store_true", help="Overwrite existing default files")
 
     run = subparsers.add_parser("run", help="Run the Zulip listener")
-    run.add_argument("--dry-run", action="store_true", help="Do not post Zulip replies")
+    run.add_argument("--dry-run", action="store_true", help="Do not post Zulip messages")
 
     render = subparsers.add_parser("render-prompt", help="Render the prompt for one saved Zulip event")
     render.add_argument("event_file", type=Path)
@@ -83,7 +83,7 @@ def _config_from_args(args: argparse.Namespace) -> BotConfig:
         if str(config.codex_cwd) == str(config.workspace_dir):
             updates["codex_cwd"] = args.workspace.expanduser().resolve()
     if getattr(args, "dry_run", False):
-        updates["post_replies"] = False
+        updates["posting_enabled"] = False
     return replace(config, **updates) if updates else config
 
 
@@ -191,7 +191,7 @@ def _render_prompt(args: argparse.Namespace) -> int:
             [message],
             render=RenderContext(message_timezone=config.schedule_timezone),
         ),
-        role="reply",
+        role="post",
     )
     print(prompt)
     return 0

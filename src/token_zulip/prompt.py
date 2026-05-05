@@ -6,14 +6,14 @@ from string import Template
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .turn_context import TurnContext, TurnMessage
-from .workspace import REPLY_TURN_USER_PROMPT_FILE
+from .workspace import POST_TURN_USER_PROMPT_FILE
 
 
 class PromptBuilder:
     def __init__(self, root: Path) -> None:
         self.root = root.expanduser().resolve()
 
-    def build(self, turn: TurnContext, *, role: str, template_file: str = REPLY_TURN_USER_PROMPT_FILE) -> str:
+    def build(self, turn: TurnContext, *, role: str, template_file: str = POST_TURN_USER_PROMPT_FILE) -> str:
         current = "\n".join(
             self._format_message(message, timezone_name=turn.render.message_timezone) for message in turn.messages
         )

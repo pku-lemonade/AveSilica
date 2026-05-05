@@ -10,9 +10,9 @@ from .workspace import SHARED_SYSTEM_FILE, strip_markdown_comments
 
 
 ROLE_SYSTEM_FILES: dict[str, tuple[str, ...]] = {
-    "reply": (
+    "post": (
         "AGENTS.md",
-        "references/reply/system.md",
+        "references/post/system.md",
     ),
     "reflections_worker": (
         "references/reflections/system.md",
@@ -47,7 +47,7 @@ class InstructionLoader:
         stream: str,
         topic_hash: str,
         *,
-        role: str = "reply",
+        role: str = "post",
         topic: str | None = None,
         stream_id: int | None = None,
         conversation_type: str = "stream",
@@ -90,7 +90,7 @@ class InstructionLoader:
         stream: str,
         topic_hash: str,
         *,
-        role: str = "reply",
+        role: str = "post",
         topic: str | None = None,
         stream_id: int | None = None,
         conversation_type: str = "stream",

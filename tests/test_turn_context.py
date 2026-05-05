@@ -59,4 +59,4 @@ def test_workflow_deltas_select_concise_role_sections() -> None:
     assert deltas.sections_for_role("reflections") == ["reflection"]
     assert deltas.sections_for_role("skill") == ["skills"]
     assert deltas.sections_for_role("schedule") == ["time", "jobs", "people", "skills", "skill changes"]
-    assert deltas.sections_for_role("reply") == ["posted", "applied"]
+    assert deltas.sections_for_role("post") == ["posted", "applied"]

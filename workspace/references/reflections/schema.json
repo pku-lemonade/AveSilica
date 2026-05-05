@@ -31,7 +31,7 @@
             "type": "string"
           },
           "suggested_target": {
-            "description": "Human review target such as AGENTS.md, references/reply/system.md, skill, code, or none.",
+            "description": "Human review target such as AGENTS.md, references/post/system.md, skill, code, or none.",
             "type": "string"
           },
           "content": {

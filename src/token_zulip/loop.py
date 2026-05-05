@@ -17,7 +17,7 @@ from .models import (
     NormalizedMessage,
     NormalizedReaction,
     ReflectionDecision,
-    ReplyDecision,
+    PostDecision,
     ScheduleDecision,
     SessionKey,
     SkillDecision,
@@ -34,8 +34,8 @@ from .uploads import MessageUploadProcessor
 from .workspace import (
     REFLECTIONS_DECISION_SCHEMA_FILE,
     REFLECTIONS_WORKER_USER_PROMPT_FILE,
-    REPLY_DECISION_SCHEMA_FILE,
-    REPLY_TURN_USER_PROMPT_FILE,
+    POST_DECISION_SCHEMA_FILE,
+    POST_TURN_USER_PROMPT_FILE,
     SCHEDULED_JOB_DECISION_SCHEMA_FILE,
     SCHEDULED_JOB_USER_PROMPT_FILE,
     SCHEDULE_DECISION_SCHEMA_FILE,
@@ -46,12 +46,12 @@ from .workspace import (
 from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, normalize_zulip_update_message_event
 
 LOGGER = logging.getLogger(__name__)
-PRIVATE_REPLY_FALLBACK = "I saw this, but couldn't produce a useful reply. Please try again."
-CODEX_INSTRUCTION_MODE = "reply-session-v4"
+PRIVATE_POST_FALLBACK = "I saw this, but couldn't produce a useful message. Please try again."
+CODEX_INSTRUCTION_MODE = "post-session-v1"
 
 
 class ZulipPoster(Protocol):
-    async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
+    async def post_message(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
         ...
 
 
@@ -67,14 +67,14 @@ class EnqueueResult:
 class TurnPromptState:
     active_thread_id: str | None
     instruction_kwargs: dict[str, Any]
-    reply_developer_instructions: str | None
+    post_developer_instructions: str | None
     pending_posted_bot_updates: list[dict[str, Any]]
     posted_bot_update_context: str
     worker_specs: list[CodexWorkerSpec]
 
 
 @dataclass(frozen=True)
-class ReplySessionState:
+class SessionThreadState:
     thread_id: str | None
     developer_instructions: str | None
 
@@ -340,8 +340,8 @@ class AgentLoop:
         self.storage.mark_processed(key, [message.message_id])
 
     async def _post_control_response(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
-        if self.config.post_replies:
-            return self._post_summary(await self.zulip.post_reply(message, content), dry_run=False)
+        if self.config.posting_enabled:
+            return self._post_summary(await self.zulip.post_message(message, content), dry_run=False)
         return {"status": "dry_run", "dry_run": True, "message_to_post": content}
 
     def _status_response(
@@ -360,10 +360,10 @@ class AgentLoop:
         summary: dict[str, Any] = {}
         if latest_turn is not None:
             decision = latest_turn.get("decision") if isinstance(latest_turn.get("decision"), dict) else {}
-            reply_kind = str(decision.get("reply_kind") or "silent")
+            post_kind = str(decision.get("post_kind") or "silent")
             confidence = self._format_confidence(decision.get("confidence"))
-            lines.append(f"- Decision: {reply_kind}{confidence}")
-            summary["decision"] = reply_kind
+            lines.append(f"- Decision: {post_kind}{confidence}")
+            summary["decision"] = post_kind
             summary["confidence"] = decision.get("confidence")
 
             posted = self._posted_text(latest_turn)
@@ -371,13 +371,13 @@ class AgentLoop:
                 lines.append(f"- Posted: {self._quote_excerpt(posted)}")
                 summary["posted"] = True
             else:
-                why = "chose not to reply" if reply_kind == "silent" else "no visible reply"
+                why = "chose not to post" if post_kind == "silent" else "no visible post"
                 why += "; no runtime error" if latest_error is None else f"; latest error on {self._error_surface(latest_error)}"
                 lines.append(f"- Why: {why}")
         elif latest_error is not None:
-            lines.append("- Decision: failed before reply")
-            lines.append("- Why: reply failed before a decision was logged")
-            summary["decision"] = "failed before reply"
+            lines.append("- Decision: failed before post")
+            lines.append("- Why: post failed before a decision was logged")
+            summary["decision"] = "failed before post"
         elif metadata.cleared_at_message_id is not None:
             lines.append("- Decision: cleared")
             lines.append("- Why: next normal message starts fresh")
@@ -494,7 +494,7 @@ class AgentLoop:
         if "scheduled" in kind or "scheduled" in event:
             return "scheduled_job"
         if kind in {"turn_exception", "codex_thread_restarted"}:
-            return "reply"
+            return "post"
         if kind == "worker_exception":
             return "runtime"
         return "runtime"
@@ -557,7 +557,7 @@ class AgentLoop:
         async with AsyncExitStack() as stack:
             typing_started = False
             with telemetry.phase("prepare_messages"):
-                if self.typing.should_show_typing(first, post_replies=self.config.post_replies):
+                if self.typing.should_show_typing(first, posting_enabled=self.config.posting_enabled):
                     await stack.enter_async_context(self.typing.active(first))
                     typing_started = True
 
@@ -571,8 +571,8 @@ class AgentLoop:
             with telemetry.phase("build_worker_prompts"):
                 prompt_state = self._build_turn_prompt_state(key, messages, first, metadata)
 
-            reply_session = await self._ensure_reply_session(key, messages, prompt_state, telemetry)
-            parent_thread_id = reply_session.thread_id
+            session_thread = await self._ensure_session_thread(key, messages, prompt_state, telemetry)
+            parent_thread_id = session_thread.thread_id
             worker_results = await self._run_worker_specs(
                 key,
                 messages,
@@ -637,43 +637,43 @@ class AgentLoop:
                     )
                 )
 
-            with telemetry.phase("build_reply_prompt"):
+            with telemetry.phase("build_post_prompt"):
                 skill_acknowledgement = self._skill_acknowledgement(op_result.skill_applied)
                 schedule_acknowledgement = self._schedule_acknowledgement(schedule_applied)
                 acknowledgement = self._join_acknowledgements(
                     [skill_acknowledgement, schedule_acknowledgement]
                 )
-                reply_prompt = self._build_reply_prompt(
+                post_prompt = self._build_post_prompt(
                     messages,
                     prompt_state.posted_bot_update_context,
                     acknowledgement,
                 )
-            reply_result, reply_trace_developer_instructions = await self._run_reply_decision(
+            post_result, post_trace_developer_instructions = await self._run_post_decision(
                 key,
                 messages,
                 parent_thread_id,
-                reply_session.developer_instructions,
+                session_thread.developer_instructions,
                 prompt_state.instruction_kwargs,
-                reply_prompt,
+                post_prompt,
                 telemetry,
             )
 
-            with telemetry.phase("apply_reply_decision"):
-                reply_decision = ReplyDecision.from_json_text(reply_result.raw_text)
+            with telemetry.phase("apply_post_decision"):
+                post_decision = PostDecision.from_json_text(post_result.raw_text)
                 trace_roles.append(
                     self._trace_role(
-                        "reply",
-                        prompt=reply_prompt,
-                        developer_instructions=reply_trace_developer_instructions,
-                        output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
-                        result=reply_result,
-                        decision=reply_decision,
+                        "post",
+                        prompt=post_prompt,
+                        developer_instructions=post_trace_developer_instructions,
+                        output_schema_path=self.config.workspace_dir / POST_DECISION_SCHEMA_FILE,
+                        result=post_result,
+                        decision=post_decision,
                         parent_thread_id=parent_thread_id,
                         worker_mode="persistent",
                     )
                 )
                 decision = AgentDecision.from_parts(
-                    reply_decision,
+                    post_decision,
                     skill_ops=op_result.skill_decision.skill_ops,
                     schedule_ops=schedule_decision.schedule_ops,
                 )
@@ -682,7 +682,7 @@ class AgentLoop:
                     decision,
                     acknowledgement=acknowledgement,
                 )
-                if self._reply_conflicts_with_schedule_acknowledgement(message_to_post, schedule_acknowledgement):
+                if self._post_conflicts_with_schedule_acknowledgement(message_to_post, schedule_acknowledgement):
                     message_to_post = ""
                 outbound_message = self._with_acknowledgement(message_to_post, acknowledgement)
                 if typing_started and first.conversation_type == "stream" and not outbound_message:
@@ -692,8 +692,8 @@ class AgentLoop:
             post: dict[str, Any] | None = None
             if outbound_message:
                 with telemetry.phase("post_delivery"):
-                    if self.config.post_replies:
-                        post = self._post_summary(await self.zulip.post_reply(first, outbound_message), dry_run=False)
+                    if self.config.posting_enabled:
+                        post = self._post_summary(await self.zulip.post_message(first, outbound_message), dry_run=False)
                     else:
                         post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
                     self._enqueue_posted_bot_update(
@@ -746,14 +746,14 @@ class AgentLoop:
             else None
         )
         instruction_kwargs = self._conversation_instruction_kwargs(first)
-        reply_developer_instructions = (
-            None if active_thread_id else self.instructions.compose(role="reply", **instruction_kwargs)
+        post_developer_instructions = (
+            None if active_thread_id else self.instructions.compose(role="post", **instruction_kwargs)
         )
         pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
         return TurnPromptState(
             active_thread_id=active_thread_id,
             instruction_kwargs=instruction_kwargs,
-            reply_developer_instructions=reply_developer_instructions,
+            post_developer_instructions=post_developer_instructions,
             pending_posted_bot_updates=pending_posted_bot_updates,
             posted_bot_update_context=self._posted_bot_update_context(pending_posted_bot_updates),
             worker_specs=self._build_reflections_skill_worker_specs(messages, first, instruction_kwargs),
@@ -806,20 +806,20 @@ class AgentLoop:
             ),
         ]
 
-    async def _ensure_reply_session(
+    async def _ensure_session_thread(
         self,
         key: SessionKey,
         messages: list[NormalizedMessage],
         prompt_state: TurnPromptState,
         telemetry: TurnTelemetry,
-    ) -> ReplySessionState:
+    ) -> SessionThreadState:
         phase = None
-        reply_developer_instructions = prompt_state.reply_developer_instructions
+        post_developer_instructions = prompt_state.post_developer_instructions
         try:
-            with telemetry.phase("ensure_reply_session") as phase:
+            with telemetry.phase("ensure_session_thread") as phase:
                 result = await self.codex.ensure_thread(
                     prompt_state.active_thread_id,
-                    developer_instructions=reply_developer_instructions,
+                    developer_instructions=post_developer_instructions,
                 )
         except Exception as exc:
             if prompt_state.active_thread_id is None or not self._is_missing_codex_rollout_error(exc):
@@ -834,23 +834,23 @@ class AgentLoop:
                 },
             )
             self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-            reply_developer_instructions = self.instructions.compose(
-                role="reply",
+            post_developer_instructions = self.instructions.compose(
+                role="post",
                 **prompt_state.instruction_kwargs,
             )
-            with telemetry.phase("ensure_reply_session_restarted") as phase:
+            with telemetry.phase("ensure_session_thread_restarted") as phase:
                 result = await self.codex.ensure_thread(
                     None,
-                    developer_instructions=reply_developer_instructions,
+                    developer_instructions=post_developer_instructions,
                 )
-        telemetry.add_codex_result(result, role="reply_session", phase=phase)
+        telemetry.add_codex_result(result, role="session_thread", phase=phase)
         if result.thread_id:
             self.storage.set_codex_thread_state(
                 key,
                 thread_id=result.thread_id,
                 instruction_mode=CODEX_INSTRUCTION_MODE,
             )
-        return ReplySessionState(result.thread_id, reply_developer_instructions)
+        return SessionThreadState(result.thread_id, post_developer_instructions)
 
     async def _run_worker_specs(
         self,
@@ -953,7 +953,7 @@ class AgentLoop:
             output_schema_path=self.config.workspace_dir / SCHEDULE_DECISION_SCHEMA_FILE,
         )
 
-    def _build_reply_prompt(
+    def _build_post_prompt(
         self,
         messages: list[NormalizedMessage],
         posted_bot_update_context: str,
@@ -968,29 +968,29 @@ class AgentLoop:
                 ),
                 render=RenderContext(message_timezone=self.config.schedule_timezone),
             ),
-            role="reply",
-            template_file=REPLY_TURN_USER_PROMPT_FILE,
+            role="post",
+            template_file=POST_TURN_USER_PROMPT_FILE,
         )
 
-    async def _run_reply_decision(
+    async def _run_post_decision(
         self,
         key: SessionKey,
         messages: list[NormalizedMessage],
         parent_thread_id: str | None,
         initial_developer_instructions: str | None,
         instruction_kwargs: dict[str, Any],
-        reply_prompt: str,
+        post_prompt: str,
         telemetry: TurnTelemetry,
     ) -> tuple[CodexRunResult, str]:
         phase = None
         trace_developer_instructions = initial_developer_instructions or ""
         try:
-            with telemetry.phase("reply_decision") as phase:
+            with telemetry.phase("post_decision") as phase:
                 result = await self.codex.run_decision(
-                    reply_prompt,
+                    post_prompt,
                     parent_thread_id,
                     developer_instructions=None,
-                    output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                    output_schema_path=self.config.workspace_dir / POST_DECISION_SCHEMA_FILE,
                 )
         except Exception as exc:
             if parent_thread_id is None or not self._is_missing_codex_rollout_error(exc):
@@ -1005,15 +1005,15 @@ class AgentLoop:
                 },
             )
             self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-            trace_developer_instructions = self.instructions.compose(role="reply", **instruction_kwargs)
-            with telemetry.phase("reply_decision_restarted") as phase:
+            trace_developer_instructions = self.instructions.compose(role="post", **instruction_kwargs)
+            with telemetry.phase("post_decision_restarted") as phase:
                 result = await self.codex.run_decision(
-                    reply_prompt,
+                    post_prompt,
                     None,
                     developer_instructions=trace_developer_instructions,
-                    output_schema_path=self.config.workspace_dir / REPLY_DECISION_SCHEMA_FILE,
+                    output_schema_path=self.config.workspace_dir / POST_DECISION_SCHEMA_FILE,
                 )
-        telemetry.add_codex_result(result, role="reply", phase=phase)
+        telemetry.add_codex_result(result, role="post", phase=phase)
         if result.thread_id:
             self.storage.set_codex_thread_state(
                 key,
@@ -1087,16 +1087,16 @@ class AgentLoop:
                 if decision.skill_ops:
                     skill_ignored = [op.to_record() for op in decision.skill_ops]
 
-                outbound_message = decision.message_to_post.strip() if decision.should_reply else ""
+                outbound_message = decision.message_to_post.strip() if decision.should_post else ""
                 if outbound_message and outbound_message.strip().upper() != "[SILENT]":
                     outbound_message = self._with_scheduled_mentions(job, outbound_message)
                 should_deliver = bool(outbound_message) and outbound_message.strip().upper() != "[SILENT]"
 
             if should_deliver:
                 with telemetry.phase("post_delivery"):
-                    if self.config.post_replies:
+                    if self.config.posting_enabled:
                         post = self._post_summary(
-                            await self.zulip.post_reply(origin_message, outbound_message),
+                            await self.zulip.post_message(origin_message, outbound_message),
                             dry_run=False,
                         )
                     else:
@@ -1483,7 +1483,7 @@ class AgentLoop:
             return raw
         if isinstance(decision, AgentDecision):
             return decision.to_record()
-        if isinstance(decision, ReplyDecision):
+        if isinstance(decision, PostDecision):
             return decision.to_record()
         if isinstance(decision, ReflectionDecision):
             return {"reflection_ops": [item.to_record() for item in decision.reflection_ops]}
@@ -1559,7 +1559,7 @@ class AgentLoop:
             [
                 "# Applied Changes This Turn",
                 "",
-                "These changes have already been validated and persisted by TokenZulip before this reply decision.",
+                "These changes have already been validated and persisted by TokenZulip before this post decision.",
                 "",
                 "```text",
                 acknowledgement.strip(),
@@ -1567,7 +1567,7 @@ class AgentLoop:
             ]
         )
 
-    def _reply_conflicts_with_schedule_acknowledgement(
+    def _post_conflicts_with_schedule_acknowledgement(
         self,
         message_to_post: str,
         schedule_acknowledgement: str,
@@ -1593,7 +1593,7 @@ class AgentLoop:
             "no scheduler",
             "no reminder-listing tool",
             "no live reminder-listing tool",
-            "reply-only thread",
+            "post-only context",
         ]
         return any(phrase in text for phrase in blocked_phrases)
 
@@ -1658,12 +1658,12 @@ class AgentLoop:
         acknowledgement: str = "",
     ) -> str:
         content = decision.message_to_post.strip()
-        if decision.should_reply and content:
+        if decision.should_post and content:
             return content
-        if first.reply_required and acknowledgement and not content:
+        if first.post_required and acknowledgement and not content:
             return ""
-        if first.reply_required:
-            return content or PRIVATE_REPLY_FALLBACK
+        if first.post_required:
+            return content or PRIVATE_POST_FALLBACK
         return ""
 
     def _apply_reflections_worker_result(

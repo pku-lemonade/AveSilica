@@ -167,7 +167,7 @@ def test_normalize_zulip_update_message_event_for_topic_move():
     assert len(move.destination_topic_hash) == 6
 
 
-def test_normalize_zulip_private_event_uses_recipient_session_and_requires_reply():
+def test_normalize_zulip_private_event_uses_recipient_session_and_requires_post():
     event = {
         "type": "message",
         "message": {
@@ -190,7 +190,7 @@ def test_normalize_zulip_private_event_uses_recipient_session_and_requires_reply
 
     assert message is not None
     assert message.conversation_type == "private"
-    assert message.reply_required is True
+    assert message.post_required is True
     assert message.session_key.value == "zulip:realm:private:recipient:5001"
     assert message.stream_id is None
     assert message.private_recipients == [
@@ -316,7 +316,7 @@ def test_normalize_stream_event_detects_direct_bot_addressing():
     assert ordinary is not None and ordinary.directly_addressed is False
 
 
-def test_zulip_private_reply_posts_to_recipient_list():
+def test_zulip_private_message_posts_to_recipient_list():
     class FakeClient:
         def __init__(self) -> None:
             self.requests: list[dict[str, object]] = []
@@ -339,7 +339,7 @@ def test_zulip_private_reply_posts_to_recipient_list():
             {"user_id": 3, "email": "alice@example.com", "full_name": "Alice"},
             {"user_id": 4, "email": "bob@example.com", "full_name": "Bob"},
         ],
-        reply_required=True,
+        post_required=True,
         sender_email="alice@example.com",
         sender_full_name="Alice",
         sender_id=3,
@@ -350,7 +350,7 @@ def test_zulip_private_reply_posts_to_recipient_list():
     )
     client = FakeClient()
 
-    result = asyncio.run(ZulipClientIO(client).post_reply(message, "Hello."))
+    result = asyncio.run(ZulipClientIO(client).post_message(message, "Hello."))
 
     assert result["request"] == {
         "type": "private",
@@ -399,7 +399,7 @@ def test_zulip_typing_notifier_sends_stream_and_private_requests():
             {"user_id": 3, "email": "alice@example.com", "full_name": "Alice"},
             {"user_id": 4, "email": "bob@example.com", "full_name": "Bob"},
         ],
-        reply_required=True,
+        post_required=True,
         sender_email="alice@example.com",
         sender_full_name="Alice",
         sender_id=3,
@@ -446,7 +446,7 @@ def test_zulip_typing_notifier_skips_private_message_without_sender_id():
         private_recipients=[
             {"user_id": None, "email": "alice@example.com", "full_name": "Alice"},
         ],
-        reply_required=True,
+        post_required=True,
         sender_email="alice@example.com",
         sender_full_name="Alice",
         sender_id=None,
@@ -489,13 +489,13 @@ def test_zulip_listener_can_request_all_public_stream_events():
 
 def test_agent_decision_parses_fenced_json_and_clamps_confidence():
     payload = {
-        "should_reply": True,
-        "reply_kind": "chat",
+        "should_post": True,
+        "post_kind": "chat",
         "message_to_post": "Done.",
         "confidence": 2,
     }
 
     decision = AgentDecision.from_json_text(f"```json\n{json.dumps(payload)}\n```")
 
-    assert decision.should_reply is True
+    assert decision.should_post is True
     assert decision.confidence == 1.0

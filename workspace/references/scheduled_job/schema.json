@@ -2,16 +2,16 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "should_reply",
-    "reply_kind",
+    "should_post",
+    "post_kind",
     "message_to_post",
     "confidence"
   ],
   "properties": {
-    "should_reply": {
+    "should_post": {
       "type": "boolean"
     },
-    "reply_kind": {
+    "post_kind": {
       "type": "string",
       "enum": [
         "chat",

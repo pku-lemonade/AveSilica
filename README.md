@@ -2,9 +2,9 @@
 
 [![project chat](https://img.shields.io/badge/zulip-join_chat-brightgreen.svg)](https://pku-lemonade.zulipchat.com)
 
-Silica is a context-aware Zulip agent for team conversation, scheduling, reusable skills, and replies.
+Silica is a context-aware Zulip agent for team conversation, scheduling, reusable skills, and assisting posts.
 
-TokenZulip is the Python runtime behind Silica. It listens to Zulip, maps each visible channel/topic to a persistent Codex thread, stores generated conversation records under `workspace/records/`, and writes non-injected reflection candidates under `workspace/reflections/`.
+TokenZulip is the Python runtime behind Silica. It listens to Zulip, maps each visible channel/topic to a local session backed by a persistent Codex session thread, stores generated conversation records under `workspace/records/`, and writes non-injected reflection candidates under `workspace/reflections/`.
 
 Zulip is an organized team chat app designed for efficient communication. We thank the Zulip team for generously offering a free standard plan for our team.
 
@@ -60,7 +60,7 @@ token-zulip run
 
 ## Dry Run
 
-`--dry-run` still connects to Zulip, reads visible channel messages, builds prompts, calls Codex, applies validated worker operations, and writes compact record files. It does not post Zulip replies.
+`--dry-run` still connects to Zulip, reads visible channel messages, builds prompts, calls Codex, applies validated worker operations, and writes compact record files. It does not post Zulip messages.
 
 After sending a test message in a visible public channel, inspect:
 
@@ -73,7 +73,7 @@ After sending a test message in a visible public channel, inspect:
 - `workspace/records/scheduled/<job_id>/runs.jsonl`: scheduled task run audit records.
 - `workspace/records/**/traces/`: pruneable prompt/debug traces with rendered prompts, developer instructions, schemas, raw outputs, and parsed decisions.
 
-When the outbound decisions look right, remove `--dry-run` or set `TOKENZULIP_POST_REPLIES=true`.
+When the outbound decisions look right, remove `--dry-run` or set `TOKENZULIP_POSTING_ENABLED=true`.
 
 ## Container On Debian With Podman
 
@@ -132,7 +132,7 @@ If an installed user unit predates this README, check that its `ExecStart` conta
 
 For auto-start after reboot without an interactive login, enable lingering once: `sudo loginctl enable-linger "$USER"`.
 
-To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.env`, then restart the service.
+To test the service without posting, set `TOKENZULIP_POSTING_ENABLED=false` in `.env`, then restart the service.
 
 ## Workspace Layout
 
@@ -157,17 +157,17 @@ To test the service without posting, set `TOKENZULIP_POST_REPLIES=false` in `.en
 
 ## Instruction Architecture
 
-Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing template files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/instructions.py` composes role-specific developer instructions, `src/token_zulip/prompt.py` renders role-specific prompts, and `src/token_zulip/codex_adapter.py` runs the native Codex `output_schema` for the reply/session thread and each forked op worker.
+Runtime behavior is driven by the live files under `workspace/`. `src/token_zulip/workspace.py` copies missing template files from the checked-in `workspace/` tree during `token-zulip init`; it does not contain prompt prose or update existing workspace files unless initialization is explicitly run with overwrite behavior. `src/token_zulip/instructions.py` composes role-specific developer instructions, `src/token_zulip/prompt.py` renders role-specific prompts, and `src/token_zulip/codex_adapter.py` runs the native Codex `output_schema` for the post role and each forked op worker.
 
-Every role starts with `workspace/references/system.md`, then loads only its role system configuration and scoped `AGENTS.md` files. The reply/session thread also loads `workspace/AGENTS.md` and `workspace/references/reply/system.md`; workers load only their worker system configuration plus scoped `AGENTS.md`; scheduled job threads load `workspace/AGENTS.md`, `workspace/references/scheduled_job/system.md`, and scoped `AGENTS.md`.
+Every role starts with `workspace/references/system.md`, then loads only its role system configuration and scoped `AGENTS.md` files. The post role also loads `workspace/AGENTS.md` and `workspace/references/post/system.md`; workers load only their worker system configuration plus scoped `AGENTS.md`; scheduled job threads load `workspace/AGENTS.md`, `workspace/references/scheduled_job/system.md`, and scoped `AGENTS.md`.
 
-The composed instruction layers are passed to Codex as `developer_instructions` only when a persistent thread is created, or when a worker fork is created. Existing marked reply/session and job threads are resumed without repeating those instructions.
+The composed instruction layers are passed to Codex as `developer_instructions` only when a persistent session thread is created, or when a worker fork is created. Existing marked session threads and job threads are resumed without repeating those instructions.
 
 Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 
 - `workspace/AGENTS.md`: global identity, voice, style, and high-level behavior.
 - `workspace/references/system.md`: shared Codex thread contract and structured-output boundaries.
-- `workspace/references/reply/`: reply/session agent `user.md`, `system.md`, and `schema.json`.
+- `workspace/references/post/`: post role `user.md`, `system.md`, and `schema.json`.
 - `workspace/references/reflections/`: reflections worker agent `user.md`, `system.md`, and `schema.json`.
 - `workspace/references/skill/`: skill worker agent `user.md`, `system.md`, and `schema.json`.
 - `workspace/references/schedule/`: schedule worker agent `user.md`, `system.md`, and `schema.json`.
@@ -185,15 +185,13 @@ Skill persistence is owned by the skill worker code path: its forked Codex decis
 
 ### Thread Context Model
 
-TokenZulip keeps one persistent Codex thread per Zulip conversation as the reply/session thread. On each Zulip update, the runtime resumes or creates that parent thread, then forks worker threads from it for independent operation decisions. Worker forks receive role-specific developer instructions plus only the current message batch and concise role-specific runtime deltas as the explicit run prompt. The Codex `exclude_turns` fork option is used to avoid returning populated turn lists in the fork response; it is not treated as a guarantee that parent model context is absent from the fork.
-
-Naming note: older code and reference paths still use `reply` for the assisting-message session because the runtime began as a reply generator. Treat that as legacy vocabulary; a later cleanup should rename these surfaces toward session/assistance language without changing the runtime contract.
+TokenZulip stores each Zulip stream/topic or private chat as a local session, represented in code by `SessionKey` and `SessionMetadata`. Each local session can have one persistent Codex session thread. On each Zulip update, the runtime resumes or creates that session thread, then forks worker threads from it for independent operation decisions. Worker forks receive role-specific developer instructions plus only the current message batch and concise role-specific runtime deltas as the explicit run prompt. The Codex `exclude_turns` fork option is used to avoid returning populated turn lists in the fork response; it is not treated as a guarantee that parent model context is absent from the fork.
 
 ```text
 Zulip event
     |
     v
-persistent reply/session thread is resumed or created
+persistent session thread is resumed or created
     |
     |-- fork --> reflections worker thread --> reflection_ops code path
     |-- fork --> skill worker thread  --> skill_ops code path
@@ -201,7 +199,7 @@ persistent reply/session thread is resumed or created
     `-- after skill persistence:
         fork --> schedule worker thread --> schedule_ops code path
     |
-    `-- reply/session thread receives applied changes and decides visible reply
+    `-- post role receives applied changes and decides visible output
 
 due scheduled job
     |
@@ -210,24 +208,24 @@ fresh scheduled job thread
     |
     `-- posts result to origin Zulip conversation
           |
-          `-- enqueue posted_bot_update for origin reply/session thread
+          `-- enqueue posted_bot_update for origin session thread
 ```
 
 | Thread | Persistence | Inherited Codex context | Injected prompt context | Output |
 | --- | --- | --- | --- | --- |
-| Reply/session thread | Long-lived per Zulip DM or stream/topic | Previous Codex turns for this Zulip conversation | Current Zulip message batch, pending `posted_bot_update`, and applied deterministic changes from workers | User-visible reply decision only |
-| Reflections worker thread | Worker fork | Parent reply/session thread baseline | Current Zulip message batch and reflection scope rules | `reflection_ops` only |
-| Skill worker thread | Worker fork | Parent reply/session thread baseline | Current Zulip message batch and available skill summary | `skill_ops` only |
-| Schedule worker thread | Worker fork after skill persistence | Parent reply/session thread baseline | Current Zulip message batch, current scheduling time, current jobs here, mentionable Zulip participants, available skill summary, and same-turn skill changes when any | `schedule_ops` only |
-| Scheduled job thread | Fresh per job run | None | Job brief, persisted mention targets, loaded skill content, and current time | Scheduled result reply only |
+| Session thread | Long-lived per Zulip DM or stream/topic session | Previous Codex turns for this Zulip conversation | Current Zulip message batch, pending `posted_bot_update`, and applied deterministic changes from workers | Post decision only |
+| Reflections worker thread | Worker fork | Parent session thread baseline | Current Zulip message batch and reflection scope rules | `reflection_ops` only |
+| Skill worker thread | Worker fork | Parent session thread baseline | Current Zulip message batch and available skill summary | `skill_ops` only |
+| Schedule worker thread | Worker fork after skill persistence | Parent session thread baseline | Current Zulip message batch, current scheduling time, current jobs here, mentionable Zulip participants, available skill summary, and same-turn skill changes when any | `schedule_ops` only |
+| Scheduled job thread | Fresh per job run | None | Job brief, persisted mention targets, loaded skill content, and current time | Scheduled result post only |
 
 `recent_context` is not injected into Codex prompts. Conversation continuity comes from Codex thread history and forked Codex context; runtime prompts add only the current turn and the deltas each role needs.
 
 Prompt traces are written under each session's `traces/` directory. The canonical conversation history remains `messages.jsonl`, `turns.jsonl`, and scheduled `runs.jsonl`; traces are debug sidecars and can be deleted without changing conversation state. Use `token-zulip traces list`, `token-zulip traces inspect <trace_id>`, and `token-zulip traces cleanup --older-than 30d` for manual inspection and pruning.
 
-TokenZulip injects one narrow continuity record when needed: `posted_bot_update`. A `posted_bot_update` is Sili's actual visible contribution to the Zulip conversation after runtime processing. It includes the final posted reply or dry-run text after deterministic acknowledgements, and it also includes scheduled job output posted back into the origin Zulip conversation. The update is injected once into the next normal reply/session prompt, then marked consumed.
+TokenZulip injects one narrow continuity record when needed: `posted_bot_update`. A `posted_bot_update` is Sili's actual visible contribution to the Zulip conversation after runtime processing. It includes the final visible post or dry-run text after deterministic acknowledgements, and it also includes scheduled job output posted back into the origin Zulip conversation. The update is injected once into the next normal post-role prompt, then marked consumed.
 
-This exists because the visible Zulip message may differ from the reply thread's raw JSON. The reply thread may return `message_to_post: "Done."`, then TokenZulip persists a schedule and posts:
+This exists because the visible Zulip message may differ from the post role's raw JSON. The post role may return `message_to_post: "Done."`, then TokenZulip persists a schedule and posts:
 
 ```md
 Done.
@@ -237,7 +235,7 @@ Done.
 - Trigger: once at 2026-05-01 09:00 Asia/Shanghai
 ```
 
-The next turn's reply/session prompt receives a compact `posted_bot_update` with that final posted text, so the persistent conversation knows what was actually confirmed without duplicating that text into every worker fork.
+The next turn's post-role prompt receives a compact `posted_bot_update` with that final posted text, so the session thread knows what was actually confirmed without duplicating that text into every worker fork.
 
 ### Thread And Schedule Flows
 
@@ -247,17 +245,17 @@ Normal Zulip turn:
 Zulip event
   -> normalize message
   -> append messages.jsonl
-  -> resume or create persistent reply/session Codex thread for this Zulip topic/private chat
-  -> fork op workers from the reply/session thread
+  -> resume or create persistent Codex session thread for this Zulip topic/private chat
+  -> fork op workers from the session thread
        reflections worker -> reflection_ops -> workspace/reflections/.../REFLECTIONS.md
        skill worker  -> skill_ops  -> workspace/skills/<name>/SKILL.md
   -> apply skill results
   -> fork schedule worker with current skill availability
        schedule worker -> schedule_ops -> workspace/schedules/jobs.json
-  -> run reply/session thread with applied deterministic changes
+  -> run post role in the session thread with applied deterministic changes
        output: message_to_post only
   -> append deterministic acknowledgements for persisted skill and schedule changes
-  -> post Zulip reply, or record dry-run post
+  -> post Zulip message, or record dry-run post
   -> enqueue posted_bot_update for the next conversation turn
 ```
 
@@ -305,12 +303,12 @@ scheduler ticker wakes every TOKENZULIP_SCHEDULE_TICK_SECONDS
        output: message_to_post only
   -> prepend any missing persisted mentions
   -> post result to the original Zulip topic/private chat
-  -> enqueue posted_bot_update for the origin reply/session thread
+  -> enqueue posted_bot_update for the origin session thread
   -> append workspace/records/scheduled/<job_id>/runs.jsonl
   -> update jobs.json last_run_at/next_run_at/status
 ```
 
-A scheduled job can suppress delivery by returning no reply, or by returning exactly `[SILENT]`. The run is still recorded locally.
+A scheduled job can suppress delivery by choosing silence, or by returning exactly `[SILENT]`. The run is still recorded locally.
 
 For Zulip terminology, the code uses `stream` for what Zulip's UI calls a channel. A topic is the thread-like subject inside a channel.
 
@@ -320,12 +318,12 @@ Incoming Zulip messages are normalized and persisted before any model call. Rout
 
 Zulip upload links in raw Markdown are downloaded to the session's `uploads/<message_id>/` directory before Codex runs. The prompt receives rewritten Markdown pointing at the local downloaded files. Set `TOKENZULIP_UPLOAD_MAX_BYTES` to control the per-file download limit.
 
-When a stream/topic or private-chat session already has a marked Codex thread, TokenZulip resumes that thread and sends only the new Zulip message batch plus concise runtime deltas selected for the role. New or legacy unmarked sessions start a fresh Codex thread with composed `developer_instructions`; they do not replay recent Zulip records into the prompt.
+When a stream/topic or private-chat session already has a marked Codex session thread, TokenZulip resumes that thread and sends only the new Zulip message batch plus concise runtime deltas selected for the role. New or legacy unmarked sessions start a fresh Codex session thread with composed `developer_instructions`; they do not replay recent Zulip records into the prompt.
 
-Forked workers return reflection, skill, and schedule decisions through separate schemas and code paths; the persistent reply/session thread then receives validated applied skill/schedule changes and returns only `should_reply`, `reply_kind`, `message_to_post`, and confidence. Reflection operations write review candidates only. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. Schedule operations may also include multiple `mention_targets`; confirmations use silent full-name mentions, while the due job post uses normal full-name mentions. TokenZulip validates and persists applied skill/schedule changes, appends deterministic acknowledgements for those changes, and then posts any reply.
+Forked workers return reflection, skill, and schedule decisions through separate schemas and code paths; the post role then receives validated applied skill/schedule changes and returns only `should_post`, `post_kind`, `message_to_post`, and confidence. Reflection operations write review candidates only. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. Schedule operations may also include multiple `mention_targets`; confirmations use silent full-name mentions, while the due job post uses normal full-name mentions. TokenZulip validates and persists applied skill/schedule changes, appends deterministic acknowledgements for those changes, and then posts any visible message.
 
 When schedules are enabled, the listener also runs a background scheduler. Configure it with `TOKENZULIP_SCHEDULES_ENABLED`, `TOKENZULIP_SCHEDULE_TICK_SECONDS`, `TOKENZULIP_SCHEDULE_TIMEZONE`, `TOKENZULIP_SCHEDULE_DEFAULT_TIME`, and `TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS`. Scheduled job runs start fresh Codex threads from persisted job data, loaded skills, and current time, so scheduled automation history does not pollute the human Zulip conversation thread.
 
 Prompt trace cleanup is configured separately from conversation history. `TOKENZULIP_TRACE_RETENTION_DAYS` sets the age cutoff, `TOKENZULIP_TRACE_AUTO_CLEANUP=true` enables cleanup on startup and then at `TOKENZULIP_TRACE_CLEANUP_INTERVAL_HOURS`. Cleanup deletes only `traces/` sidecars and never deletes `messages.jsonl`, `turns.jsonl`, reflections, schedules, uploads, errors, or scheduled run records.
 
-When live posting is enabled, the bot can show Zulip typing indicators for every processed message. Silent channel decisions stop typing after Codex decides not to reply. Set `TOKENZULIP_TYPING_ENABLED=false` to disable typing indicators.
+When live posting is enabled, the bot can show Zulip typing indicators for every processed message. Silent channel decisions stop typing after Codex decides not to post. Set `TOKENZULIP_TYPING_ENABLED=false` to disable typing indicators.

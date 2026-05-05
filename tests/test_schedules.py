@@ -16,7 +16,7 @@ from token_zulip.storage import WorkspaceStorage
 from token_zulip.workspace import initialize_workspace
 
 
-def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
+def _config(workspace: Path, *, posting_enabled: bool = True) -> BotConfig:
     return BotConfig(
         workspace_dir=workspace,
         zulip_config_file=None,
@@ -34,7 +34,7 @@ def _config(workspace: Path, *, post_replies: bool = True) -> BotConfig:
         worker_count=2,
         instruction_max_bytes=96_000,
         upload_max_bytes=25_000_000,
-        post_replies=post_replies,
+        posting_enabled=posting_enabled,
         listen_all_public_streams=True,
         typing_enabled=False,
         typing_refresh_seconds=8.0,
@@ -90,7 +90,7 @@ def _private_message(message_id: int, content: str = "schedule this") -> Normali
             {"user_id": 1, "email": "alice@example.com", "full_name": "Alice"},
             {"user_id": 2, "email": "bob@example.com", "full_name": "Bob"},
         ],
-        reply_required=True,
+        post_required=True,
     )
 
 
@@ -232,15 +232,15 @@ class FakePoster:
     def __init__(self) -> None:
         self.posts: list[dict[str, str]] = []
 
-    async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, str]:
+    async def post_message(self, message: NormalizedMessage, content: str) -> dict[str, str]:
         self.posts.append({"topic": message.topic, "content": content})
         return {"result": "success", "id": 123}
 
 
 def _silent_payload() -> dict[str, object]:
     return {
-        "should_reply": False,
-        "reply_kind": "silent",
+        "should_post": False,
+        "post_kind": "silent",
         "message_to_post": "",
         "schedule_ops": [],
         "skill_ops": [],
@@ -396,8 +396,8 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         payload = {
-            "should_reply": False,
-            "reply_kind": "silent",
+            "should_post": False,
+            "post_kind": "silent",
             "message_to_post": "",
             "skill_ops": [
                 {
@@ -460,12 +460,12 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert "# Skill Availability" in skill_prompt
         assert "# Scheduling Context" not in skill_prompt
         assert "# Applied Changes This Turn" not in skill_prompt
-        reply_prompt = bot.codex.prompts[0]
-        assert "# Applied Changes This Turn" in reply_prompt
-        assert "Skill saved: weekly-digest" in reply_prompt
-        assert "**Schedule created**" in reply_prompt
-        assert "# Current Scheduled Tasks Here" not in reply_prompt
-        assert "# Skill Availability" not in reply_prompt
+        post_prompt = bot.codex.prompts[0]
+        assert "# Applied Changes This Turn" in post_prompt
+        assert "Skill saved: weekly-digest" in post_prompt
+        assert "**Schedule created**" in post_prompt
+        assert "# Current Scheduled Tasks Here" not in post_prompt
+        assert "# Skill Availability" not in post_prompt
 
     asyncio.run(scenario())
 
@@ -644,7 +644,7 @@ def test_daily_morning_request_uses_cron_schedule_spec(tmp_path):
     assert job["schedule"]["timezone"] == "Asia/Shanghai"
 
 
-def test_schedule_remove_confirmation_is_injected_before_reply_and_suppresses_conflict(tmp_path):
+def test_schedule_remove_confirmation_is_injected_before_post_and_suppresses_conflict(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
@@ -667,10 +667,10 @@ def test_schedule_remove_confirmation_is_injected_before_reply_and_suppresses_co
             ),
         )
         payload = {
-            "should_reply": True,
-            "reply_kind": "chat",
+            "should_post": True,
+            "post_kind": "chat",
             "message_to_post": (
-                "Sili can\u2019t remove reminders from this reply-only thread, "
+                "Sili can\u2019t remove reminders from this post-only context, "
                 "so no deletion has been performed here."
             ),
             "schedule_ops": [
@@ -717,7 +717,7 @@ def test_schedule_remove_confirmation_is_injected_before_reply_and_suppresses_co
 
         content = poster.posts[0]["content"]
         assert "can't remove" not in content.replace("\u2019", "'").casefold()
-        assert "reply-only thread" not in content
+        assert "post-only context" not in content
         assert content.count("**Schedule removed**") == 2
         assert "- Job ID: `" + first["job_id"] + "`" in content
         assert "- Job ID: `" + second["job_id"] + "`" in content
@@ -728,7 +728,7 @@ def test_schedule_remove_confirmation_is_injected_before_reply_and_suppresses_co
     asyncio.run(scenario())
 
 
-def test_schedule_list_confirmation_is_injected_before_reply_and_suppresses_conflict(tmp_path):
+def test_schedule_list_confirmation_is_injected_before_post_and_suppresses_conflict(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
@@ -742,9 +742,9 @@ def test_schedule_list_confirmation_is_injected_before_reply_and_suppresses_conf
             ),
         )
         payload = {
-            "should_reply": True,
-            "reply_kind": "chat",
-            "message_to_post": "Sili doesn't have a live reminder-listing tool in this reply context.",
+            "should_post": True,
+            "post_kind": "chat",
+            "message_to_post": "Sili doesn't have a live reminder-listing tool in this post context.",
             "schedule_ops": [
                 {
                     "action": "list",
@@ -987,8 +987,8 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         schedules.trigger_job(_message(1), ScheduleOperation(action="run_now", job_id=created["job_id"]))
         payload = {
             **_silent_payload(),
-            "should_reply": True,
-            "reply_kind": "report",
+            "should_post": True,
+            "post_kind": "report",
             "message_to_post": "Digest done.",
         }
         codex = PayloadCodex(payload)
@@ -1158,8 +1158,8 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
         schedules.trigger_job(_message(1), ScheduleOperation(action="run_now", job_id=created["job_id"]))
         payload = {
             **_silent_payload(),
-            "should_reply": True,
-            "reply_kind": "report",
+            "should_post": True,
+            "post_kind": "report",
             "message_to_post": "Please handle tokencake.",
         }
         codex = PayloadCodex(payload)

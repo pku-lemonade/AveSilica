@@ -93,7 +93,7 @@ class BotConfig:
     worker_count: int
     instruction_max_bytes: int
     upload_max_bytes: int
-    post_replies: bool
+    posting_enabled: bool
     listen_all_public_streams: bool
     typing_enabled: bool
     typing_refresh_seconds: float
@@ -129,7 +129,7 @@ class BotConfig:
             worker_count=_int_env("TOKENZULIP_WORKERS", 4),
             instruction_max_bytes=_int_env("TOKENZULIP_INSTRUCTION_MAX_BYTES", 96_000),
             upload_max_bytes=_int_env("TOKENZULIP_UPLOAD_MAX_BYTES", 25_000_000),
-            post_replies=_bool_env("TOKENZULIP_POST_REPLIES", True),
+            posting_enabled=_bool_env("TOKENZULIP_POSTING_ENABLED", True),
             listen_all_public_streams=_bool_env("TOKENZULIP_LISTEN_ALL_PUBLIC_STREAMS", True),
             typing_enabled=_bool_env("TOKENZULIP_TYPING_ENABLED", True),
             typing_refresh_seconds=_float_env("TOKENZULIP_TYPING_REFRESH_SECONDS", 8.0),

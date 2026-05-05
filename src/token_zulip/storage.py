@@ -1188,7 +1188,7 @@ class WorkspaceStorage:
             private_recipients=[
                 item for item in (record.get("private_recipients") or metadata.private_recipients) if isinstance(item, dict)
             ],
-            reply_required=bool(record.get("reply_required") or metadata.conversation_type == "private"),
+            post_required=bool(record.get("post_required") or metadata.conversation_type == "private"),
             directly_addressed=bool(record.get("directly_addressed")),
             uploads=list(record.get("uploads") or []),
             reactions=[item for item in record.get("reactions", []) if isinstance(item, dict)],

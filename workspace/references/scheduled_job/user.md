@@ -21,4 +21,4 @@ $skill_errors_section
 
 # Output Rules
 
-Return one decision JSON object matching the schema. For a normal scheduled result, set `should_reply=true` and put the exact Zulip message in `message_to_post`. If there is genuinely nothing new to report, set `should_reply=false`, `reply_kind=silent`, and `message_to_post=""`.
+Return one decision JSON object matching the schema. For a normal scheduled result, set `should_post=true` and put the exact Zulip message in `message_to_post`. If there is genuinely nothing new to report, set `should_post=false`, `post_kind=silent`, and `message_to_post=""`.

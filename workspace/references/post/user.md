@@ -1,4 +1,4 @@
-Zulip conversation update for the reply/session thread.
+Zulip conversation update for the post role.
 
 $workflow_context
 

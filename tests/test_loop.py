@@ -7,7 +7,7 @@ from pathlib import Path
 from token_zulip.codex_adapter import CodexRunResult, CodexTurnWithForksResult, CodexWorkerSpec
 from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
-from token_zulip.loop import CODEX_INSTRUCTION_MODE, PRIVATE_REPLY_FALLBACK, AgentLoop
+from token_zulip.loop import CODEX_INSTRUCTION_MODE, PRIVATE_POST_FALLBACK, AgentLoop
 from token_zulip.reflections import ReflectionStore
 from token_zulip.models import NormalizedMessage, normalized_topic_hash
 from token_zulip.storage import WorkspaceStorage
@@ -15,7 +15,7 @@ from token_zulip.typing_status import TypingStatusManager
 from token_zulip.workspace import initialize_workspace
 
 
-def _config(workspace: Path, *, post_replies: bool = True, schedule_timezone: str = "UTC") -> BotConfig:
+def _config(workspace: Path, *, posting_enabled: bool = True, schedule_timezone: str = "UTC") -> BotConfig:
     return BotConfig(
         workspace_dir=workspace,
         zulip_config_file=None,
@@ -33,7 +33,7 @@ def _config(workspace: Path, *, post_replies: bool = True, schedule_timezone: st
         worker_count=2,
         instruction_max_bytes=96_000,
         upload_max_bytes=25_000_000,
-        post_replies=post_replies,
+        posting_enabled=posting_enabled,
         listen_all_public_streams=True,
         typing_enabled=True,
         typing_refresh_seconds=8.0,
@@ -98,7 +98,7 @@ def _private_message(
         conversation_type="private",
         private_recipient_key=private_recipient_key,
         private_recipients=recipients or [_private_recipient(sender_id, sender_email)],
-        reply_required=True,
+        post_required=True,
         sender_email=sender_email,
         sender_full_name=f"User {sender_id}",
         sender_id=sender_id,
@@ -274,8 +274,8 @@ class BlockingCodex(ForkingCodexMixin):
             self.started.set()
             await self.release.wait()
         payload = {
-            "should_reply": False,
-            "reply_kind": "silent",
+            "should_post": False,
+            "post_kind": "silent",
             "message_to_post": "",
             "confidence": 0.9,
         }
@@ -317,8 +317,8 @@ class ReflectionCheckingCodex(ForkingCodexMixin):
         output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         payload = {
-            "should_reply": True,
-            "reply_kind": "chat",
+            "should_post": True,
+            "post_kind": "chat",
             "message_to_post": "Recorded.",
             "confidence": 0.8,
         }
@@ -332,7 +332,7 @@ class SilentReflectionCodex(ForkingCodexMixin):
                 {
                     "scope": "global",
                     "kind": "style_preference",
-                    "suggested_target": "references/reply/system.md",
+                    "suggested_target": "references/post/system.md",
                     "content": "User may prefer silent turns when only a reflection is produced.",
                 }
             ]
@@ -348,8 +348,8 @@ class SilentReflectionCodex(ForkingCodexMixin):
         output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         payload = {
-            "should_reply": False,
-            "reply_kind": "silent",
+            "should_post": False,
+            "post_kind": "silent",
             "message_to_post": "",
             "confidence": 0.9,
         }
@@ -366,8 +366,8 @@ class SilentCodex(ForkingCodexMixin):
         output_schema_path: Path | None = None,
     ) -> CodexRunResult:
         payload = {
-            "should_reply": False,
-            "reply_kind": "silent",
+            "should_post": False,
+            "post_kind": "silent",
             "message_to_post": "",
             "confidence": 0.9,
         }
@@ -394,8 +394,8 @@ class PromptCapturingCodex(ForkingCodexMixin):
         self.thread_ids.append(thread_id)
         self.developer_instructions.append(developer_instructions)
         payload = {
-            "should_reply": False,
-            "reply_kind": "silent",
+            "should_post": False,
+            "post_kind": "silent",
             "message_to_post": "",
             "confidence": 0.9,
         }
@@ -422,9 +422,9 @@ class ThreadingCodex(ForkingCodexMixin):
         self.thread_ids.append(thread_id)
         self.developer_instructions.append(developer_instructions)
         payload = {
-            "should_reply": True,
-            "reply_kind": "chat",
-            "message_to_post": f"Reply {self.calls}",
+            "should_post": True,
+            "post_kind": "chat",
+            "message_to_post": f"Post {self.calls}",
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
@@ -479,21 +479,21 @@ class MissingThreadCodex(ForkingCodexMixin):
     ) -> CodexRunResult:
         self.calls += 1
         payload = {
-            "should_reply": False,
-            "reply_kind": "silent",
+            "should_post": False,
+            "post_kind": "silent",
             "message_to_post": "",
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"recovered-thread-{self.calls}")
 
 
-class MissingReplyThreadCodex(ForkingCodexMixin):
+class MissingPostThreadCodex(ForkingCodexMixin):
     def __init__(self) -> None:
         self.calls = 0
         self.ensure_thread_ids: list[str | None] = []
         self.ensure_developer_instructions: list[str | None] = []
-        self.reply_thread_ids: list[str | None] = []
-        self.reply_developer_instructions: list[str | None] = []
+        self.post_thread_ids: list[str | None] = []
+        self.post_developer_instructions: list[str | None] = []
 
     async def ensure_thread(
         self,
@@ -520,25 +520,25 @@ class MissingReplyThreadCodex(ForkingCodexMixin):
         developer_instructions: str | None = None,
         output_schema_path: Path | None = None,
     ) -> CodexRunResult:
-        self.reply_thread_ids.append(thread_id)
-        self.reply_developer_instructions.append(developer_instructions)
+        self.post_thread_ids.append(thread_id)
+        self.post_developer_instructions.append(developer_instructions)
         if thread_id == "missing-thread":
             raise RuntimeError("JSON-RPC error -32600: no rollout found for thread id missing-thread")
         self.calls += 1
         payload = {
-            "should_reply": True,
-            "reply_kind": "chat",
-            "message_to_post": "Recovered reply",
+            "should_post": True,
+            "post_kind": "chat",
+            "message_to_post": "Recovered post",
             "confidence": 0.9,
         }
-        return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"recovered-reply-{self.calls}")
+        return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"recovered-post-{self.calls}")
 
 
 class FakePoster:
     def __init__(self) -> None:
         self.posts: list[dict[str, str]] = []
 
-    async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, str]:
+    async def post_message(self, message: NormalizedMessage, content: str) -> dict[str, str]:
         self.posts.append({"topic": message.topic, "content": content})
         return {"result": "success"}
 
@@ -613,9 +613,9 @@ class StatsCodex:
     ) -> CodexRunResult:
         self.calls += 1
         payload = {
-            "should_reply": True,
-            "reply_kind": "chat",
-            "message_to_post": "Reply with stats.",
+            "should_post": True,
+            "post_kind": "chat",
+            "message_to_post": "Post with stats.",
             "confidence": 0.9,
         }
         resolved_thread_id = thread_id or f"thread-{self.calls}"
@@ -674,7 +674,7 @@ class FakeUploadPoster(FakePoster):
 
 
 class FailingPoster(FakePoster):
-    async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, str]:
+    async def post_message(self, message: NormalizedMessage, content: str) -> dict[str, str]:
         raise RuntimeError("post failed")
 
 
@@ -859,18 +859,18 @@ def test_conversation_turn_writes_prompt_traces(tmp_path):
         assert len(trace_manifests) == 1
         manifest = json.loads(trace_manifests[0].read_text(encoding="utf-8"))
         roles = {item["role"]: item for item in manifest["roles"]}
-        assert set(roles) == {"reflections", "skill", "schedule", "reply"}
+        assert set(roles) == {"reflections", "skill", "schedule", "post"}
 
         trace_dir = trace_manifests[0].parent
         skill_user = (trace_dir / "skill" / "user.md").read_text(encoding="utf-8")
         skill_developer = (trace_dir / "skill" / "developer.md").read_text(encoding="utf-8")
-        reply_developer = (trace_dir / "reply" / "developer.md").read_text(encoding="utf-8")
+        post_developer = (trace_dir / "post" / "developer.md").read_text(encoding="utf-8")
         turns = [json.loads(line) for line in storage.session_path(message.session_key, "turns.jsonl").read_text(encoding="utf-8").splitlines()]
 
         assert "# Skill Availability" in skill_user
         assert "- [1] Alice: save this as a reusable workflow" in skill_user
         assert "Skill Worker Policy" in skill_developer
-        assert "Codex Thread Contract" in reply_developer
+        assert "Codex Thread Contract" in post_developer
         assert (trace_dir / "skill" / "schema.json").exists()
         assert (trace_dir / "skill" / "output.txt").read_text(encoding="utf-8").strip()
         assert turns[0]["trace_id"] == manifest["trace_id"]
@@ -883,7 +883,7 @@ def test_dry_run_does_not_show_typing(tmp_path):
         initialize_workspace(tmp_path)
         typing = FakeTypingNotifier()
         bot = AgentLoop(
-            config=_config(tmp_path, post_replies=False),
+            config=_config(tmp_path, posting_enabled=False),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
             reflections=ReflectionStore(tmp_path / "reflections"),
@@ -979,7 +979,7 @@ def test_silent_turn_with_only_reflection_stays_silent(tmp_path):
         initialize_workspace(tmp_path)
         storage = WorkspaceStorage(tmp_path)
         bot = AgentLoop(
-            config=_config(tmp_path, post_replies=False),
+            config=_config(tmp_path, posting_enabled=False),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
             reflections=ReflectionStore(tmp_path / "reflections"),
@@ -1025,12 +1025,12 @@ def test_turn_records_codex_timing_and_daily_stats(tmp_path):
         assert timing["breakdown"]["by_phase_ms"]["build_worker_prompts"] >= 0
         assert timing["codex"]["api_call_count"] == 4
         roles = [call["role"] for call in timing["codex_calls"]]
-        assert roles == ["reply_session", "reflections", "skill", "schedule", "reply"]
-        reply_call = timing["codex_calls"][-1]
-        assert reply_call["operation"] == "run_decision"
-        assert reply_call["tokens"]["last"]["input_tokens"] == 10
-        assert reply_call["tokens"]["last"]["reasoning_output_tokens"] == 2
-        assert reply_call["turn_phase"] == "reply_decision"
+        assert roles == ["session_thread", "reflections", "skill", "schedule", "post"]
+        post_call = timing["codex_calls"][-1]
+        assert post_call["operation"] == "run_decision"
+        assert post_call["tokens"]["last"]["input_tokens"] == 10
+        assert post_call["tokens"]["last"]["reasoning_output_tokens"] == 2
+        assert post_call["turn_phase"] == "post_decision"
 
         stats_path = next((tmp_path / "records" / "codex_stats").glob("*.jsonl"))
         stats_records = [json.loads(line) for line in stats_path.read_text(encoding="utf-8").splitlines()]
@@ -1041,8 +1041,8 @@ def test_turn_records_codex_timing_and_daily_stats(tmp_path):
         assert e2e["message_ids"] == [message.message_id]
         assert e2e["breakdown"]["by_phase_ms"]["prepare_messages"] >= 0
         assert e2e["breakdown"]["by_phase_ms"]["build_worker_prompts"] >= 0
-        assert e2e["breakdown"]["by_phase_ms"]["reply_decision"] >= 0
-        assert e2e["breakdown"]["by_phase_ms"]["apply_reply_decision"] >= 0
+        assert e2e["breakdown"]["by_phase_ms"]["post_decision"] >= 0
+        assert e2e["breakdown"]["by_phase_ms"]["apply_post_decision"] >= 0
         assert e2e["codex"]["call_count"] == len(roles)
         assert e2e["codex"]["api_call_count"] == 4
         assert e2e["codex"]["tokens"]["last"]["input_tokens"] == 40
@@ -1090,7 +1090,7 @@ def test_current_message_is_not_duplicated_and_recent_context_is_not_rendered(tm
     asyncio.run(scenario())
 
 
-def test_reply_prompt_uses_per_message_local_time_and_omits_control_metadata(tmp_path):
+def test_post_prompt_uses_per_message_local_time_and_omits_control_metadata(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -1107,11 +1107,11 @@ def test_reply_prompt_uses_per_message_local_time_and_omits_control_metadata(tmp
 
         assert "- [1] 2026-01-01T08:00:00+08:00 Alice: current request" in codex.prompt
         assert "- Type:" not in codex.prompt
-        assert "- Reply required:" not in codex.prompt
+        assert "- Post required:" not in codex.prompt
         assert "- Directly addressed:" not in codex.prompt
         for worker_prompt in codex.worker_prompts.values():
             assert "- Type:" not in worker_prompt
-            assert "- Reply required:" not in worker_prompt
+            assert "- Post required:" not in worker_prompt
             assert "- Directly addressed:" not in worker_prompt
         assert "# Posted Bot Updates" not in codex.prompt
         assert "# Applied Changes This Turn" not in codex.prompt
@@ -1120,7 +1120,7 @@ def test_reply_prompt_uses_per_message_local_time_and_omits_control_metadata(tmp
     asyncio.run(scenario())
 
 
-def test_reply_prompt_message_time_falls_back_to_received_at(tmp_path):
+def test_post_prompt_message_time_falls_back_to_received_at(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -1140,7 +1140,7 @@ def test_reply_prompt_message_time_falls_back_to_received_at(tmp_path):
     asyncio.run(scenario())
 
 
-def test_reply_prompt_omits_time_when_message_time_is_unavailable(tmp_path):
+def test_post_prompt_omits_time_when_message_time_is_unavailable(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -1227,7 +1227,7 @@ def test_legacy_thread_without_instruction_marker_auto_clears_and_starts_fresh(t
     asyncio.run(scenario())
 
 
-def test_stale_reply_instruction_mode_auto_clears_and_starts_fresh_thread(tmp_path):
+def test_stale_post_instruction_mode_auto_clears_and_starts_fresh_thread(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
@@ -1237,7 +1237,7 @@ def test_stale_reply_instruction_mode_auto_clears_and_starts_fresh_thread(tmp_pa
         storage.set_codex_thread_state(
             message.session_key,
             thread_id="old-v3-thread",
-            instruction_mode="reply-session-v3",
+            instruction_mode="post-session-v0",
         )
         storage.append_posted_bot_update(
             message.session_key,
@@ -1269,7 +1269,7 @@ def test_stale_reply_instruction_mode_auto_clears_and_starts_fresh_thread(tmp_pa
     asyncio.run(scenario())
 
 
-def test_missing_codex_rollout_restarts_marked_reply_thread(tmp_path):
+def test_missing_codex_rollout_restarts_marked_session_thread(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = MissingThreadCodex()
@@ -1310,10 +1310,10 @@ def test_missing_codex_rollout_restarts_marked_reply_thread(tmp_path):
     asyncio.run(scenario())
 
 
-def test_missing_codex_rollout_during_reply_restarts_reply_thread(tmp_path):
+def test_missing_codex_rollout_during_post_restarts_session_thread(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
-        codex = MissingReplyThreadCodex()
+        codex = MissingPostThreadCodex()
         storage = WorkspaceStorage(tmp_path)
         message = _private_message(1)
         poster = FakePoster()
@@ -1335,11 +1335,11 @@ def test_missing_codex_rollout_during_reply_restarts_reply_thread(tmp_path):
             for line in path.read_text(encoding="utf-8").splitlines()
         ]
         assert codex.ensure_thread_ids == [None]
-        assert codex.reply_thread_ids == ["missing-thread", None]
-        assert codex.reply_developer_instructions[0] is None
-        assert codex.reply_developer_instructions[1] is not None
-        assert poster.posts == [{"topic": "private", "content": "Recovered reply"}]
-        assert metadata.codex_thread_id == "recovered-reply-1"
+        assert codex.post_thread_ids == ["missing-thread", None]
+        assert codex.post_developer_instructions[0] is None
+        assert codex.post_developer_instructions[1] is not None
+        assert poster.posts == [{"topic": "private", "content": "Recovered post"}]
+        assert metadata.codex_thread_id == "recovered-post-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
         assert metadata.last_processed_message_id == 1
         assert any(record.get("kind") == "codex_thread_restarted" for record in error_records)
@@ -1398,17 +1398,17 @@ def test_posted_bot_update_is_injected_once_on_next_turn(tmp_path):
         await bot._handle_message(first)
         pending = storage.read_pending_posted_bot_updates(first.session_key)
         assert len(pending) == 1
-        assert pending[0]["content"] == "Reply 1"
+        assert pending[0]["content"] == "Post 1"
 
         await bot._handle_message(second)
 
         assert "Posted Bot Updates" in codex.prompts[1]
-        assert "Reply 1" in codex.prompts[1]
-        assert "Reply 1" not in codex.worker_prompts["reflections"]
-        assert "Reply 1" not in codex.worker_prompts["schedule"]
+        assert "Post 1" in codex.prompts[1]
+        assert "Post 1" not in codex.worker_prompts["reflections"]
+        assert "Post 1" not in codex.worker_prompts["schedule"]
         remaining = storage.read_pending_posted_bot_updates(first.session_key)
         assert len(remaining) == 1
-        assert remaining[0]["content"] == "Reply 2"
+        assert remaining[0]["content"] == "Post 2"
 
     asyncio.run(scenario())
 
@@ -1432,7 +1432,7 @@ def test_clear_resets_codex_thread_and_starts_fresh_on_next_message(tmp_path):
         after = _message(3, "after clear", directly_addressed=True)
 
         await bot._handle_message(first)
-        assert storage.read_pending_posted_bot_updates(first.session_key)[0]["content"] == "Reply 1"
+        assert storage.read_pending_posted_bot_updates(first.session_key)[0]["content"] == "Post 1"
 
         await bot._handle_message(clear)
 
@@ -1452,7 +1452,7 @@ def test_clear_resets_codex_thread_and_starts_fresh_on_next_message(tmp_path):
         assert codex.developer_instructions == [None, None]
         assert codex.ensure_developer_instructions[1] is not None
         assert "Posted Bot Updates" not in codex.prompts[1]
-        assert "Reply 1" not in codex.prompts[1]
+        assert "Post 1" not in codex.prompts[1]
         assert storage.load_metadata(first.session_key).codex_thread_id == "thread-2"
 
     asyncio.run(scenario())
@@ -1542,7 +1542,7 @@ def test_status_reports_silent_decision_without_codex_call(tmp_path):
         assert len(codex.prompts) == 1
         status = poster.posts[-1]["content"]
         assert "- Decision: silent (0.90)" in status
-        assert "- Why: chose not to reply; no runtime error" in status
+        assert "- Why: chose not to post; no runtime error" in status
         assert '- Message: Alice: "hello"' in status
         assert "- Errors: none" in status
         assert "Thread:" not in status
@@ -1550,7 +1550,7 @@ def test_status_reports_silent_decision_without_codex_call(tmp_path):
     asyncio.run(scenario())
 
 
-def test_status_reports_posted_reply(tmp_path):
+def test_status_reports_posted_message(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = ThreadingCodex()
@@ -1570,7 +1570,7 @@ def test_status_reports_posted_reply(tmp_path):
         assert codex.calls == 1
         status = poster.posts[-1]["content"]
         assert "- Decision: chat (0.90)" in status
-        assert '- Posted: "Reply 1"' in status
+        assert '- Posted: "Post 1"' in status
         assert "- Errors: none" in status
 
     asyncio.run(scenario())
@@ -1603,7 +1603,7 @@ def test_status_reports_worker_error_surface(tmp_path):
     asyncio.run(scenario())
 
 
-def test_status_reports_reply_failure_without_calling_codex_again(tmp_path):
+def test_status_reports_post_failure_without_calling_codex_again(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         poster = FakePoster()
@@ -1620,10 +1620,10 @@ def test_status_reports_reply_failure_without_calling_codex_again(tmp_path):
         await bot._handle_message(_message(2, "sili status", directly_addressed=True))
 
         status = poster.posts[-1]["content"]
-        assert "- Decision: failed before reply" in status
-        assert "- Why: reply failed before a decision was logged" in status
+        assert "- Decision: failed before post" in status
+        assert "- Why: post failed before a decision was logged" in status
         assert '- Message: Alice: "hello"' in status
-        assert "- Errors: reply: RuntimeError('codex failed')" in status
+        assert "- Errors: post: RuntimeError('codex failed')" in status
 
     asyncio.run(scenario())
 
@@ -1671,7 +1671,7 @@ def test_unaddressed_stream_clear_is_not_control_command(tmp_path):
         await bot._handle_message(_message(1, "clear"))
 
         assert codex.calls == 1
-        assert poster.posts == [{"topic": "Launch", "content": "Reply 1"}]
+        assert poster.posts == [{"topic": "Launch", "content": "Post 1"}]
         assert bot.storage.load_metadata(_message(1).session_key).codex_thread_id == "thread-1"
 
     asyncio.run(scenario())
@@ -1740,12 +1740,12 @@ def test_bot_authored_events_are_ignored_without_raw_event_storage(tmp_path):
     asyncio.run(scenario())
 
 
-def test_private_zulip_event_is_accepted_and_replied_to(tmp_path):
+def test_private_zulip_event_is_accepted_and_posted_to(tmp_path):
     class PrivatePoster:
         def __init__(self) -> None:
             self.posts: list[dict[str, str]] = []
 
-        async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, str]:
+        async def post_message(self, message: NormalizedMessage, content: str) -> dict[str, str]:
             assert message.conversation_type == "private"
             assert message.stream_id is None
             self.posts.append(
@@ -1810,8 +1810,8 @@ def test_private_zulip_event_is_accepted_and_replied_to(tmp_path):
         assert second.session_key == "zulip:realm:private:recipient:1002"
         assert second.message_id == 2
         assert poster.posts == [
-            {"to": "alice@example.com", "topic": "private", "content": "Reply 1"},
-            {"to": "bob@example.com", "topic": "private", "content": "Reply 2"},
+            {"to": "alice@example.com", "topic": "private", "content": "Post 1"},
+            {"to": "bob@example.com", "topic": "private", "content": "Post 2"},
         ]
         assert typing.events == [
             {"op": "start", "message_id": 1, "recipient_ids": [1]},
@@ -2018,7 +2018,7 @@ def test_private_message_posts_fallback_when_codex_is_silent(tmp_path):
 
         await bot._handle_message(_private_message(1))
 
-        assert poster.posts == [{"topic": "private", "content": PRIVATE_REPLY_FALLBACK}]
+        assert poster.posts == [{"topic": "private", "content": PRIVATE_POST_FALLBACK}]
         assert bot.storage.load_metadata(_private_message(1).session_key).last_processed_message_id == 1
 
     asyncio.run(scenario())
@@ -2041,7 +2041,7 @@ def test_private_reflection_only_decision_posts_fallback_without_acknowledgement
         message = _private_message(1)
         await bot._handle_message(message)
 
-        assert poster.posts == [{"topic": "private", "content": PRIVATE_REPLY_FALLBACK}]
+        assert poster.posts == [{"topic": "private", "content": PRIVATE_POST_FALLBACK}]
         record = json.loads(storage.session_path(message.session_key, "turns.jsonl").read_text(encoding="utf-8").splitlines()[-1])
         assert "reflection_acknowledgement" not in record
         assert record["reflection_applied"][0]["scope"] == "global"
@@ -2090,6 +2090,6 @@ def test_group_private_messages_from_different_senders_share_session(tmp_path):
         assert codex.ensure_thread_ids == [None, "thread-1"]
         assert codex.thread_ids == ["thread-1", "thread-1"]
         assert bot.storage.load_metadata(first.session_key).codex_thread_id == "thread-2"
-        assert [post["content"] for post in poster.posts] == ["Reply 1", "Reply 2"]
+        assert [post["content"] for post in poster.posts] == ["Post 1", "Post 2"]
 
     asyncio.run(scenario())

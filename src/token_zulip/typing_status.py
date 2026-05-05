@@ -38,8 +38,8 @@ class TypingStatusManager:
         self.enabled = enabled
         self.refresh_seconds = max(0.1, refresh_seconds)
 
-    def should_show_typing(self, _message: NormalizedMessage, *, post_replies: bool) -> bool:
-        if not self.enabled or not post_replies:
+    def should_show_typing(self, _message: NormalizedMessage, *, posting_enabled: bool) -> bool:
+        if not self.enabled or not posting_enabled:
             return False
         return True
 

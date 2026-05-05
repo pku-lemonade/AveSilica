@@ -16,7 +16,7 @@ def _message(content: str, *, directly_addressed: bool = False, private: bool = 
         conversation_type="private" if private else "stream",
         private_recipient_key="1001" if private else None,
         private_recipients=[{"user_id": 1, "email": "alice@example.com", "full_name": "Alice"}] if private else [],
-        reply_required=private,
+        post_required=private,
         sender_email="alice@example.com",
         sender_full_name="Alice",
         sender_id=1,

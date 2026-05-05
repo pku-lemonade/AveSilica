@@ -616,7 +616,7 @@ class ScheduleStore:
             private_recipients=[
                 item for item in origin.get("private_recipients", []) if isinstance(item, dict)
             ] if isinstance(origin.get("private_recipients"), list) else [],
-            reply_required=True,
+            post_required=True,
         )
 
     def _set_enabled(self, origin: NormalizedMessage, op: ScheduleOperation, *, enabled: bool, state: str) -> dict[str, Any]:

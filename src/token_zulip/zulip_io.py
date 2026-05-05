@@ -270,7 +270,7 @@ def _normalize_private_message(
         conversation_type="private",
         private_recipient_key=recipient_key,
         private_recipients=private_recipients,
-        reply_required=True,
+        post_required=True,
         sender_email=sender_email,
         sender_full_name=str(message.get("sender_full_name") or ""),
         sender_id=sender_id,
@@ -434,11 +434,11 @@ class ZulipClientIO:
                 return str(data["realm_id"])
         return None
 
-    async def post_reply(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
+    async def post_message(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
         if message.conversation_type == "private":
             recipients = _private_send_recipients(message)
             if not recipients:
-                raise RuntimeError("Cannot reply to private Zulip message without recipients")
+                raise RuntimeError("Cannot post to private Zulip message without recipients")
             request = {
                 "type": "private",
                 "to": recipients,
