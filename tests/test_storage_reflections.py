@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 from token_zulip.models import (
@@ -493,6 +494,73 @@ def test_reflection_store_writes_global_channel_and_private_inboxes(tmp_path):
         tmp_path / "reflections" / "private-recipient-1001" / "REFLECTIONS.md"
     ).read_text(encoding="utf-8")
     assert not (tmp_path / "reflections" / "stream-engineering-10" / "topic-launch-topic123").exists()
+
+
+def test_reflection_store_serializes_concurrent_global_appends(tmp_path):
+    initialize_workspace(tmp_path)
+    reflections_dir = tmp_path / "reflections"
+    key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
+
+    def append(index: int) -> list[dict]:
+        store = ReflectionStore(reflections_dir)
+        return store.apply_ops(
+            key,
+            [
+                ReflectionOperation(
+                    scope="global",
+                    kind="workflow_lesson",
+                    suggested_target="references/reply/system.md",
+                    content=(
+                        "Future reflection writes may need append serialization.\n"
+                        f"Unique global candidate token {index:03d}."
+                    ),
+                )
+            ],
+            [1000 + index],
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(append, range(40)))
+
+    text = (reflections_dir / "REFLECTIONS.md").read_text(encoding="utf-8")
+    assert all(result[0]["status"] == "applied" for result in results)
+    for index in range(40):
+        assert text.count(f"Unique global candidate token {index:03d}.") == 1
+    assert not (reflections_dir / "REFLECTIONS.md.tmp").exists()
+
+
+def test_reflection_store_serializes_concurrent_channel_appends(tmp_path):
+    initialize_workspace(tmp_path)
+    reflections_dir = tmp_path / "reflections"
+    key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
+
+    def append(index: int) -> list[dict]:
+        store = ReflectionStore(reflections_dir)
+        return store.apply_ops(
+            key,
+            [
+                ReflectionOperation(
+                    scope="source",
+                    kind="policy_candidate",
+                    suggested_target="AGENTS.md",
+                    content=(
+                        "Channel reflection writes should preserve every candidate.\n"
+                        f"Unique channel candidate token {index:03d}."
+                    ),
+                )
+            ],
+            [2000 + index],
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(append, range(40)))
+
+    reflection_file = reflections_dir / "stream-engineering-10" / "REFLECTIONS.md"
+    text = reflection_file.read_text(encoding="utf-8")
+    assert all(result[0]["status"] == "applied" for result in results)
+    for index in range(40):
+        assert text.count(f"Unique channel candidate token {index:03d}.") == 1
+    assert not reflection_file.with_suffix(reflection_file.suffix + ".tmp").exists()
 
 
 def test_reflection_store_skips_archival_summaries(tmp_path):

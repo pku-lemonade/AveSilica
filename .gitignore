@@ -7,5 +7,7 @@ third_party/
 workspace/records/
 workspace/schedules/
 workspace/skills/
+workspace/reflections/*.lock
+workspace/reflections/**/*.lock
 workspace/reflections/private-*/
 workspace/reflections/stream-*/

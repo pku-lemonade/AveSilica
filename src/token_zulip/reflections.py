@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import re
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
 
 from .models import (
     ReflectionOperation,
@@ -14,6 +21,8 @@ from .models import (
 
 
 REFLECTIONS_FILENAME = "REFLECTIONS.md"
+_REFLECTION_APPEND_LOCKS: dict[Path, threading.Lock] = {}
+_REFLECTION_APPEND_LOCKS_GUARD = threading.Lock()
 
 _REFLECTIVE_MARKERS = (
     "avoid",
@@ -86,10 +95,7 @@ class ReflectionStore:
             }
         path = directory / REFLECTIONS_FILENAME
         entry = self._format_entry(op, resolved_scope, source_message_ids)
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
-        text = existing.rstrip()
-        next_text = f"{text}\n\n{entry}\n" if text else f"{entry}\n"
-        self._write_text_atomic(path, next_text)
+        self._append_entry(path, entry)
         result: dict[str, Any] = {
             "status": "applied",
             "scope": resolved_scope,
@@ -135,8 +141,39 @@ class ReflectionStore:
             return False
         return any(pattern.search(content) for pattern in _ARCHIVAL_PATTERNS)
 
-    def _write_text_atomic(self, path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
+    def _append_entry(self, path: Path, entry: str) -> None:
+        with _locked_reflection_file(path):
+            with path.open("a+", encoding="utf-8") as file:
+                file.seek(0, 2)
+                if file.tell() > 0:
+                    file.write("\n\n")
+                file.write(entry)
+                file.write("\n")
+                file.flush()
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    with _REFLECTION_APPEND_LOCKS_GUARD:
+        lock = _REFLECTION_APPEND_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _REFLECTION_APPEND_LOCKS[path] = lock
+        return lock
+
+
+@contextmanager
+def _locked_reflection_file(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _lock_for(path)
+    with lock:
+        if fcntl is None:
+            yield
+            return
+
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
