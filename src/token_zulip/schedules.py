@@ -185,14 +185,14 @@ class ScheduleStore:
         self.layout = WorkspaceLayout(self.workspace_dir)
         self.timezone_name = timezone_name
         self.schedules_dir = self.workspace_dir / "schedules"
-        self.run_records_dir = self.layout.scheduled_records_dir
+        self.scheduled_runs_dir = self.layout.scheduled_runs_dir
         self.jobs_file = self.schedules_dir / SCHEDULES_FILENAME
         self.lock_file = self.schedules_dir / ".jobs.lock"
         self.ensure_dirs()
 
     def ensure_dirs(self) -> None:
         self.schedules_dir.mkdir(parents=True, exist_ok=True)
-        self.run_records_dir.mkdir(parents=True, exist_ok=True)
+        self.scheduled_runs_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_ops(
         self,
@@ -556,7 +556,7 @@ class ScheduleStore:
                 return
 
     def log_run(self, job_id: str, record: dict[str, Any]) -> None:
-        directory = self.run_records_dir / safe_slug(job_id)
+        directory = self.scheduled_runs_dir / safe_slug(job_id)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / SCHEDULE_OUTPUT_FILENAME
         with path.open("a", encoding="utf-8") as handle:

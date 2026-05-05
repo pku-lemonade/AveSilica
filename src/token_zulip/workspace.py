@@ -4,7 +4,7 @@ import re
 import shutil
 from pathlib import Path
 
-from .layout import AGENTS_FILENAME, REALM_DIRNAME, REFLECTIONS_FILENAME, migrate_legacy_workspace
+from .layout import AGENTS_FILENAME, REALM_DIRNAME, REFLECTIONS_FILENAME
 
 
 WORKSPACE_DIRS: tuple[str, ...] = (
@@ -62,7 +62,6 @@ WORKSPACE_TEMPLATE_FILES: tuple[str, ...] = (
 
 def initialize_workspace(root: Path, overwrite: bool = False) -> list[Path]:
     root = root.expanduser().resolve()
-    migrate_legacy_workspace(root)
     template_root = _workspace_template_root(root)
     created: list[Path] = []
 

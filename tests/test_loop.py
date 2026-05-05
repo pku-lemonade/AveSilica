@@ -1186,19 +1186,19 @@ def test_resumed_thread_gets_no_recent_context_or_developer_instructions(tmp_pat
     asyncio.run(scenario())
 
 
-def test_legacy_thread_without_instruction_marker_auto_clears_and_starts_fresh(tmp_path):
+def test_unmarked_thread_without_instruction_mode_auto_clears_and_starts_fresh(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
         codex = PromptCapturingCodex()
         storage = WorkspaceStorage(tmp_path)
-        previous = _message(1, "legacy context")
-        current = _message(2, "current after migration")
+        previous = _message(1, "unmarked context")
+        current = _message(2, "current after unmarked thread")
         storage.append_message(previous)
-        storage.set_codex_thread_id(previous.session_key, "legacy-thread")
+        storage.set_codex_thread_id(previous.session_key, "unmarked-thread")
         storage.append_posted_bot_update(
             previous.session_key,
             source="conversation_turn",
-            content="Legacy visible bot update",
+            content="Unmarked visible bot update",
             post={"status": "sent"},
         )
         bot = AgentLoop(
@@ -1216,11 +1216,11 @@ def test_legacy_thread_without_instruction_marker_auto_clears_and_starts_fresh(t
         assert codex.thread_ids == ["thread-1"]
         assert codex.developer_instructions[0] is None
         assert codex.ensure_developer_instructions[0] is not None
-        assert "legacy context" not in codex.prompt
-        assert "Legacy visible bot update" not in codex.prompt
+        assert "unmarked context" not in codex.prompt
+        assert "Unmarked visible bot update" not in codex.prompt
         assert metadata.codex_thread_id == "thread-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
-        assert metadata.previous_codex_thread_id == "legacy-thread"
+        assert metadata.previous_codex_thread_id == "unmarked-thread"
         assert metadata.cleared_at_message_id == 2
         assert storage.read_pending_posted_bot_updates(current.session_key) == []
 

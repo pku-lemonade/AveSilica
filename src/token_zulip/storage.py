@@ -19,7 +19,7 @@ from .models import (
     safe_slug,
     utc_now_iso,
 )
-from .layout import CODEX_STATS_DIRNAME, TRACES_DIRNAME, WorkspaceLayout, migrate_legacy_workspace
+from .layout import CODEX_STATS_DIRNAME, TRACES_DIRNAME, WorkspaceLayout
 from .telemetry import timing_codex_call_stats_records, timing_e2e_stats_record
 
 
@@ -149,7 +149,6 @@ class SessionMetadata:
 class WorkspaceStorage:
     def __init__(self, workspace_dir: Path) -> None:
         self.workspace_dir = workspace_dir.expanduser().resolve()
-        migrate_legacy_workspace(self.workspace_dir)
         self.layout = WorkspaceLayout(self.workspace_dir)
         self.realm_dir = self.layout.realm_dir
         self.runtime_dir = self.layout.runtime_dir
@@ -163,7 +162,7 @@ class WorkspaceStorage:
             self.runtime_dir,
             self.errors_dir,
             self.codex_stats_dir,
-            self.layout.scheduled_records_dir,
+            self.layout.scheduled_runs_dir,
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
@@ -695,7 +694,7 @@ class WorkspaceStorage:
         return manifest
 
     def trace_dir(self, key: SessionKey, trace_id: str, *, job_id: str | None = None) -> Path:
-        base = self._scheduled_record_dir(job_id) if job_id else self.session_dir(key)
+        base = self._scheduled_run_dir(job_id) if job_id else self.session_dir(key)
         return base / TRACES_DIRNAME / safe_slug(trace_id)
 
     def list_traces(self, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -794,11 +793,11 @@ class WorkspaceStorage:
         }
 
     def _trace_index_path(self, key: SessionKey, *, job_id: str | None) -> Path:
-        base = self._scheduled_record_dir(job_id) if job_id else self.session_dir(key)
+        base = self._scheduled_run_dir(job_id) if job_id else self.session_dir(key)
         return base / TRACES_DIRNAME / "index.jsonl"
 
-    def _scheduled_record_dir(self, job_id: str | None) -> Path:
-        return self.layout.scheduled_records_dir / safe_slug(job_id or "unknown")
+    def _scheduled_run_dir(self, job_id: str | None) -> Path:
+        return self.layout.scheduled_runs_dir / safe_slug(job_id or "unknown")
 
     def _relative_trace_path(self, path: Path) -> str:
         return path.relative_to(self.workspace_dir).as_posix()
@@ -1068,8 +1067,6 @@ class WorkspaceStorage:
 
     def _rewrite_record_paths(self, record: dict[str, Any], *, old_base: Path, new_base: Path) -> dict[str, Any]:
         rewritten = dict(record)
-        if "reply_required" in rewritten:
-            rewritten["post_required"] = bool(rewritten.pop("reply_required"))
         old_rel = old_base.relative_to(self.workspace_dir).as_posix()
         new_rel = new_base.relative_to(self.workspace_dir).as_posix()
         if isinstance(rewritten.get("content"), str):

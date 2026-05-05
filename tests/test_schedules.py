@@ -288,7 +288,7 @@ def test_active_schema_requires_decomposed_schedule_spec():
     ]
 
 
-def test_schedule_operation_rejects_legacy_modify_action():
+def test_schedule_operation_rejects_unknown_modify_action():
     try:
         ScheduleOperation.from_mapping(
             {
@@ -307,10 +307,10 @@ def test_schedule_operation_rejects_legacy_modify_action():
     except ValueError as exc:
         assert "invalid schedule op" in str(exc)
     else:
-        raise AssertionError("legacy modify action should be rejected")
+        raise AssertionError("unknown modify action should be rejected")
 
 
-def test_schedule_operation_ignores_legacy_freeform_schedule_input(tmp_path):
+def test_schedule_operation_ignores_unknown_freeform_schedule_input(tmp_path):
     store = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
     result = store.create_job(
         _message(1),
@@ -318,7 +318,7 @@ def test_schedule_operation_ignores_legacy_freeform_schedule_input(tmp_path):
             {
                 "action": "create",
                 "job_id": "",
-                "name": "Legacy schedule",
+                "name": "Freeform schedule",
                 "match": "",
                 "prompt": "Do the thing.",
                 "schedule": "2030-01-02T09:00:00",
