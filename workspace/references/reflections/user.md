@@ -1,4 +1,4 @@
-Zulip conversation update for the memory worker.
+Zulip conversation update for the reflections worker.
 
 $workflow_context
 

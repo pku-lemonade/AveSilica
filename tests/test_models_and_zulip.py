@@ -487,19 +487,11 @@ def test_zulip_listener_can_request_all_public_stream_events():
     ]
 
 
-def test_agent_decision_parses_fenced_json_and_validates_memory_ops():
+def test_agent_decision_parses_fenced_json_and_clamps_confidence():
     payload = {
         "should_reply": True,
         "reply_kind": "chat",
         "message_to_post": "Done.",
-        "memory_ops": [
-            {
-                "op": "replace",
-                "scope": "conversation",
-                "content": "Follow up",
-                "old_text": "Previous follow up",
-            }
-        ],
         "confidence": 2,
     }
 
@@ -507,5 +499,3 @@ def test_agent_decision_parses_fenced_json_and_validates_memory_ops():
 
     assert decision.should_reply is True
     assert decision.confidence == 1.0
-    assert decision.memory_ops[0].op == "replace"
-    assert decision.memory_ops[0].old_text == "Previous follow up"

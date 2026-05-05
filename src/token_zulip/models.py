@@ -12,8 +12,7 @@ from slugify import slugify
 
 
 REPLY_KINDS = {"chat", "draft_plan", "question", "report", "silent"}
-MEMORY_OPS = {"add", "remove", "replace"}
-MEMORY_SCOPES = {"channel", "conversation", "global"}
+REFLECTION_SCOPES = {"global", "source"}
 SCHEDULE_OPS = {"create", "update", "remove", "pause", "resume", "list", "run_now"}
 SCHEDULE_SPEC_KINDS = {"unchanged", "once_at", "once_in", "interval", "cron"}
 SCHEDULE_MENTION_TARGET_KINDS = {"person", "topic", "channel", "all"}
@@ -40,12 +39,12 @@ def safe_slug(value: str) -> str:
     return slug or "unnamed"
 
 
-def stream_memory_dir_name(stream_id: int | None, stream_slug: str | None = None) -> str:
+def stream_scope_dir_name(stream_id: int | None, stream_slug: str | None = None) -> str:
     if stream_id is None:
-        raise ValueError("stream memory paths require stream_id")
+        raise ValueError("stream-scoped paths require stream_id")
     slug = safe_slug(stream_slug or "")
     if slug == "unnamed":
-        raise ValueError("stream memory paths require stream_slug")
+        raise ValueError("stream-scoped paths require stream_slug")
     return f"stream-{slug}-{stream_id}"
 
 
@@ -53,11 +52,11 @@ def topic_dir_name(topic_hash: str, topic_slug: str | None) -> str:
     return f"topic-{safe_slug(topic_slug or '')}-{safe_slug(topic_hash)}"
 
 
-def topic_memory_dir_name(topic_hash: str, topic_slug: str | None = None) -> str:
+def topic_scope_dir_name(topic_hash: str, topic_slug: str | None = None) -> str:
     return topic_dir_name(topic_hash, topic_slug)
 
 
-def private_memory_dir_name(recipient_key: str | None) -> str:
+def private_scope_dir_name(recipient_key: str | None) -> str:
     return f"private-recipient-{safe_slug(recipient_key or 'unknown')}"
 
 
@@ -66,11 +65,11 @@ def topic_record_dir_name(topic_hash: str, topic_slug: str | None = None) -> str
 
 
 def scoped_stream_dir(root: Path, key: "SessionKey") -> Path:
-    return root / stream_memory_dir_name(key.stream_id, key.stream_slug)
+    return root / stream_scope_dir_name(key.stream_id, key.stream_slug)
 
 
 def scoped_private_dir(root: Path, key: "SessionKey") -> Path:
-    return root / private_memory_dir_name(key.private_recipient_key or key.topic_hash)
+    return root / private_scope_dir_name(key.private_recipient_key or key.topic_hash)
 
 
 def scoped_conversation_dir(root: Path, key: "SessionKey", *, readable_topic: bool = False) -> Path:
@@ -259,39 +258,35 @@ class NormalizedMessageMove:
 
 
 @dataclass(frozen=True)
-class MemoryOperation:
-    op: str
-    scope: str = "conversation"
+class ReflectionOperation:
+    scope: str = "source"
+    kind: str = "observation"
+    suggested_target: str = "none"
     content: str = ""
-    old_text: str = ""
 
     @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "MemoryOperation":
-        op = str(value.get("op") or "")
-        scope = str(value.get("scope") or "conversation")
-        content = str(value.get("content") or "")
-        old_text = str(value.get("old_text") or "")
-        if op not in MEMORY_OPS:
-            raise ValueError(f"invalid memory op: {op!r}")
-        if scope not in MEMORY_SCOPES:
-            raise ValueError(f"invalid memory scope: {scope!r}")
-        if op in {"add", "replace"} and not content.strip():
-            raise ValueError(f"{op} memory op requires content")
-        if op in {"replace", "remove"} and not old_text.strip():
-            raise ValueError(f"{op} memory op requires old_text")
+    def from_mapping(cls, value: dict[str, Any]) -> "ReflectionOperation":
+        scope = str(value.get("scope") or "source").strip().lower()
+        kind = str(value.get("kind") or "observation").strip()
+        suggested_target = str(value.get("suggested_target") or "none").strip()
+        content = str(value.get("content") or "").strip()
+        if scope not in REFLECTION_SCOPES:
+            raise ValueError(f"invalid reflection scope: {scope!r}")
+        if not content:
+            raise ValueError("reflection op requires content")
         return cls(
-            op=op,
             scope=scope,
+            kind=kind or "observation",
+            suggested_target=suggested_target or "none",
             content=content,
-            old_text=old_text,
         )
 
     def to_record(self) -> dict[str, str]:
         return {
-            "op": self.op,
             "scope": self.scope,
+            "kind": self.kind,
+            "suggested_target": self.suggested_target,
             "content": self.content,
-            "old_text": self.old_text,
         }
 
 
@@ -539,22 +534,22 @@ class ReplyDecision:
 
 
 @dataclass(frozen=True)
-class MemoryDecision:
-    memory_ops: list[MemoryOperation] = field(default_factory=list)
+class ReflectionDecision:
+    reflection_ops: list[ReflectionOperation] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_json_text(cls, text: str) -> "MemoryDecision":
+    def from_json_text(cls, text: str) -> "ReflectionDecision":
         payload = _extract_json_object(text)
         data = json.loads(payload)
         if not isinstance(data, dict):
-            raise ValueError("memory decision JSON must be an object")
+            raise ValueError("reflection decision JSON must be an object")
         ops = [
-            MemoryOperation.from_mapping(item)
-            for item in data.get("memory_ops", [])
+            ReflectionOperation.from_mapping(item)
+            for item in data.get("reflection_ops", [])
             if isinstance(item, dict)
         ]
-        return cls(memory_ops=ops, raw=data)
+        return cls(reflection_ops=ops, raw=data)
 
 
 @dataclass(frozen=True)
@@ -597,7 +592,6 @@ class ScheduleDecision:
 
 @dataclass(frozen=True)
 class AgentDecision(ReplyDecision):
-    memory_ops: list[MemoryOperation] = field(default_factory=list)
     schedule_ops: list[ScheduleOperation] = field(default_factory=list)
     skill_ops: list[SkillOperation] = field(default_factory=list)
 
@@ -619,14 +613,12 @@ class AgentDecision(ReplyDecision):
             raise ValueError("decision JSON must be an object")
 
         reply = ReplyDecision.from_json_text(payload)
-        memory = MemoryDecision.from_json_text(payload)
         schedule = ScheduleDecision.from_json_text(payload)
         skill = SkillDecision.from_json_text(payload)
         return cls(
             should_reply=reply.should_reply,
             reply_kind=reply.reply_kind,
             message_to_post=reply.message_to_post,
-            memory_ops=memory.memory_ops,
             schedule_ops=schedule.schedule_ops,
             skill_ops=skill.skill_ops,
             confidence=reply.confidence,
@@ -638,7 +630,6 @@ class AgentDecision(ReplyDecision):
         cls,
         reply: ReplyDecision,
         *,
-        memory_ops: list[MemoryOperation] | None = None,
         schedule_ops: list[ScheduleOperation] | None = None,
         skill_ops: list[SkillOperation] | None = None,
     ) -> "AgentDecision":
@@ -646,7 +637,6 @@ class AgentDecision(ReplyDecision):
             should_reply=reply.should_reply,
             reply_kind=reply.reply_kind,
             message_to_post=reply.message_to_post,
-            memory_ops=memory_ops or [],
             schedule_ops=schedule_ops or [],
             skill_ops=skill_ops or [],
             confidence=reply.confidence,
@@ -655,7 +645,6 @@ class AgentDecision(ReplyDecision):
 
     def to_record(self) -> dict[str, Any]:
         record = super().to_record()
-        record["memory_ops"] = [item.to_record() for item in self.memory_ops]
         record["schedule_ops"] = [item.to_record() for item in self.schedule_ops]
         record["skill_ops"] = [item.to_record() for item in self.skill_ops]
         return record

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import re
 from contextlib import AsyncExitStack
@@ -13,18 +12,18 @@ from .codex_adapter import CodexAdapter, CodexRunResult, CodexWorkerSpec
 from .config import BotConfig
 from .control import ControlCommand, parse_control_command
 from .instructions import InstructionLoader
-from .memory import MemoryStore
 from .models import (
     AgentDecision,
-    MemoryDecision,
     NormalizedMessage,
     NormalizedReaction,
+    ReflectionDecision,
     ReplyDecision,
     ScheduleDecision,
     SessionKey,
     SkillDecision,
 )
 from .prompt import PromptBuilder
+from .reflections import ReflectionStore
 from .schedules import ScheduleStore, utc_now, zoneinfo_for
 from .skills import SkillStore
 from .storage import SessionMetadata, WorkspaceStorage
@@ -33,8 +32,8 @@ from .turn_context import RenderContext, TurnContext, WorkflowDeltas
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
 from .workspace import (
-    MEMORY_DECISION_SCHEMA_FILE,
-    MEMORY_WORKER_USER_PROMPT_FILE,
+    REFLECTIONS_DECISION_SCHEMA_FILE,
+    REFLECTIONS_WORKER_USER_PROMPT_FILE,
     REPLY_DECISION_SCHEMA_FILE,
     REPLY_TURN_USER_PROMPT_FILE,
     SCHEDULED_JOB_DECISION_SCHEMA_FILE,
@@ -71,7 +70,7 @@ class AgentLoop:
         config: BotConfig,
         storage: WorkspaceStorage,
         instructions: InstructionLoader,
-        memory: MemoryStore,
+        reflections: ReflectionStore,
         codex: CodexAdapter,
         zulip: ZulipPoster,
         typing: TypingStatusManager | None = None,
@@ -82,7 +81,7 @@ class AgentLoop:
         self.config = config
         self.storage = storage
         self.instructions = instructions
-        self.memory = memory
+        self.reflections = reflections
         self.codex = codex
         self.zulip = zulip
         self.skills = skills or SkillStore(
@@ -464,7 +463,7 @@ class AgentLoop:
 
     def _error_surface(self, error: dict[str, Any]) -> str:
         worker = str(error.get("worker") or "").strip().casefold()
-        if worker in {"memory", "skill", "schedule"}:
+        if worker in {"reflections", "skill", "schedule"}:
             return worker
         kind = str(error.get("kind") or "").strip().casefold()
         event = str(error.get("event") or "").strip().casefold()
@@ -566,14 +565,13 @@ class AgentLoop:
 
                 pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
                 posted_bot_update_context = self._posted_bot_update_context(pending_posted_bot_updates)
-                memory_context, memory_hash, memory_hash_changed = self._memory_context_for_prompt(key, metadata)
-                memory_prompt = self.prompt_builder.build(
+                reflections_prompt = self.prompt_builder.build(
                     TurnContext.from_messages(
                         messages,
-                        deltas=WorkflowDeltas(scoped_memory=memory_context),
+                        deltas=WorkflowDeltas(reflection_context=self._reflection_context_for_prompt(first)),
                     ),
-                    role="memory",
-                    template_file=MEMORY_WORKER_USER_PROMPT_FILE,
+                    role="reflections",
+                    template_file=REFLECTIONS_WORKER_USER_PROMPT_FILE,
                 )
                 skill_prompt = self.prompt_builder.build(
                     TurnContext.from_messages(
@@ -586,10 +584,10 @@ class AgentLoop:
 
                 worker_specs = [
                     CodexWorkerSpec(
-                        kind="memory",
-                        prompt=memory_prompt,
-                        developer_instructions=self.instructions.compose(role="memory_worker", **instruction_kwargs),
-                        output_schema_path=self.config.workspace_dir / MEMORY_DECISION_SCHEMA_FILE,
+                        kind="reflections",
+                        prompt=reflections_prompt,
+                        developer_instructions=self.instructions.compose(role="reflections_worker", **instruction_kwargs),
+                        output_schema_path=self.config.workspace_dir / REFLECTIONS_DECISION_SCHEMA_FILE,
                     ),
                     CodexWorkerSpec(
                         kind="skill",
@@ -640,11 +638,11 @@ class AgentLoop:
                 telemetry.add_codex_result(worker_result, role=spec.kind, phase=worker_phase)
                 worker_results[spec.kind] = worker_result
 
-            with telemetry.phase("apply_memory_skill"):
-                memory_decision, memory_applied = self._apply_memory_worker_result(
+            with telemetry.phase("apply_reflections_skill"):
+                reflection_decision, reflection_applied = self._apply_reflections_worker_result(
                     key,
                     messages,
-                    worker_results.get("memory"),
+                    worker_results.get("reflections"),
                 )
                 skill_decision, skill_applied = self._apply_skill_worker_result(
                     key,
@@ -653,7 +651,7 @@ class AgentLoop:
                 )
                 for spec in worker_specs:
                     result = worker_results.get(spec.kind)
-                    decision = memory_decision if spec.kind == "memory" else skill_decision
+                    decision = reflection_decision if spec.kind == "reflections" else skill_decision
                     trace_roles.append(
                         self._trace_role(
                             spec.kind,
@@ -728,17 +726,15 @@ class AgentLoop:
                 )
 
             with telemetry.phase("build_reply_prompt"):
-                memory_acknowledgement = self._memory_acknowledgement(memory_applied)
                 skill_acknowledgement = self._skill_acknowledgement(skill_applied)
                 schedule_acknowledgement = self._schedule_acknowledgement(schedule_applied)
                 acknowledgement = self._join_acknowledgements(
-                    [skill_acknowledgement, schedule_acknowledgement, memory_acknowledgement]
+                    [skill_acknowledgement, schedule_acknowledgement]
                 )
                 reply_prompt = self.prompt_builder.build(
                     TurnContext.from_messages(
                         messages,
                         deltas=WorkflowDeltas(
-                            scoped_memory=memory_context,
                             posted_bot_updates=posted_bot_update_context,
                             applied_changes=self._applied_changes_context(acknowledgement),
                         ),
@@ -800,12 +796,8 @@ class AgentLoop:
                         worker_mode="persistent",
                     )
                 )
-                if memory_hash_changed:
-                    self.storage.set_last_injected_memory_hash(key, memory_hash)
-
                 decision = AgentDecision.from_parts(
                     reply_decision,
-                    memory_ops=memory_decision.memory_ops,
                     skill_ops=skill_decision.skill_ops,
                     schedule_ops=schedule_decision.schedule_ops,
                 )
@@ -843,10 +835,9 @@ class AgentLoop:
                 messages=messages,
                 decision=decision,
                 post=post,
-                memory_applied=memory_applied,
+                reflection_applied=reflection_applied,
                 skill_applied=skill_applied,
                 schedule_applied=schedule_applied,
-                memory_acknowledgement=memory_acknowledgement,
                 skill_acknowledgement=skill_acknowledgement,
                 schedule_acknowledgement=schedule_acknowledgement,
                 trace_id=trace_id,
@@ -881,8 +872,6 @@ class AgentLoop:
         )
 
         post: dict[str, Any] | None = None
-        memory_applied: list[dict[str, Any]] = []
-        memory_acknowledgement = ""
         schedule_ignored: list[dict[str, Any]] = []
         skill_ignored: list[dict[str, Any]] = []
         trace_roles: list[dict[str, Any]] = []
@@ -931,12 +920,9 @@ class AgentLoop:
                 if decision.skill_ops:
                     skill_ignored = [op.to_record() for op in decision.skill_ops]
 
-                memory_applied = self.memory.apply_ops(key, decision.memory_ops)
-                memory_acknowledgement = self._memory_acknowledgement(memory_applied)
                 outbound_message = decision.message_to_post.strip() if decision.should_reply else ""
                 if outbound_message and outbound_message.strip().upper() != "[SILENT]":
                     outbound_message = self._with_scheduled_mentions(job, outbound_message)
-                outbound_message = self._with_acknowledgement(outbound_message, memory_acknowledgement)
                 should_deliver = bool(outbound_message) and outbound_message.strip().upper() != "[SILENT]"
 
             if should_deliver:
@@ -953,7 +939,7 @@ class AgentLoop:
                         source="scheduled_job",
                         content=outbound_message,
                         post=post,
-                        acknowledgement=memory_acknowledgement,
+                        acknowledgement="",
                         job_id=job_id,
                     )
 
@@ -973,8 +959,6 @@ class AgentLoop:
                     "trace_id": trace_id,
                     "decision": decision.to_record(),
                     "post": post,
-                    "memory_applied": memory_applied,
-                    "memory_acknowledgement": memory_acknowledgement,
                     "ignored_schedule_ops": schedule_ignored,
                     "ignored_skill_ops": skill_ignored,
                     "timing": timing,
@@ -1027,8 +1011,6 @@ class AgentLoop:
                     "trace_id": trace_id,
                     "error": error,
                     "post": post,
-                    "memory_applied": memory_applied,
-                    "memory_acknowledgement": memory_acknowledgement,
                     "timing": timing,
                 },
             )
@@ -1044,7 +1026,6 @@ class AgentLoop:
         timezone_name = self.config.schedule_timezone
         local_now = utc_now().astimezone(zoneinfo_for(timezone_name))
         skill_context, skill_errors = self.skills.render_for_prompt(job.get("skills") or [])
-        memory_context = self.memory.render_selected(origin_message.session_key).strip()
         return self.prompt_builder.render_template(
             SCHEDULED_JOB_USER_PROMPT_FILE,
             {
@@ -1061,35 +1042,26 @@ class AgentLoop:
                     "Skill Loading Problems",
                     "\n".join(f"- {error}" for error in skill_errors),
                 ),
-                "memory_context_section": self.prompt_builder.render_section(
-                    "Scoped Memory",
-                    memory_context,
-                    intro="Remembered background for the origin Zulip conversation.",
-                ),
             },
         )
 
-    def _memory_context_for_prompt(
-        self,
-        key: SessionKey,
-        metadata: SessionMetadata,
-    ) -> tuple[str, str | None, bool]:
-        rendered = self.memory.render_selected(key).strip()
-        current_hash = self._memory_hash(rendered)
-        previous_hash = metadata.last_injected_memory_hash or None
-        if rendered and current_hash != previous_hash:
-            return (
-                "\n".join(["# Scoped Memory", "", rendered]),
-                current_hash,
-                True,
-            )
-        if not rendered and previous_hash:
-            return (
-                "\n".join(["# Scoped Memory", "", "- Empty"]),
-                None,
-                True,
-            )
-        return "", current_hash, False
+    def _reflection_context_for_prompt(self, message: NormalizedMessage) -> str:
+        if message.conversation_type == "private":
+            source = f"private-recipient-{message.private_recipient_key or message.topic_hash}"
+            source_scope = "source resolves to the current DM/group chat"
+        else:
+            source = f"stream-{message.stream_slug}-{message.stream_id}"
+            source_scope = "source resolves to the current public channel; never the topic"
+        return "\n".join(
+            [
+                "# Reflection Scope",
+                "",
+                f"- Current source: {source}",
+                f"- Source behavior: {source_scope}",
+                "- Allowed scopes: global, source",
+                "- Reflections are not injected into future prompts; they are review candidates.",
+            ]
+        )
 
     def _schedule_context_for_prompt(self) -> str:
         timezone_name = self.config.schedule_timezone
@@ -1346,8 +1318,8 @@ class AgentLoop:
             return decision.to_record()
         if isinstance(decision, ReplyDecision):
             return decision.to_record()
-        if isinstance(decision, MemoryDecision):
-            return {"memory_ops": [item.to_record() for item in decision.memory_ops]}
+        if isinstance(decision, ReflectionDecision):
+            return {"reflection_ops": [item.to_record() for item in decision.reflection_ops]}
         if isinstance(decision, SkillDecision):
             return {"skill_ops": [item.to_record() for item in decision.skill_ops]}
         if isinstance(decision, ScheduleDecision):
@@ -1511,11 +1483,6 @@ class AgentLoop:
             return True
         return str(post.get("status") or "").lower() == "success"
 
-    def _memory_hash(self, rendered: str) -> str | None:
-        if not rendered:
-            return None
-        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-
     def _message_to_post(
         self,
         first: NormalizedMessage,
@@ -1532,19 +1499,19 @@ class AgentLoop:
             return content or PRIVATE_REPLY_FALLBACK
         return ""
 
-    def _apply_memory_worker_result(
+    def _apply_reflections_worker_result(
         self,
         key: SessionKey,
         messages: list[NormalizedMessage],
         result: CodexRunResult | None,
-    ) -> tuple[MemoryDecision, list[dict[str, Any]]]:
+    ) -> tuple[ReflectionDecision, list[dict[str, Any]]]:
         if result is None:
-            return MemoryDecision(), []
+            return ReflectionDecision(), []
         try:
-            decision = MemoryDecision.from_json_text(result.raw_text)
-            applied = self.memory.apply_ops(
+            decision = ReflectionDecision.from_json_text(result.raw_text)
+            applied = self.reflections.apply_ops(
                 key,
-                decision.memory_ops,
+                decision.reflection_ops,
                 [message.message_id for message in messages],
             )
             return decision, applied
@@ -1553,13 +1520,13 @@ class AgentLoop:
                 key,
                 {
                     "event": "op_worker_apply_failed",
-                    "worker": "memory",
+                    "worker": "reflections",
                     "error": str(exc),
                     "thread_id": result.thread_id,
                     "message_ids": [message.message_id for message in messages],
                 },
             )
-            return MemoryDecision(), []
+            return ReflectionDecision(), []
 
     def _apply_skill_worker_result(
         self,
@@ -1763,36 +1730,6 @@ class AgentLoop:
             return f"{local_dt.strftime('%Y-%m-%d %H:%M')} {tz_name}"
         except (TypeError, ValueError):
             return str(value)
-
-    def _memory_acknowledgement(self, memory_applied: list[dict[str, Any]]) -> str:
-        changes = [
-            self._memory_change_text(result)
-            for result in memory_applied
-            if result.get("status") == "applied"
-        ]
-        changes = [change for change in changes if change]
-        if not changes:
-            return ""
-        if len(changes) == 1:
-            return f"Memory updated: {changes[0]}"
-        return "Memory updated:\n" + "\n".join(f"- {change}" for change in changes)
-
-    def _memory_change_text(self, result: dict[str, Any]) -> str:
-        scope = str(result.get("scope") or "conversation")
-        op = str(result.get("op") or "")
-        content = str(result.get("content") or "").strip()
-        old_text = str(result.get("old_text") or "").strip()
-        if op == "add" and content:
-            return f"added {scope} memory: {content}"
-        if op == "remove":
-            removed = content or old_text
-            if removed:
-                return f"forgot {scope} memory: {removed}"
-        if op == "replace" and content:
-            if old_text:
-                return f'replaced {scope} memory: "{old_text}" -> "{content}"'
-            return f"replaced {scope} memory: {content}"
-        return ""
 
     def _post_summary(self, post_result: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
         response = post_result.get("response") if isinstance(post_result.get("response"), dict) else post_result

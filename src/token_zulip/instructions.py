@@ -13,25 +13,19 @@ ROLE_SYSTEM_FILES: dict[str, tuple[str, ...]] = {
     "reply": (
         "AGENTS.md",
         "references/reply/system.md",
-        "memory/AGENTS.md",
     ),
-    "memory_worker": (
-        "references/memory/system.md",
-        "memory/AGENTS.md",
+    "reflections_worker": (
+        "references/reflections/system.md",
     ),
     "skill_worker": (
         "references/skill/system.md",
-        "memory/AGENTS.md",
     ),
     "schedule_worker": (
         "references/schedule/system.md",
-        "memory/AGENTS.md",
     ),
     "scheduled_job": (
         "AGENTS.md",
         "references/scheduled_job/system.md",
-        "references/memory/system.md",
-        "memory/AGENTS.md",
     ),
 }
 
@@ -145,7 +139,7 @@ class InstructionLoader:
             topic_slug=safe_slug(topic or topic_hash),
         )
         if conversation_type == "private":
-            private_path = scoped_conversation_dir(self.root / "memory", key)
+            private_path = scoped_conversation_dir(self.root / "instructions", key)
             return [
                 (
                     f"{private_path.relative_to(self.root).as_posix()}/AGENTS.md",
@@ -153,8 +147,8 @@ class InstructionLoader:
                 )
             ]
 
-        stream_path = scoped_stream_dir(self.root / "memory", key)
-        topic_path = scoped_conversation_dir(self.root / "memory", key)
+        stream_path = scoped_stream_dir(self.root / "instructions", key)
+        topic_path = scoped_conversation_dir(self.root / "instructions", key)
         return [
             (
                 f"{stream_path.relative_to(self.root).as_posix()}/AGENTS.md",

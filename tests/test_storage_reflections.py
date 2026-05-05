@@ -3,17 +3,17 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
-from token_zulip.memory import MemoryStore
 from token_zulip.models import (
     AgentDecision,
-    MemoryOperation,
     NormalizedMessage,
     NormalizedMessageMove,
     NormalizedReaction,
+    ReflectionOperation,
     SessionKey,
     normalized_topic_hash,
     safe_slug,
 )
+from token_zulip.reflections import ReflectionStore
 from token_zulip.storage import REACTION_EVENTS_CAP, WorkspaceStorage
 from token_zulip.workspace import initialize_workspace
 
@@ -110,21 +110,19 @@ def test_storage_uses_readable_session_messages_pending_and_turns(tmp_path):
     storage.append_message(first)
     storage.append_pending_messages(key, [second])
     storage.set_codex_thread_state(key, thread_id="thread-1", instruction_mode="developer-v1")
-    storage.set_last_injected_memory_hash(key, "memory-hash")
     storage.mark_processed(key, [1])
     storage.log_turn(
         key,
         [first],
         AgentDecision(False, "silent", ""),
         post=None,
-        memory_applied=[],
+        reflection_applied=[],
     )
 
     assert storage.read_recent_messages(key, 10)[0]["message_id"] == 1
     assert storage.pop_pending_messages(key)[0].message_id == 2
     assert storage.load_metadata(key).codex_thread_id == "thread-1"
     assert storage.load_metadata(key).codex_instruction_mode == "developer-v1"
-    assert storage.load_metadata(key).last_injected_memory_hash == "memory-hash"
     assert storage.load_metadata(key).last_processed_message_id == 1
 
     message_record = json.loads(storage.session_path(key, "messages.jsonl").read_text(encoding="utf-8").splitlines()[0])
@@ -150,7 +148,7 @@ def test_trace_sidecars_are_pruneable_without_touching_conversation_history(tmp_
         [message],
         AgentDecision(False, "silent", ""),
         post=None,
-        memory_applied=[],
+        reflection_applied=[],
     )
 
     manifest = storage.log_trace(
@@ -246,14 +244,17 @@ def test_read_conversation_participants_extracts_silent_and_id_mentions(tmp_path
     }
 
 
-def test_channel_rename_moves_records_and_memory_by_stream_id(tmp_path):
+def test_channel_rename_moves_records_instructions_and_reflections_by_stream_id(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)
     first = _topic_message(1, stream="Engineering", topic="Launch")
     storage.append_message(first)
-    old_memory = tmp_path / "memory" / "stream-engineering-10" / f"topic-launch-{first.topic_hash}"
-    old_memory.mkdir(parents=True)
-    (old_memory / "MEMORY.md").write_text("channel fact\n", encoding="utf-8")
+    old_instructions = tmp_path / "instructions" / "stream-engineering-10" / f"topic-launch-{first.topic_hash}"
+    old_instructions.mkdir(parents=True)
+    (old_instructions / "AGENTS.md").write_text("topic rule\n", encoding="utf-8")
+    old_reflections = tmp_path / "reflections" / "stream-engineering-10"
+    old_reflections.mkdir(parents=True)
+    (old_reflections / "REFLECTIONS.md").write_text("channel reflection\n", encoding="utf-8")
 
     renamed = _topic_message(2, stream="Platform", topic="Launch")
     storage.append_message(renamed)
@@ -263,20 +264,22 @@ def test_channel_rename_moves_records_and_memory_by_stream_id(tmp_path):
     assert storage.read_recent_messages(new_key, 10)[0]["message_id"] == 1
     assert storage.load_metadata(new_key).stream == "Platform"
     assert (
-        tmp_path / "memory" / "stream-platform-10" / f"topic-launch-{first.topic_hash}" / "MEMORY.md"
-    ).read_text(encoding="utf-8") == "channel fact\n"
-    assert "channel fact" in MemoryStore(tmp_path / "memory").render_selected(new_key)
+        tmp_path / "instructions" / "stream-platform-10" / f"topic-launch-{first.topic_hash}" / "AGENTS.md"
+    ).read_text(encoding="utf-8") == "topic rule\n"
+    assert (
+        tmp_path / "reflections" / "stream-platform-10" / "REFLECTIONS.md"
+    ).read_text(encoding="utf-8") == "channel reflection\n"
 
 
-def test_full_topic_rename_moves_records_memory_and_preserves_thread(tmp_path):
+def test_full_topic_rename_moves_records_instructions_and_preserves_thread(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)
     source = _topic_message(1, topic="Launch")
     storage.append_message(source)
     storage.set_codex_thread_state(source.session_key, thread_id="thread-1", instruction_mode="developer-v1")
-    memory_dir = tmp_path / "memory" / "stream-engineering-10" / f"topic-launch-{source.topic_hash}"
-    memory_dir.mkdir(parents=True)
-    (memory_dir / "MEMORY.md").write_text("launch fact\n", encoding="utf-8")
+    instruction_dir = tmp_path / "instructions" / "stream-engineering-10" / f"topic-launch-{source.topic_hash}"
+    instruction_dir.mkdir(parents=True)
+    (instruction_dir / "AGENTS.md").write_text("launch rule\n", encoding="utf-8")
 
     result = storage.apply_message_move(_move([1], propagate_mode="change_all"))
     destination = _topic_message(2, topic="Release").session_key
@@ -284,8 +287,9 @@ def test_full_topic_rename_moves_records_memory_and_preserves_thread(tmp_path):
     assert result["status"] == "applied"
     assert storage.read_recent_messages(destination, 10)[0]["message_id"] == 1
     assert storage.load_metadata(destination).codex_thread_id == "thread-1"
-    assert (tmp_path / "memory" / "stream-engineering-10" / f"topic-release-{destination.topic_hash}").exists()
-    assert "launch fact" in MemoryStore(tmp_path / "memory").render_selected(destination)
+    assert (
+        tmp_path / "instructions" / "stream-engineering-10" / f"topic-release-{destination.topic_hash}" / "AGENTS.md"
+    ).read_text(encoding="utf-8") == "launch rule\n"
 
 
 def test_full_topic_rename_rewrites_message_upload_paths(tmp_path):
@@ -314,7 +318,7 @@ def test_full_topic_rename_rewrites_message_upload_paths(tmp_path):
     assert (storage.session_dir(destination) / "uploads" / "1" / "01-figure.png").exists()
 
 
-def test_full_topic_rename_into_existing_destination_merges_messages_and_memory(tmp_path):
+def test_full_topic_rename_into_existing_destination_merges_messages_and_archives_instruction_conflicts(tmp_path):
     initialize_workspace(tmp_path)
     storage = WorkspaceStorage(tmp_path)
     source = _topic_message(1, topic="Launch")
@@ -322,20 +326,24 @@ def test_full_topic_rename_into_existing_destination_merges_messages_and_memory(
     storage.append_message(source)
     storage.append_message(destination_message)
     storage.set_codex_thread_state(destination_message.session_key, thread_id="destination-thread", instruction_mode="developer-v1")
-    source_memory = tmp_path / "memory" / "stream-engineering-10" / f"topic-launch-{source.topic_hash}"
-    destination_memory = tmp_path / "memory" / "stream-engineering-10" / f"topic-release-{destination_message.topic_hash}"
-    source_memory.mkdir(parents=True)
-    destination_memory.mkdir(parents=True)
-    (source_memory / "MEMORY.md").write_text("source fact\n", encoding="utf-8")
-    (destination_memory / "MEMORY.md").write_text("destination fact\n", encoding="utf-8")
+    source_instructions = tmp_path / "instructions" / "stream-engineering-10" / f"topic-launch-{source.topic_hash}"
+    destination_instructions = (
+        tmp_path / "instructions" / "stream-engineering-10" / f"topic-release-{destination_message.topic_hash}"
+    )
+    source_instructions.mkdir(parents=True)
+    destination_instructions.mkdir(parents=True)
+    (source_instructions / "AGENTS.md").write_text("source rule\n", encoding="utf-8")
+    (destination_instructions / "AGENTS.md").write_text("destination rule\n", encoding="utf-8")
 
     storage.apply_message_move(_move([1], propagate_mode="change_all"))
 
     records = storage.read_recent_messages(destination_message.session_key, 10)
     assert [record["message_id"] for record in records] == [1, 2]
     assert storage.load_metadata(destination_message.session_key).codex_thread_id == "destination-thread"
-    assert "source fact" in (destination_memory / "MEMORY.md").read_text(encoding="utf-8")
-    assert "destination fact" in (destination_memory / "MEMORY.md").read_text(encoding="utf-8")
+    assert (destination_instructions / "AGENTS.md").read_text(encoding="utf-8") == "destination rule\n"
+    assert (destination_instructions / f"AGENTS.merged-{source_instructions.name}.md").read_text(
+        encoding="utf-8"
+    ) == "source rule\n"
 
 
 def test_partial_topic_move_moves_only_matching_message_records(tmp_path):
@@ -346,10 +354,6 @@ def test_partial_topic_move_moves_only_matching_message_records(tmp_path):
     storage.append_message(first)
     storage.append_message(second)
     storage.append_pending_messages(first.session_key, [second])
-    MemoryStore(tmp_path / "memory").apply_ops(
-        first.session_key,
-        [MemoryOperation(op="add", scope="conversation", content="Launch-only memory")],
-    )
 
     result = storage.apply_message_move(_move([2], propagate_mode="change_one"))
     destination = _topic_message(3, topic="Release").session_key
@@ -359,7 +363,6 @@ def test_partial_topic_move_moves_only_matching_message_records(tmp_path):
     assert [record["message_id"] for record in storage.read_recent_messages(destination, 10)] == [2]
     assert [message.message_id for message in storage.pop_pending_messages(destination)] == [2]
     assert storage.load_metadata(destination).codex_thread_id is None
-    assert "Launch-only memory" not in MemoryStore(tmp_path / "memory").render_selected(destination)
     storage.apply_reaction(_reaction(2))
     assert storage.read_recent_messages(destination, 10)[0]["reactions"][0]["emoji_name"] == "100"
 
@@ -430,50 +433,10 @@ def test_apply_reaction_unknown_message_returns_none(tmp_path):
     assert storage.apply_reaction(_reaction(404)) is None
 
 
-def test_memory_ops_add_replace_remove_and_render_by_scope(tmp_path):
+def test_reflection_store_writes_global_channel_and_private_inboxes(tmp_path):
     initialize_workspace(tmp_path)
-    store = MemoryStore(tmp_path / "memory")
-    key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
-
-    first = store.apply_ops(
-        key,
-        [MemoryOperation(op="add", scope="conversation", content="Team prefers short replies")],
-        [1],
-    )
-    second = store.apply_ops(
-        key,
-        [MemoryOperation(op="add", scope="conversation", content="Team prefers short replies")],
-        [2],
-    )
-
-    assert first[0]["status"] == "applied"
-    assert second[0]["status"] == "skipped"
-    assert "Team prefers short replies" in store.render_selected(key)
-    assert "conversation memory" in store.render_selected(key)
-    memory_path = tmp_path / "memory" / "stream-engineering-10" / "topic-launch-topic123" / "MEMORY.md"
-    assert memory_path.read_text(encoding="utf-8").count("Team prefers short replies") == 1
-
-    replaced = store.apply_ops(
-        key,
-        [MemoryOperation(op="replace", scope="conversation", old_text="short replies", content="Team prefers concise replies")],
-        [3],
-    )
-    assert replaced[0]["status"] == "applied"
-    assert "Team prefers concise replies" in store.render_selected(key)
-    assert "Team prefers short replies" not in store.render_selected(key)
-
-    removed = store.apply_ops(
-        key,
-        [MemoryOperation(op="remove", scope="conversation", old_text="concise replies")],
-        [4],
-    )
-    assert removed[0]["status"] == "applied"
-    assert "Team prefers concise replies" not in store.render_selected(key)
-
-
-def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
-    initialize_workspace(tmp_path)
-    store = MemoryStore(tmp_path / "memory")
+    store = ReflectionStore(tmp_path / "reflections")
+    stream_key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
     private_key = SessionKey(
         "realm",
         None,
@@ -481,50 +444,74 @@ def test_private_memory_is_session_local_and_not_rendered_for_streams(tmp_path):
         conversation_type="private",
         private_recipient_key="1001",
     )
-    stream_key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
 
-    store.apply_ops(
+    global_result = store.apply_ops(
+        stream_key,
+        [
+            ReflectionOperation(
+                scope="global",
+                kind="policy_candidate",
+                suggested_target="references/reply/system.md",
+                content="User seems to dislike context-free public-thread suggestions; consider tightening reply policy.",
+            )
+        ],
+        [1],
+    )
+    channel_result = store.apply_ops(
+        stream_key,
+        [
+            ReflectionOperation(
+                scope="source",
+                kind="workflow_lesson",
+                suggested_target="AGENTS.md",
+                content="This channel may need concise architecture summaries for future review threads.",
+            )
+        ],
+        [2],
+    )
+    private_result = store.apply_ops(
         private_key,
-        [MemoryOperation(op="add", scope="conversation", content="Alice likes brief DM replies")],
+        [
+            ReflectionOperation(
+                scope="source",
+                kind="style_preference",
+                suggested_target="AGENTS.md",
+                content="Private chats might need shorter operational replies when the user is scheduling reminders.",
+            )
+        ],
+        [3],
     )
 
-    assert "Alice likes brief DM replies" in store.render_selected(private_key)
-    assert "Alice likes brief DM replies" not in store.render_selected(stream_key)
+    assert global_result[0]["scope"] == "global"
+    assert channel_result[0]["scope"] == "channel"
+    assert private_result[0]["scope"] == "private"
+    assert "context-free public-thread" in (tmp_path / "reflections" / "REFLECTIONS.md").read_text(encoding="utf-8")
+    assert "concise architecture" in (
+        tmp_path / "reflections" / "stream-engineering-10" / "REFLECTIONS.md"
+    ).read_text(encoding="utf-8")
+    assert "shorter operational replies" in (
+        tmp_path / "reflections" / "private-recipient-1001" / "REFLECTIONS.md"
+    ).read_text(encoding="utf-8")
+    assert not (tmp_path / "reflections" / "stream-engineering-10" / "topic-launch-topic123").exists()
 
 
-def test_channel_memory_renders_for_sibling_topics_in_same_stream(tmp_path):
+def test_reflection_store_skips_archival_summaries(tmp_path):
     initialize_workspace(tmp_path)
-    store = MemoryStore(tmp_path / "memory")
-    first_topic = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
-    second_topic = SessionKey("realm", 10, "topic456", stream_slug="engineering", topic_slug="release")
-    other_stream = SessionKey("realm", 20, "topic123", stream_slug="research", topic_slug="launch")
-
-    store.apply_ops(
-        first_topic,
-        [MemoryOperation(op="add", scope="channel", content="Use concise architecture summaries")],
-    )
-    store.apply_ops(
-        first_topic,
-        [MemoryOperation(op="add", scope="conversation", content="Launch topic local fact")],
-    )
-
-    assert "Use concise architecture summaries" in store.render_selected(second_topic)
-    assert "Launch topic local fact" not in store.render_selected(second_topic)
-    assert "Use concise architecture summaries" not in store.render_selected(other_stream)
-    assert (tmp_path / "memory" / "stream-engineering-10" / "MEMORY.md").exists()
-
-
-def test_memory_ops_reject_oversized_entries_without_blocking(tmp_path):
-    initialize_workspace(tmp_path)
-    store = MemoryStore(tmp_path / "memory", char_limit=12)
+    store = ReflectionStore(tmp_path / "reflections")
     key = SessionKey("realm", 10, "topic123", stream_slug="engineering", topic_slug="launch")
 
     result = store.apply_ops(
         key,
-        [MemoryOperation(op="add", scope="conversation", content="too long for this file")],
+        [
+            ReflectionOperation(
+                scope="source",
+                kind="summary",
+                suggested_target="none",
+                content="Feiyang reported the camera-ready edits are mostly done.",
+            )
+        ],
         [1],
     )
 
-    assert result[0]["status"] == "rejected"
-    assert "exceed" in result[0]["reason"]
-    assert "too long" not in store.render_selected(key)
+    assert result[0]["status"] == "skipped"
+    assert not (tmp_path / "reflections" / "stream-engineering-10" / "REFLECTIONS.md").exists()

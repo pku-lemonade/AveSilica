@@ -24,7 +24,6 @@ from .telemetry import timing_codex_call_stats_records, timing_e2e_stats_record
 
 
 REACTION_EVENTS_CAP = 20
-ENTRY_DELIMITER = "\n§\n"
 POSTED_BOT_UPDATES_FILENAME = "posted_bot_updates.jsonl"
 ZULIP_PERSON_MENTION_RE = re.compile(r"@_?\*\*([^|\n]+?)(?:\|(\d+))?\*\*")
 CODEX_STATS_DIRNAME = "codex_stats"
@@ -47,7 +46,6 @@ class SessionMetadata:
     private_recipients: list[dict[str, Any]] = field(default_factory=list)
     codex_thread_id: str | None = None
     codex_instruction_mode: str | None = None
-    last_injected_memory_hash: str | None = None
     last_processed_message_id: int | None = None
     cleared_at: str | None = None
     cleared_at_message_id: int | None = None
@@ -115,11 +113,6 @@ class SessionMetadata:
             codex_instruction_mode=(
                 str(record["codex_instruction_mode"]) if record.get("codex_instruction_mode") is not None else None
             ),
-            last_injected_memory_hash=(
-                str(record["last_injected_memory_hash"])
-                if record.get("last_injected_memory_hash") is not None
-                else None
-            ),
             last_processed_message_id=last_processed,
             cleared_at=str(record["cleared_at"]) if record.get("cleared_at") is not None else None,
             cleared_at_message_id=_optional_int(record.get("cleared_at_message_id")),
@@ -148,7 +141,6 @@ class SessionMetadata:
             "private_recipients": self.private_recipients,
             "codex_thread_id": self.codex_thread_id,
             "codex_instruction_mode": self.codex_instruction_mode,
-            "last_injected_memory_hash": self.last_injected_memory_hash,
             "last_processed_message_id": self.last_processed_message_id,
             "cleared_at": self.cleared_at,
             "cleared_at_message_id": self.cleared_at_message_id,
@@ -162,13 +154,14 @@ class WorkspaceStorage:
     def __init__(self, workspace_dir: Path) -> None:
         self.workspace_dir = workspace_dir.expanduser().resolve()
         self.records_dir = self.workspace_dir / "records"
-        self.memory_dir = self.workspace_dir / "memory"
+        self.instructions_dir = self.workspace_dir / "instructions"
+        self.reflections_dir = self.workspace_dir / "reflections"
         self.errors_dir = self.records_dir / "errors"
         self.codex_stats_dir = self.records_dir / CODEX_STATS_DIRNAME
         self.ensure_dirs()
 
     def ensure_dirs(self) -> None:
-        for path in [self.records_dir, self.errors_dir, self.codex_stats_dir]:
+        for path in [self.records_dir, self.instructions_dir, self.reflections_dir, self.errors_dir, self.codex_stats_dir]:
             path.mkdir(parents=True, exist_ok=True)
 
     def log_ignored_event(self, event: dict[str, Any], reason: str, key: SessionKey | None = None) -> None:
@@ -240,7 +233,7 @@ class WorkspaceStorage:
         if message.conversation_type == "private" or message.stream_id is None:
             return
         new_slug = safe_slug(message.stream)
-        for root in [self.records_dir, self.memory_dir]:
+        for root in [self.records_dir, self.instructions_dir, self.reflections_dir]:
             self._rename_stream_dirs(root, message.stream_id, new_slug)
         self._update_stream_metadata(message.stream_id, message.stream, new_slug)
 
@@ -274,7 +267,6 @@ class WorkspaceStorage:
                 destination_dir,
                 destination_key,
                 move,
-                merge_memory=True,
             )
             return {
                 "kind": "message_move",
@@ -457,11 +449,6 @@ class WorkspaceStorage:
         metadata.codex_instruction_mode = instruction_mode
         self.save_metadata(metadata)
 
-    def set_last_injected_memory_hash(self, key: SessionKey, memory_hash: str | None) -> None:
-        metadata = self.load_metadata(key)
-        metadata.last_injected_memory_hash = memory_hash
-        self.save_metadata(metadata)
-
     def append_posted_bot_update(
         self,
         key: SessionKey,
@@ -520,7 +507,6 @@ class WorkspaceStorage:
         metadata.previous_codex_thread_id = metadata.codex_thread_id
         metadata.codex_thread_id = None
         metadata.codex_instruction_mode = None
-        metadata.last_injected_memory_hash = None
         metadata.cleared_at = utc_now_iso()
         metadata.cleared_at_message_id = message.message_id
         self.save_metadata(metadata)
@@ -542,10 +528,9 @@ class WorkspaceStorage:
         messages: list[NormalizedMessage],
         decision: AgentDecision,
         post: dict[str, Any] | None,
-        memory_applied: list[dict[str, Any]],
+        reflection_applied: list[dict[str, Any]],
         skill_applied: list[dict[str, Any]] | None = None,
         schedule_applied: list[dict[str, Any]] | None = None,
-        memory_acknowledgement: str = "",
         skill_acknowledgement: str = "",
         schedule_acknowledgement: str = "",
         trace_id: str = "",
@@ -557,14 +542,12 @@ class WorkspaceStorage:
             "message_ids": message_ids,
             "decision": decision.to_record(),
             "post": post,
-            "memory_applied": memory_applied,
+            "reflection_applied": reflection_applied,
         }
         if skill_applied:
             record["skill_applied"] = skill_applied
         if schedule_applied:
             record["schedule_applied"] = schedule_applied
-        if memory_acknowledgement:
-            record["memory_acknowledgement"] = memory_acknowledgement
         if skill_acknowledgement:
             record["skill_acknowledgement"] = skill_acknowledgement
         if schedule_acknowledgement:
@@ -867,9 +850,6 @@ class WorkspaceStorage:
     def session_dir(self, key: SessionKey) -> Path:
         return scoped_conversation_dir(self.records_dir, key, readable_topic=True)
 
-    def _memory_session_dir(self, key: SessionKey) -> Path:
-        return scoped_conversation_dir(self.memory_dir, key, readable_topic=True)
-
     def _resolved_move_key(self, key: SessionKey) -> SessionKey:
         if key.conversation_type == "private" or key.stream_id is None:
             return key
@@ -886,7 +866,7 @@ class WorkspaceStorage:
 
     def _existing_stream_slug(self, stream_id: int) -> str | None:
         suffix = f"-{stream_id}"
-        for root in [self.records_dir, self.memory_dir]:
+        for root in [self.records_dir, self.instructions_dir, self.reflections_dir]:
             if not root.exists():
                 continue
             for path in sorted(root.glob(f"stream-*{suffix}")):
@@ -903,7 +883,7 @@ class WorkspaceStorage:
             if not source.is_dir() or not source.name.endswith(suffix) or source == destination:
                 continue
             if destination.exists():
-                self._merge_directory(source, destination, old_base=source, new_base=destination, merge_memory=True)
+                self._merge_directory(source, destination, old_base=source, new_base=destination)
             else:
                 source.rename(destination)
                 self._rewrite_message_paths(destination, old_base=source, new_base=destination)
@@ -939,11 +919,7 @@ class WorkspaceStorage:
         destination_dir: Path,
         destination_key: SessionKey,
         move: NormalizedMessageMove,
-        *,
-        merge_memory: bool,
     ) -> bool:
-        memory_source = self._memory_session_dir(self._resolved_move_key(move.source_key))
-        memory_destination = self._memory_session_dir(destination_key)
         if destination_dir.exists():
             self._merge_directory(source_dir, destination_dir, old_base=source_dir, new_base=destination_dir)
         else:
@@ -951,20 +927,27 @@ class WorkspaceStorage:
             source_dir.rename(destination_dir)
             self._rewrite_message_paths(destination_dir, old_base=source_dir, new_base=destination_dir)
         self._save_destination_metadata(destination_dir, destination_key, move, preserve_existing_thread=True)
-
-        if merge_memory and memory_source.exists() and memory_source != memory_destination:
-            if memory_destination.exists():
-                self._merge_directory(
-                    memory_source,
-                    memory_destination,
-                    old_base=memory_source,
-                    new_base=memory_destination,
-                    merge_memory=True,
-                )
-            else:
-                memory_destination.parent.mkdir(parents=True, exist_ok=True)
-                memory_source.rename(memory_destination)
+        self._move_scoped_instruction_dir(move, destination_key)
         return True
+
+    def _move_scoped_instruction_dir(
+        self,
+        move: NormalizedMessageMove,
+        destination_key: SessionKey,
+    ) -> None:
+        source = scoped_conversation_dir(
+            self.instructions_dir,
+            self._resolved_move_key(move.source_key),
+            readable_topic=True,
+        )
+        destination = scoped_conversation_dir(self.instructions_dir, destination_key, readable_topic=True)
+        if not source.exists() or source == destination:
+            return
+        if destination.exists():
+            self._merge_directory(source, destination, old_base=source, new_base=destination)
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
 
     def _move_message_records(
         self,
@@ -1002,7 +985,6 @@ class WorkspaceStorage:
         *,
         old_base: Path,
         new_base: Path,
-        merge_memory: bool = False,
     ) -> None:
         destination.mkdir(parents=True, exist_ok=True)
         for child in sorted(source.iterdir()):
@@ -1014,10 +996,10 @@ class WorkspaceStorage:
                     self._rewrite_message_paths(destination, old_base=old_base, new_base=new_base)
                 continue
             if child.is_dir() and target.is_dir():
-                self._merge_directory(child, target, old_base=old_base, new_base=new_base, merge_memory=merge_memory)
+                self._merge_directory(child, target, old_base=old_base, new_base=new_base)
                 continue
             if child.is_file() and target.is_file():
-                self._merge_file(child, target, old_base=old_base, new_base=new_base, merge_memory=merge_memory)
+                self._merge_file(child, target, old_base=old_base, new_base=new_base)
         self._remove_empty_dir(source)
 
     def _merge_file(
@@ -1027,7 +1009,6 @@ class WorkspaceStorage:
         *,
         old_base: Path,
         new_base: Path,
-        merge_memory: bool,
     ) -> None:
         if source.name == "messages.jsonl":
             records = [
@@ -1045,10 +1026,6 @@ class WorkspaceStorage:
             existing = destination.read_text(encoding="utf-8") if destination.exists() else ""
             extra = source.read_text(encoding="utf-8")
             self._write_text_atomic(destination, existing + extra)
-            source.unlink()
-            return
-        if source.name == "MEMORY.md" and merge_memory:
-            self._write_memory_entries(destination, self._merge_memory_entries(destination, source))
             source.unlink()
             return
         if source.read_bytes() == destination.read_bytes():
@@ -1168,29 +1145,6 @@ class WorkspaceStorage:
         elif path.exists():
             path.unlink()
 
-    def _merge_memory_entries(self, destination: Path, source: Path) -> list[str]:
-        entries: list[str] = []
-        seen: set[str] = set()
-        for path in [destination, source]:
-            for entry in self._read_memory_entries(path):
-                if entry in seen:
-                    continue
-                seen.add(entry)
-                entries.append(entry)
-        return entries
-
-    def _read_memory_entries(self, path: Path) -> list[str]:
-        if not path.exists():
-            return []
-        text = path.read_text(encoding="utf-8").strip()
-        if not text:
-            return []
-        return [entry.strip() for entry in text.split(ENTRY_DELIMITER) if entry.strip()]
-
-    def _write_memory_entries(self, path: Path, entries: list[str]) -> None:
-        text = ENTRY_DELIMITER.join(entry.strip() for entry in entries if entry.strip())
-        self._write_text_atomic(path, text + ("\n" if text else ""))
-
     def _read_json(self, path: Path) -> dict[str, Any] | None:
         if not path.exists():
             return None
@@ -1201,7 +1155,8 @@ class WorkspaceStorage:
         return record if isinstance(record, dict) else None
 
     def _remove_empty_dir(self, path: Path) -> None:
-        while path.exists() and path != self.records_dir and path != self.memory_dir:
+        roots = {self.records_dir, self.instructions_dir, self.reflections_dir}
+        while path.exists() and path not in roots:
             try:
                 path.rmdir()
             except OSError:

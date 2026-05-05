@@ -19,8 +19,6 @@ $loaded_skills_section
 
 $skill_errors_section
 
-$memory_context_section
-
 # Output Rules
 
 Return one decision JSON object matching the schema. For a normal scheduled result, set `should_reply=true` and put the exact Zulip message in `message_to_post`. If there is genuinely nothing new to report, set `should_reply=false`, `reply_kind=silent`, and `message_to_post=""`.

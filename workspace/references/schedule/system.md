@@ -1,6 +1,6 @@
 # Schedule Worker Policy
 
-The schedule worker decides scheduled task lifecycle operations only. It does not write replies, memory, or skill content.
+The schedule worker decides scheduled task lifecycle operations only. It does not write replies, reflections, or skill content.
 
 - Return only `schedule_ops` in the provided schema.
 - Use schedule ops proactively for clear natural-language reminders, follow-ups, recurring tasks, cancellations, modifications, listing requests, or run-now requests.

@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from token_zulip.instructions import InstructionLoader
-from token_zulip.models import normalized_topic_hash, private_memory_dir_name, stream_memory_dir_name, topic_memory_dir_name
+from token_zulip.models import normalized_topic_hash, private_scope_dir_name, stream_scope_dir_name, topic_scope_dir_name
 from token_zulip.workspace import initialize_workspace
 
 
 def test_instruction_layers_are_ordered(tmp_path):
     initialize_workspace(tmp_path)
-    (tmp_path / "memory" / "AGENTS.md").write_text("workspace memory rule", encoding="utf-8")
-    stream_dir = tmp_path / "memory" / stream_memory_dir_name(10, "engineering")
+    stream_dir = tmp_path / "instructions" / stream_scope_dir_name(10, "engineering")
     topic_hash = normalized_topic_hash("Launch Plan")
-    topic_dir = stream_dir / topic_memory_dir_name(topic_hash, "launch-plan")
+    topic_dir = stream_dir / topic_scope_dir_name(topic_hash, "launch-plan")
     topic_dir.mkdir(parents=True)
     (stream_dir / "AGENTS.md").write_text("stream rule", encoding="utf-8")
     (topic_dir / "AGENTS.md").write_text("topic rule", encoding="utf-8")
@@ -20,15 +19,12 @@ def test_instruction_layers_are_ordered(tmp_path):
     assert "## Source: references/system.md" in text
     assert text.index("## Source: references/system.md") < text.index("## Source: AGENTS.md")
     assert text.index("## Source: AGENTS.md") < text.index("## Source: references/reply/system.md")
-    assert text.index("## Source: references/reply/system.md") < text.index("## Source: memory/AGENTS.md")
-    assert "workspace memory rule" in text
     assert "Do not try to write files" not in text
-    assert "Propose memory changes in the structured fields only" not in text
-    assert "references/memory/system.md" not in text
+    assert "references/reflections/system.md" not in text
     assert "references/schedule/system.md" not in text
-    stream_label = "memory/stream-engineering-10/AGENTS.md"
-    topic_label = f"memory/stream-engineering-10/topic-launch-plan-{topic_hash}/AGENTS.md"
-    assert text.index("## Source: memory/AGENTS.md") < text.index(stream_label)
+    stream_label = "instructions/stream-engineering-10/AGENTS.md"
+    topic_label = f"instructions/stream-engineering-10/topic-launch-plan-{topic_hash}/AGENTS.md"
+    assert text.index("## Source: references/reply/system.md") < text.index(stream_label)
     assert text.index(stream_label) < text.index(topic_label)
     assert "stream rule" in text
     assert "topic rule" in text
@@ -55,7 +51,7 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
 
     global_text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     reply_system_text = (tmp_path / "references" / "reply" / "system.md").read_text(encoding="utf-8")
-    memory_system_text = (tmp_path / "references" / "memory" / "system.md").read_text(encoding="utf-8")
+    reflections_system_text = (tmp_path / "references" / "reflections" / "system.md").read_text(encoding="utf-8")
 
     assert "```spoiler Details" in global_text
     assert "Keep replies chat-sized" in global_text
@@ -68,19 +64,15 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     assert "named tools/frameworks" in reply_system_text
     assert "include source links in the visible reply" in reply_system_text
     assert "instead of suggesting search terms" in reply_system_text
-    assert "unsupported claims" in memory_system_text
-    assert "MEMORY.md" in memory_system_text
-    assert "memory_ops: []" in memory_system_text
-    assert "stream-<slug>-<id>/MEMORY.md" in memory_system_text
-    assert "content` to an empty string" in memory_system_text
-    assert "add" in memory_system_text
-    assert "replace" in memory_system_text
-    assert "remove" in memory_system_text
+    assert "unsupported claims" in reflections_system_text
+    assert "reflection_ops: []" in reflections_system_text
+    assert "Do not create topic-level reflections" in reflections_system_text
+    assert "X asked/reported/confirmed Y" in reflections_system_text
 
 
-def test_private_instruction_loads_memory_scoped_agents(tmp_path):
+def test_private_instruction_loads_scoped_agents(tmp_path):
     initialize_workspace(tmp_path)
-    private_dir = tmp_path / "memory" / private_memory_dir_name("42")
+    private_dir = tmp_path / "instructions" / private_scope_dir_name("42")
     private_dir.mkdir(parents=True)
     (private_dir / "AGENTS.md").write_text("private rule", encoding="utf-8")
 
@@ -91,7 +83,7 @@ def test_private_instruction_loads_memory_scoped_agents(tmp_path):
         private_recipient_key="42",
     )
 
-    assert f"memory/{private_memory_dir_name('42')}/AGENTS.md" in text
+    assert f"instructions/{private_scope_dir_name('42')}/AGENTS.md" in text
     assert "private rule" in text
 
 

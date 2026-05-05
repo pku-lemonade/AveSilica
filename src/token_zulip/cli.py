@@ -14,8 +14,8 @@ from .codex_adapter import CodexSdkAdapter
 from .config import BotConfig
 from .instructions import InstructionLoader
 from .loop import AgentLoop
-from .memory import MemoryStore
 from .prompt import PromptBuilder
+from .reflections import ReflectionStore
 from .turn_context import RenderContext, TurnContext
 from .storage import WorkspaceStorage
 from .typing_status import NoOpTypingNotifier, TypingStatusManager
@@ -103,12 +103,11 @@ async def _run(args: argparse.Namespace) -> int:
     typing_notifier = ZulipTypingNotifier(zulip.client) if config.typing_enabled else NoOpTypingNotifier()
 
     storage = WorkspaceStorage(config.workspace_dir)
-    memory = MemoryStore(config.workspace_dir / "memory")
     loop = AgentLoop(
         config=config,
         storage=storage,
         instructions=InstructionLoader(config.workspace_dir, max_bytes=config.instruction_max_bytes),
-        memory=memory,
+        reflections=ReflectionStore(config.workspace_dir / "reflections"),
         codex=CodexSdkAdapter(
             model=config.codex_model,
             cwd=config.codex_cwd,

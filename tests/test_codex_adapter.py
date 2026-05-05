@@ -191,21 +191,21 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
             main_output_schema_path=tmp_path / "references" / "reply" / "schema.json",
             worker_specs=[
                 CodexWorkerSpec(
-                    kind="memory",
-                    prompt="memory prompt",
-                    developer_instructions="memory instructions",
-                    output_schema_path=tmp_path / "references" / "memory" / "schema.json",
+                    kind="reflections",
+                    prompt="reflections prompt",
+                    developer_instructions="reflections instructions",
+                    output_schema_path=tmp_path / "references" / "reflections" / "schema.json",
                 )
             ],
         )
     )
 
     assert forked.main.thread_id == "thread-1"
-    assert set(forked.workers) == {"memory"}
+    assert set(forked.workers) == {"reflections"}
     assert FakeThread.events[:3] == [
         ("run", "thread-1", "prompt"),
-        ("fork", "thread-1", "memory instructions"),
-        ("run", "fork-1", "memory prompt"),
+        ("fork", "thread-1", "reflections instructions"),
+        ("run", "fork-1", "reflections prompt"),
     ]
     assert FakeAsyncCodex.last.fork_kwargs == [
         {
@@ -214,18 +214,18 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
             "cwd": str(tmp_path),
             "approval_policy": "never",
             "sandbox": "danger-full-access",
-            "developer_instructions": "memory instructions",
+            "developer_instructions": "reflections instructions",
             "ephemeral": True,
             "exclude_turns": True,
         }
     ]
     assert FakeAsyncCodex.last.forks[0].run_kwargs["output_schema"]
-    assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "memory prompt"
+    assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "reflections prompt"
     assert forked.main.stats is not None
     assert forked.main.stats["operation"] == "run_decision"
-    assert forked.workers["memory"].stats is not None
-    assert forked.workers["memory"].stats["operation"] == "worker_fork"
-    assert forked.workers["memory"].stats["parent_thread_id"] == "thread-1"
+    assert forked.workers["reflections"].stats is not None
+    assert forked.workers["reflections"].stats["operation"] == "worker_fork"
+    assert forked.workers["reflections"].stats["parent_thread_id"] == "thread-1"
 
     FakeThread.events.clear()
     fresh_forked = asyncio.run(
@@ -236,10 +236,10 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
             main_output_schema_path=tmp_path / "references" / "reply" / "schema.json",
             worker_specs=[
                 CodexWorkerSpec(
-                    kind="memory",
-                    prompt="fresh memory prompt",
-                    developer_instructions="fresh memory instructions",
-                    output_schema_path=tmp_path / "references" / "memory" / "schema.json",
+                    kind="reflections",
+                    prompt="fresh reflections prompt",
+                    developer_instructions="fresh reflections instructions",
+                    output_schema_path=tmp_path / "references" / "reflections" / "schema.json",
                 )
             ],
         )
@@ -254,9 +254,9 @@ def test_codex_adapter_uses_installed_sdk_api(monkeypatch, tmp_path):
         "developer_instructions": "reply instructions",
     }
     assert FakeThread.events[0] == ("run", "thread-2", "fresh prompt")
-    assert FakeThread.events[1] == ("fork", "thread-2", "fresh memory instructions")
-    assert FakeThread.events[2] == ("run", "fork-1", "fresh memory prompt")
-    assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "fresh memory prompt"
+    assert FakeThread.events[1] == ("fork", "thread-2", "fresh reflections instructions")
+    assert FakeThread.events[2] == ("run", "fork-1", "fresh reflections prompt")
+    assert FakeAsyncCodex.last.forks[0].run_kwargs["prompt"] == "fresh reflections prompt"
 
     worker = asyncio.run(
         adapter.run_worker_fork(
@@ -355,10 +355,10 @@ def test_run_turn_with_forks_runs_workers_sequentially(monkeypatch, tmp_path):
             main_output_schema_path=tmp_path / "references" / "reply" / "schema.json",
             worker_specs=[
                 CodexWorkerSpec(
-                    kind="memory",
-                    prompt="memory prompt",
-                    developer_instructions="memory instructions",
-                    output_schema_path=tmp_path / "references" / "memory" / "schema.json",
+                    kind="reflections",
+                    prompt="reflections prompt",
+                    developer_instructions="reflections instructions",
+                    output_schema_path=tmp_path / "references" / "reflections" / "schema.json",
                 ),
                 CodexWorkerSpec(
                     kind="skill",
@@ -370,12 +370,12 @@ def test_run_turn_with_forks_runs_workers_sequentially(monkeypatch, tmp_path):
         )
     )
 
-    assert set(result.workers) == {"memory", "skill"}
+    assert set(result.workers) == {"reflections", "skill"}
     assert result.worker_errors == {}
     assert FakeThread.events == [
         ("run", "thread-1", "reply prompt"),
-        ("fork", "thread-1", "memory instructions"),
-        ("run", "fork-1", "memory prompt"),
+        ("fork", "thread-1", "reflections instructions"),
+        ("run", "fork-1", "reflections prompt"),
         ("fork", "thread-1", "skill instructions"),
         ("run", "fork-2", "skill prompt"),
     ]
@@ -438,10 +438,10 @@ def test_run_turn_with_forks_continues_after_worker_failure(monkeypatch, tmp_pat
             main_output_schema_path=tmp_path / "references" / "reply" / "schema.json",
             worker_specs=[
                 CodexWorkerSpec(
-                    kind="memory",
-                    prompt="memory prompt",
-                    developer_instructions="memory instructions",
-                    output_schema_path=tmp_path / "references" / "memory" / "schema.json",
+                    kind="reflections",
+                    prompt="reflections prompt",
+                    developer_instructions="reflections instructions",
+                    output_schema_path=tmp_path / "references" / "reflections" / "schema.json",
                 ),
                 CodexWorkerSpec(
                     kind="skill",
@@ -453,10 +453,10 @@ def test_run_turn_with_forks_continues_after_worker_failure(monkeypatch, tmp_pat
         )
     )
 
-    assert "fork-1 failed" in result.worker_errors["memory"]
+    assert "fork-1 failed" in result.worker_errors["reflections"]
     assert set(result.workers) == {"skill"}
     assert FakeThread.events == [
         ("thread-1", "reply prompt"),
-        ("fork-1", "memory prompt"),
+        ("fork-1", "reflections prompt"),
         ("fork-2", "skill prompt"),
     ]

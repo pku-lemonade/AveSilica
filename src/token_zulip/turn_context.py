@@ -57,7 +57,7 @@ class ConversationContext:
 
 @dataclass(frozen=True)
 class WorkflowDeltas:
-    scoped_memory: str = ""
+    reflection_context: str = ""
     posted_bot_updates: str = ""
     scheduling_context: str = ""
     current_schedules: str = ""
@@ -67,8 +67,8 @@ class WorkflowDeltas:
     applied_changes: str = ""
 
     def sections_for_role(self, role: str) -> list[str]:
-        if role == "memory":
-            return [self.scoped_memory]
+        if role == "reflections":
+            return [self.reflection_context]
         if role == "skill":
             return [self.skill_availability]
         if role == "schedule":
@@ -80,7 +80,7 @@ class WorkflowDeltas:
                 self.same_turn_skill_changes,
             ]
         if role == "reply":
-            return [self.scoped_memory, self.posted_bot_updates, self.applied_changes]
+            return [self.posted_bot_updates, self.applied_changes]
         raise ValueError(f"unknown prompt role: {role}")
 
 

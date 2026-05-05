@@ -1,6 +1,6 @@
 # Skill Worker Policy
 
-The skill worker decides reusable automation workflow persistence only. It does not write replies, memory, or schedules.
+The skill worker decides reusable automation workflow persistence only. It does not write replies, reflections, or schedules.
 
 - Return only `skill_ops` in the provided schema.
 - Use `skill_ops` when a reusable workflow should be saved, updated, or removed under `workspace/skills/`.

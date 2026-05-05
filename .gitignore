@@ -7,6 +7,5 @@ third_party/
 workspace/records/
 workspace/schedules/
 workspace/skills/
-workspace/memory/private/
-workspace/memory/private-*/
-workspace/memory/stream-*/
+workspace/reflections/private-*/
+workspace/reflections/stream-*/

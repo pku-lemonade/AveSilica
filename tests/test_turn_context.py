@@ -30,11 +30,11 @@ def _message(
 def test_turn_context_from_messages_preserves_message_conversation_and_render_fields() -> None:
     turn = TurnContext.from_messages(
         [_message(1, content="first"), _message(2, content="second")],
-        deltas=WorkflowDeltas(scoped_memory="# Scoped Memory\n\nbody"),
+        deltas=WorkflowDeltas(reflection_context="# Reflection Scope\n\nbody"),
         render=RenderContext(message_timezone="Asia/Shanghai"),
     )
 
-    assert turn.deltas.scoped_memory == "# Scoped Memory\n\nbody"
+    assert turn.deltas.reflection_context == "# Reflection Scope\n\nbody"
     assert turn.render.message_timezone == "Asia/Shanghai"
     assert turn.messages[0].message_id == 1
     assert turn.messages[0].sender_label == "User 1"
@@ -46,7 +46,7 @@ def test_turn_context_from_messages_preserves_message_conversation_and_render_fi
 
 def test_workflow_deltas_select_concise_role_sections() -> None:
     deltas = WorkflowDeltas(
-        scoped_memory="memory",
+        reflection_context="reflection",
         posted_bot_updates="posted",
         scheduling_context="time",
         current_schedules="jobs",
@@ -56,7 +56,7 @@ def test_workflow_deltas_select_concise_role_sections() -> None:
         applied_changes="applied",
     )
 
-    assert deltas.sections_for_role("memory") == ["memory"]
+    assert deltas.sections_for_role("reflections") == ["reflection"]
     assert deltas.sections_for_role("skill") == ["skills"]
     assert deltas.sections_for_role("schedule") == ["time", "jobs", "people", "skills", "skill changes"]
-    assert deltas.sections_for_role("reply") == ["memory", "posted", "applied"]
+    assert deltas.sections_for_role("reply") == ["posted", "applied"]

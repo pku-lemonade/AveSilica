@@ -8,7 +8,7 @@ from token_zulip.codex_adapter import CodexRunResult, CodexTurnWithForksResult, 
 from token_zulip.config import BotConfig
 from token_zulip.instructions import InstructionLoader
 from token_zulip.loop import AgentLoop
-from token_zulip.memory import MemoryStore
+from token_zulip.reflections import ReflectionStore
 from token_zulip.models import NormalizedMessage, ScheduleMentionTarget, ScheduleOperation, ScheduleSpec
 from token_zulip.schedules import ScheduleStore, parse_schedule, parse_schedule_spec
 from token_zulip.skills import SkillStore
@@ -183,8 +183,8 @@ class PayloadCodex:
         main = await self.run_decision(prompt, thread_id, developer_instructions=developer_instructions)
         workers: dict[str, CodexRunResult] = {}
         for spec in worker_specs:
-            if spec.kind == "memory":
-                worker_payload = {"memory_ops": self.payload.get("memory_ops", [])}
+            if spec.kind == "reflections":
+                worker_payload = {"reflection_ops": self.payload.get("reflection_ops", [])}
             elif spec.kind == "skill":
                 worker_payload = {"skill_ops": self.payload.get("skill_ops", [])}
             elif spec.kind == "schedule":
@@ -211,8 +211,8 @@ class PayloadCodex:
         self.worker_developer_instructions[worker_spec.kind] = worker_spec.developer_instructions
         if worker_spec.kind == "schedule":
             worker_payload = {"schedule_ops": self.payload.get("schedule_ops", [])}
-        elif worker_spec.kind == "memory":
-            worker_payload = {"memory_ops": self.payload.get("memory_ops", [])}
+        elif worker_spec.kind == "reflections":
+            worker_payload = {"reflection_ops": self.payload.get("reflection_ops", [])}
         elif worker_spec.kind == "skill":
             worker_payload = {"skill_ops": self.payload.get("skill_ops", [])}
         else:
@@ -242,7 +242,6 @@ def _silent_payload() -> dict[str, object]:
         "should_reply": False,
         "reply_kind": "silent",
         "message_to_post": "",
-        "memory_ops": [],
         "schedule_ops": [],
         "skill_ops": [],
         "confidence": 0.9,
@@ -361,7 +360,6 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
             "should_reply": False,
             "reply_kind": "silent",
             "message_to_post": "",
-            "memory_ops": [],
             "skill_ops": [
                 {
                     "action": "create",
@@ -395,7 +393,7 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -416,9 +414,9 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert "# Skill Changes This Turn" in schedule_prompt
         assert "- applied create `weekly-digest`" in schedule_prompt
         assert "# Applied Changes This Turn" not in schedule_prompt
-        memory_prompt = bot.codex.worker_prompts["memory"]
-        assert "# Scheduling Context" not in memory_prompt
-        assert "# Skill Availability" not in memory_prompt
+        reflections_prompt = bot.codex.worker_prompts["reflections"]
+        assert "# Scheduling Context" not in reflections_prompt
+        assert "# Skill Availability" not in reflections_prompt
         skill_prompt = bot.codex.worker_prompts["skill"]
         assert "# Skill Availability" in skill_prompt
         assert "# Scheduling Context" not in skill_prompt
@@ -462,7 +460,7 @@ def test_schedule_worker_runs_without_skill_output_for_prompt_only_job(tmp_path)
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -514,7 +512,7 @@ def test_schedule_rejects_skill_reference_when_same_turn_skill_is_rejected(tmp_p
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -548,7 +546,7 @@ def test_schedule_worker_prompt_includes_current_schedule_inventory(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=PayloadCodex(payload),
             zulip=poster,
             schedules=schedules,
@@ -670,7 +668,7 @@ def test_schedule_remove_confirmation_is_injected_before_reply_and_suppresses_co
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=codex,
             zulip=poster,
             schedules=schedules,
@@ -730,7 +728,7 @@ def test_schedule_list_confirmation_is_injected_before_reply_and_suppresses_conf
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=codex,
             zulip=poster,
             schedules=schedules,
@@ -807,7 +805,7 @@ def test_schedule_can_store_multiple_person_mentions_without_pinging_confirmatio
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -868,7 +866,7 @@ def test_schedule_rejects_unknown_person_mention_target(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=PayloadCodex(payload),
             zulip=poster,
         )
@@ -960,7 +958,7 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
             config=_config(tmp_path),
             storage=storage,
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=codex,
             zulip=poster,
             skills=skills,
@@ -1069,7 +1067,7 @@ def test_failed_scheduled_job_keeps_prompt_trace(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=InvalidJsonCodex(),
             zulip=FakePoster(),
             schedules=schedules,
@@ -1130,7 +1128,7 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
             config=_config(tmp_path),
             storage=WorkspaceStorage(tmp_path),
             instructions=InstructionLoader(tmp_path),
-            memory=MemoryStore(tmp_path / "memory"),
+            reflections=ReflectionStore(tmp_path / "reflections"),
             codex=codex,
             zulip=poster,
             schedules=schedules,
@@ -1149,7 +1147,7 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
         assert "mention=@**Feiyang Liu**" in codex.prompts[0]
         assert "# Loaded Skills" not in codex.prompts[0]
         assert "# Skill Loading Problems" not in codex.prompts[0]
-        assert "# Scoped Memory" not in codex.prompts[0]
+        assert "# Reflection Scope" not in codex.prompts[0]
 
     asyncio.run(scenario())
 
@@ -1160,7 +1158,7 @@ def test_due_scheduled_job_does_not_duplicate_existing_mentions(tmp_path):
         config=_config(tmp_path),
         storage=WorkspaceStorage(tmp_path),
         instructions=InstructionLoader(tmp_path),
-        memory=MemoryStore(tmp_path / "memory"),
+        reflections=ReflectionStore(tmp_path / "reflections"),
         codex=PayloadCodex(_silent_payload()),
         zulip=FakePoster(),
     )
