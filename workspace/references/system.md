@@ -36,6 +36,8 @@ Task 1: Task details
 Task 2: Task details
 ```
 
+- `/poll` and `/todo` must each be a standalone Zulip message. The command must be the first nonblank text in that message, and no prose, acknowledgement, or unrelated follow-up text may appear in the same message.
+
 - Global time, for concrete user-visible datetimes:
 
 ```text

@@ -47,7 +47,7 @@ from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, nor
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_POST_FALLBACK = "I saw this, but couldn't produce a useful message. Please try again."
-CODEX_INSTRUCTION_MODE = "post-session-v2"
+CODEX_INSTRUCTION_MODE = "post-session-v4"
 
 
 class ZulipPoster(Protocol):
@@ -341,8 +341,10 @@ class AgentLoop:
 
     async def _post_control_response(self, message: NormalizedMessage, content: str) -> dict[str, Any]:
         if self.config.posting_enabled:
-            return self._post_summary(await self.zulip.post_message(message, content), dry_run=False)
-        return {"status": "dry_run", "dry_run": True, "message_to_post": content}
+            post = self._post_summary(await self.zulip.post_message(message, content), dry_run=False)
+            post["messages_to_post"] = [content]
+            return post
+        return {"status": "dry_run", "dry_run": True, "messages_to_post": [content]}
 
     def _status_response(
         self,
@@ -505,10 +507,21 @@ class AgentLoop:
 
     def _posted_text(self, turn: dict[str, Any]) -> str:
         post = turn.get("post") if isinstance(turn.get("post"), dict) else {}
+        messages_to_post = post.get("messages_to_post")
+        if isinstance(messages_to_post, list):
+            messages = [str(message).strip() for message in messages_to_post if str(message).strip()]
+            if messages:
+                return self._join_post_messages(messages)
+        # Older turn records used message_to_post; keep status output readable for them.
         message_to_post = str(post.get("message_to_post") or "").strip()
         if message_to_post:
             return message_to_post
         decision = turn.get("decision") if isinstance(turn.get("decision"), dict) else {}
+        decision_messages = decision.get("messages_to_post")
+        if isinstance(decision_messages, list):
+            messages = [str(message).strip() for message in decision_messages if str(message).strip()]
+            if messages:
+                return self._join_post_messages(messages)
         return str(decision.get("message_to_post") or "").strip()
 
     def _quote_excerpt(self, value: str) -> str:
@@ -677,29 +690,29 @@ class AgentLoop:
                     skill_ops=op_result.skill_decision.skill_ops,
                     schedule_ops=schedule_decision.schedule_ops,
                 )
-                message_to_post = self._message_to_post(
+                outbound_messages = self._messages_to_post(
                     first,
                     decision,
                     acknowledgement=acknowledgement,
                 )
-                if self._post_conflicts_with_schedule_acknowledgement(message_to_post, schedule_acknowledgement):
-                    message_to_post = ""
-                outbound_message = self._with_acknowledgement(message_to_post, acknowledgement)
-                if typing_started and first.conversation_type == "stream" and not outbound_message:
+                if self._post_conflicts_with_schedule_acknowledgement(
+                    self._join_post_messages(outbound_messages),
+                    schedule_acknowledgement,
+                ):
+                    outbound_messages = []
+                outbound_messages = self._with_acknowledgement_messages(outbound_messages, acknowledgement)
+                if typing_started and first.conversation_type == "stream" and not outbound_messages:
                     await stack.aclose()
                     typing_started = False
 
             post: dict[str, Any] | None = None
-            if outbound_message:
+            if outbound_messages:
                 with telemetry.phase("post_delivery"):
-                    if self.config.posting_enabled:
-                        post = self._post_summary(await self.zulip.post_message(first, outbound_message), dry_run=False)
-                    else:
-                        post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
+                    post = await self._post_messages(first, outbound_messages)
                     self._enqueue_posted_bot_update(
                         key,
                         source="conversation_turn",
-                        content=outbound_message,
+                        content=self._join_post_messages(outbound_messages),
                         post=post,
                         acknowledgement=acknowledgement,
                         message_ids=[message.message_id for message in messages],
@@ -1083,24 +1096,16 @@ class AgentLoop:
                 if decision.skill_ops:
                     skill_ignored = [op.to_record() for op in decision.skill_ops]
 
-                outbound_message = decision.message_to_post.strip() if decision.should_post else ""
-                if outbound_message and outbound_message.strip().upper() != "[SILENT]":
-                    outbound_message = self._with_scheduled_mentions(job, outbound_message)
-                should_deliver = bool(outbound_message) and outbound_message.strip().upper() != "[SILENT]"
+                outbound_messages = self._scheduled_messages_to_post(job, decision)
+                should_deliver = bool(outbound_messages)
 
             if should_deliver:
                 with telemetry.phase("post_delivery"):
-                    if self.config.posting_enabled:
-                        post = self._post_summary(
-                            await self.zulip.post_message(origin_message, outbound_message),
-                            dry_run=False,
-                        )
-                    else:
-                        post = {"status": "dry_run", "dry_run": True, "message_to_post": outbound_message}
+                    post = await self._post_messages(origin_message, outbound_messages)
                     self._enqueue_posted_bot_update(
                         key,
                         source="scheduled_job",
-                        content=outbound_message,
+                        content=self._join_post_messages(outbound_messages),
                         post=post,
                         acknowledgement="",
                         job_id=job_id,
@@ -1118,7 +1123,7 @@ class AgentLoop:
             self.schedules.log_run(
                 job_id,
                 {
-                    "status": "ok" if outbound_message or not should_deliver else "empty",
+                    "status": "ok" if outbound_messages or not should_deliver else "empty",
                     "trace_id": trace_id,
                     "decision": decision.to_record(),
                     "post": post,
@@ -1135,8 +1140,8 @@ class AgentLoop:
             )
             self.schedules.mark_job_run(
                 job_id,
-                success=bool(outbound_message) or not should_deliver,
-                error=None if outbound_message or not should_deliver else "scheduled task produced no output",
+                success=bool(outbound_messages) or not should_deliver,
+                error=None if outbound_messages or not should_deliver else "scheduled task produced no output",
             )
         except Exception as exc:
             LOGGER.exception("Scheduled job %s failed", job_id)
@@ -1341,15 +1346,21 @@ class AgentLoop:
             lines.append("- " + "; ".join(parts))
         return "\n".join(lines) if lines else "- None"
 
-    def _with_scheduled_mentions(self, job: dict[str, Any], message_to_post: str) -> str:
+    def _with_scheduled_mention_messages(self, job: dict[str, Any], messages: list[str]) -> list[str]:
+        if not messages:
+            return []
+        joined = self._join_post_messages(messages)
         mentions = [
             mention
             for target, mention in self._scheduled_mentions(job)
-            if not self._normal_mention_already_present(target, message_to_post)
+            if not self._normal_mention_already_present(target, joined)
         ]
         if not mentions:
-            return message_to_post
-        return f"{' '.join(mentions)} {message_to_post}".strip()
+            return messages
+        mention_text = " ".join(mentions)
+        if self._is_slash_widget_message(messages[0]):
+            return [mention_text, *messages]
+        return [f"{mention_text} {messages[0]}".strip(), *messages[1:]]
 
     def _scheduled_mentions(self, job: dict[str, Any]) -> list[tuple[dict[str, Any], str]]:
         mentions: list[tuple[dict[str, Any], str]] = []
@@ -1359,16 +1370,16 @@ class AgentLoop:
                 mentions.append((target, mention))
         return mentions
 
-    def _normal_mention_already_present(self, target: dict[str, Any], message_to_post: str) -> bool:
+    def _normal_mention_already_present(self, target: dict[str, Any], content: str) -> bool:
         kind = str(target.get("kind") or "").strip().lower()
         if kind == "person":
             full_name = str(target.get("full_name") or "").strip()
             if not full_name:
                 return False
             pattern = rf"@\*\*{re.escape(full_name)}(?:\|\d+)?\*\*"
-            return re.search(pattern, message_to_post) is not None
+            return re.search(pattern, content) is not None
         mention = self._mention_text(target)
-        return bool(mention and mention in message_to_post)
+        return bool(mention and mention in content)
 
     def _job_mention_targets(self, job: dict[str, Any]) -> list[dict[str, Any]]:
         raw_targets = job.get("mention_targets")
@@ -1546,16 +1557,16 @@ class AgentLoop:
 
     def _post_conflicts_with_schedule_acknowledgement(
         self,
-        message_to_post: str,
+        content: str,
         schedule_acknowledgement: str,
     ) -> bool:
-        if not message_to_post.strip() or not schedule_acknowledgement.strip():
+        if not content.strip() or not schedule_acknowledgement.strip():
             return False
         acknowledgement = schedule_acknowledgement.casefold()
         if "schedule removed" not in acknowledgement and "scheduled tasks here" not in acknowledgement:
             return False
         text = (
-            message_to_post.casefold()
+            content.casefold()
             .replace("\u2018", "'")
             .replace("\u2019", "'")
         )
@@ -1616,6 +1627,39 @@ class AgentLoop:
             job_id=job_id,
         )
 
+    async def _post_messages(
+        self,
+        origin: NormalizedMessage,
+        messages: list[str],
+    ) -> dict[str, Any]:
+        delivered: list[dict[str, Any]] = []
+        for content in messages:
+            if self.config.posting_enabled:
+                summary = self._post_summary(await self.zulip.post_message(origin, content), dry_run=False)
+            else:
+                summary = {"status": "dry_run", "dry_run": True}
+            summary["messages_to_post"] = [content]
+            delivered.append(summary)
+        return self._post_record(delivered, messages)
+
+    def _post_record(self, delivered: list[dict[str, Any]], messages: list[str]) -> dict[str, Any]:
+        if len(delivered) == 1:
+            return delivered[0]
+        statuses = {str(item.get("status") or "").lower() for item in delivered}
+        dry_run = all(item.get("dry_run") is True for item in delivered)
+        status = "success" if statuses <= {"success"} else "dry_run" if dry_run else "partial"
+        return {
+            "status": status,
+            "dry_run": dry_run,
+            "messages_to_post": list(messages),
+            "posts": delivered,
+        }
+
+    def _scheduled_messages_to_post(self, job: dict[str, Any], decision: AgentDecision) -> list[str]:
+        messages = self._decision_messages_to_post(decision)
+        messages = [message for message in messages if message.strip().upper() != "[SILENT]"]
+        return self._with_scheduled_mention_messages(job, messages)
+
     @staticmethod
     def _is_missing_codex_rollout_error(exc: Exception) -> bool:
         return "no rollout found for thread id" in str(exc).casefold()
@@ -1627,21 +1671,31 @@ class AgentLoop:
             return True
         return str(post.get("status") or "").lower() == "success"
 
-    def _message_to_post(
+    def _messages_to_post(
         self,
         first: NormalizedMessage,
         decision: AgentDecision,
         *,
         acknowledgement: str = "",
-    ) -> str:
-        content = decision.message_to_post.strip()
-        if decision.should_post and content:
-            return content
-        if first.post_required and acknowledgement and not content:
-            return ""
+    ) -> list[str]:
+        messages = self._decision_messages_to_post(decision)
+        if decision.should_post and messages:
+            return messages
+        if first.post_required and acknowledgement and not messages:
+            return []
         if first.post_required:
-            return content or PRIVATE_POST_FALLBACK
-        return ""
+            return messages or [PRIVATE_POST_FALLBACK]
+        return []
+
+    def _decision_messages_to_post(
+        self,
+        decision: AgentDecision,
+        *,
+        require_should_post: bool = True,
+    ) -> list[str]:
+        if require_should_post and not decision.should_post:
+            return []
+        return [message.strip() for message in decision.messages_to_post if message.strip()]
 
     def _apply_reflections_worker_result(
         self,
@@ -1727,12 +1781,34 @@ class AgentLoop:
             )
             return ScheduleDecision(), []
 
-    def _with_acknowledgement(self, message_to_post: str, acknowledgement: str) -> str:
+    def _with_acknowledgement(self, message: str, acknowledgement: str) -> str:
         if not acknowledgement:
-            return message_to_post
-        if not message_to_post:
+            return message
+        if not message:
             return acknowledgement
-        return f"{message_to_post}\n\n{acknowledgement}"
+        return f"{message}\n\n{acknowledgement}"
+
+    def _with_acknowledgement_messages(self, messages: list[str], acknowledgement: str) -> list[str]:
+        acknowledgement = acknowledgement.strip()
+        if not acknowledgement:
+            return messages
+        if not messages:
+            return [acknowledgement]
+        if self._is_slash_widget_message(messages[-1]):
+            return [*messages, acknowledgement]
+        return [*messages[:-1], self._with_acknowledgement(messages[-1], acknowledgement)]
+
+    @staticmethod
+    def _is_slash_widget_message(message: str) -> bool:
+        for line in message.splitlines():
+            stripped = line.strip()
+            if stripped:
+                return re.match(r"^/(?:poll|todo)(?:\s|$)", stripped, flags=re.IGNORECASE) is not None
+        return False
+
+    @staticmethod
+    def _join_post_messages(messages: list[str]) -> str:
+        return "\n\n".join(message.strip() for message in messages if message.strip())
 
     def _join_acknowledgements(self, acknowledgements: list[str]) -> str:
         return "\n".join(ack.strip() for ack in acknowledgements if ack.strip())

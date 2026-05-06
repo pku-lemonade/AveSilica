@@ -477,7 +477,7 @@ class ScheduleOperation:
 class PostDecision:
     should_post: bool
     post_kind: str
-    message_to_post: str
+    messages_to_post: tuple[str, ...] = ()
     confidence: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -486,7 +486,7 @@ class PostDecision:
         return cls(
             should_post=False,
             post_kind="silent",
-            message_to_post="",
+            messages_to_post=(),
             confidence=0.0,
             raw=raw or {},
         )
@@ -506,15 +506,15 @@ class PostDecision:
         confidence = max(0.0, min(1.0, confidence))
 
         should_post = bool(data.get("should_post"))
-        message_to_post = str(data.get("message_to_post") or "")
+        messages_to_post = _normalized_post_messages(data.get("messages_to_post"))
         if post_kind == "silent":
             should_post = False
-            message_to_post = ""
+            messages_to_post = ()
 
         return cls(
             should_post=should_post,
             post_kind=post_kind,
-            message_to_post=message_to_post,
+            messages_to_post=messages_to_post,
             confidence=confidence,
             raw=data,
         )
@@ -523,7 +523,7 @@ class PostDecision:
         return {
             "should_post": self.should_post,
             "post_kind": self.post_kind,
-            "message_to_post": self.message_to_post,
+            "messages_to_post": list(self.messages_to_post),
             "confidence": self.confidence,
         }
 
@@ -595,7 +595,7 @@ class AgentDecision(PostDecision):
         return cls(
             should_post=False,
             post_kind="silent",
-            message_to_post="",
+            messages_to_post=(),
             confidence=0.0,
             raw=raw or {},
         )
@@ -613,7 +613,7 @@ class AgentDecision(PostDecision):
         return cls(
             should_post=post.should_post,
             post_kind=post.post_kind,
-            message_to_post=post.message_to_post,
+            messages_to_post=post.messages_to_post,
             schedule_ops=schedule.schedule_ops,
             skill_ops=skill.skill_ops,
             confidence=post.confidence,
@@ -631,7 +631,7 @@ class AgentDecision(PostDecision):
         return cls(
             should_post=post.should_post,
             post_kind=post.post_kind,
-            message_to_post=post.message_to_post,
+            messages_to_post=post.messages_to_post,
             schedule_ops=schedule_ops or [],
             skill_ops=skill_ops or [],
             confidence=post.confidence,
@@ -643,6 +643,13 @@ class AgentDecision(PostDecision):
         record["schedule_ops"] = [item.to_record() for item in self.schedule_ops]
         record["skill_ops"] = [item.to_record() for item in self.skill_ops]
         return record
+
+
+def _normalized_post_messages(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    messages = [str(item).strip() for item in value if str(item).strip()]
+    return tuple(messages)
 
 
 def _extract_json_object(text: str) -> str:

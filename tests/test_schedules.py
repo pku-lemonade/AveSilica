@@ -241,7 +241,7 @@ def _silent_payload() -> dict[str, object]:
     return {
         "should_post": False,
         "post_kind": "silent",
-        "message_to_post": "",
+        "messages_to_post": [],
         "schedule_ops": [],
         "skill_ops": [],
         "confidence": 0.9,
@@ -410,7 +410,7 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         payload = {
             "should_post": False,
             "post_kind": "silent",
-            "message_to_post": "",
+            "messages_to_post": [],
             "skill_ops": [
                 {
                     "action": "create",
@@ -679,10 +679,10 @@ def test_schedule_remove_confirmation_is_injected_before_post_and_suppresses_con
         payload = {
             "should_post": True,
             "post_kind": "chat",
-            "message_to_post": (
+            "messages_to_post": [(
                 "Sili can\u2019t remove reminders from this post-only context, "
                 "so no deletion has been performed here."
-            ),
+            )],
             "schedule_ops": [
                 {
                     "action": "remove",
@@ -754,7 +754,7 @@ def test_schedule_list_confirmation_is_injected_before_post_and_suppresses_confl
         payload = {
             "should_post": True,
             "post_kind": "chat",
-            "message_to_post": "Sili doesn't have a live reminder-listing tool in this post context.",
+            "messages_to_post": ["Sili doesn't have a live reminder-listing tool in this post context."],
             "schedule_ops": [
                 {
                     "action": "list",
@@ -999,7 +999,7 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
             **_silent_payload(),
             "should_post": True,
             "post_kind": "report",
-            "message_to_post": "Digest done.",
+            "messages_to_post": ["Digest done."],
         }
         codex = PayloadCodex(payload)
         poster = FakePoster()
@@ -1075,6 +1075,54 @@ def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
         assert call_record["source"] == "scheduled_job"
         assert call_record["job_id"] == created["job_id"]
         assert call_record["tokens"]["last"]["reasoning_output_tokens"] == 3
+
+    asyncio.run(scenario())
+
+
+def test_due_scheduled_job_delivers_multi_message_widget_output(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+        created = schedules.create_job(
+            _message(1),
+            ScheduleOperation(
+                action="create",
+                name="Launch todo",
+                prompt="Post a launch checklist.",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
+            ),
+        )
+        schedules.trigger_job(_message(1), ScheduleOperation(action="run_now", job_id=created["job_id"]))
+        widget = "/todo Launch checklist\nBuild: pass tests\nDeploy: restart service"
+        payload = {
+            **_silent_payload(),
+            "should_post": True,
+            "post_kind": "report",
+            "messages_to_post": ["Here is the checklist.", widget],
+        }
+        codex = PayloadCodex(payload)
+        poster = FakePoster()
+        storage = WorkspaceStorage(tmp_path)
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=storage,
+            instructions=InstructionLoader(tmp_path),
+            reflections=ReflectionStore(tmp_path),
+            codex=codex,
+            zulip=poster,
+            schedules=schedules,
+        )
+
+        assert await bot.run_schedules_once() == 1
+
+        assert poster.posts == [
+            {"topic": "Launch", "content": "Here is the checklist."},
+            {"topic": "Launch", "content": widget},
+        ]
+        pending = storage.read_pending_posted_bot_updates(_message(1).session_key)
+        assert pending[-1]["source"] == "scheduled_job"
+        assert pending[-1]["content"] == f"Here is the checklist.\n\n{widget}"
+        assert pending[-1]["post"]["messages_to_post"] == ["Here is the checklist.", widget]
 
     asyncio.run(scenario())
 
@@ -1172,7 +1220,7 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
             **_silent_payload(),
             "should_post": True,
             "post_kind": "report",
-            "message_to_post": "Please handle tokencake.",
+            "messages_to_post": ["Please handle tokencake."],
         }
         codex = PayloadCodex(payload)
         poster = FakePoster()
@@ -1204,6 +1252,51 @@ def test_due_scheduled_job_prepends_all_persisted_mentions(tmp_path):
     asyncio.run(scenario())
 
 
+def test_due_scheduled_job_keeps_persisted_mentions_out_of_widget_message(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        schedules = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
+        created = schedules.create_job(
+            _message(1),
+            ScheduleOperation(
+                action="create",
+                name="Launch vote",
+                prompt="Poll Zhuohang Bian about launch timing.",
+                schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
+                mention_targets=(
+                    ScheduleMentionTarget(kind="person", user_id=2, full_name="Zhuohang Bian", confidence=0.9),
+                ),
+            ),
+        )
+        schedules.trigger_job(_message(1), ScheduleOperation(action="run_now", job_id=created["job_id"]))
+        widget = "/poll Ship this week?\nYes\nNo"
+        payload = {
+            **_silent_payload(),
+            "should_post": True,
+            "post_kind": "report",
+            "messages_to_post": [widget],
+        }
+        poster = FakePoster()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            reflections=ReflectionStore(tmp_path),
+            codex=PayloadCodex(payload),
+            zulip=poster,
+            schedules=schedules,
+        )
+
+        assert await bot.run_schedules_once() == 1
+
+        assert poster.posts == [
+            {"topic": "Launch", "content": "@**Zhuohang Bian**"},
+            {"topic": "Launch", "content": widget},
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_due_scheduled_job_does_not_duplicate_existing_mentions(tmp_path):
     initialize_workspace(tmp_path)
     bot = AgentLoop(
@@ -1221,9 +1314,9 @@ def test_due_scheduled_job_does_not_duplicate_existing_mentions(tmp_path):
         ]
     }
 
-    assert bot._with_scheduled_mentions(job, "@**Zhuohang Bian|2** done") == (
+    assert bot._with_scheduled_mention_messages(job, ["@**Zhuohang Bian|2** done"]) == [
         "@**Feiyang Liu** @**Zhuohang Bian|2** done"
-    )
-    assert bot._with_scheduled_mentions(job, "@**Zhuohang Bian** done") == (
+    ]
+    assert bot._with_scheduled_mention_messages(job, ["@**Zhuohang Bian** done"]) == [
         "@**Feiyang Liu** @**Zhuohang Bian** done"
-    )
+    ]

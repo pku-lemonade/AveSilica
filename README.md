@@ -224,7 +224,7 @@ Prompt traces are written under each session's `traces/` directory. The canonica
 
 TokenZulip injects one narrow continuity record when needed: `posted_bot_update`. A `posted_bot_update` is Sili's actual visible contribution to the Zulip conversation after runtime processing. It includes the final visible post or dry-run text after deterministic acknowledgements, and it also includes scheduled job output posted back into the origin Zulip conversation. The update is injected once into the next normal post-role prompt, then marked consumed.
 
-This exists because the visible Zulip message may differ from the post role's raw JSON. The post role may return `message_to_post: "Done."`, then TokenZulip persists a schedule and posts:
+This exists because the visible Zulip message may differ from the post role's raw JSON. The post role may return `messages_to_post: ["Done."]`, then TokenZulip persists a schedule and posts:
 
 ```md
 Done.
@@ -252,7 +252,7 @@ Zulip event
   -> fork schedule worker with schedule context and same-turn applied skill changes
        schedule worker -> schedule_ops -> workspace/schedules/jobs.json
   -> run post role in the session thread with applied deterministic changes
-       output: message_to_post only
+       output: messages_to_post
   -> append deterministic acknowledgements for persisted skill and schedule changes
   -> post Zulip message, or record dry-run post
   -> enqueue posted_bot_update for the next conversation turn
@@ -299,7 +299,7 @@ scheduler ticker wakes every TOKENZULIP_SCHEDULE_TICK_SECONDS
          persisted mention target list, if any
          loaded SKILL.md contents for job.skills
          output rules
-       output: message_to_post only
+       output: messages_to_post
   -> prepend any missing persisted mentions
   -> post result to the original Zulip topic/private chat
   -> enqueue posted_bot_update for the origin session thread
@@ -319,7 +319,7 @@ Zulip upload links in raw Markdown are downloaded to the session's `uploads/<mes
 
 When a stream/topic or private-chat session already has a marked Codex session thread, TokenZulip resumes that thread and sends only the new Zulip message batch plus concise runtime deltas selected for the role. New or unmarked sessions start a fresh Codex session thread with composed `developer_instructions`; they do not replay recent Zulip records into the prompt.
 
-Forked workers return reflection, skill, and schedule decisions through separate schemas and code paths; the post role then receives validated applied skill/schedule changes and returns only `should_post`, `post_kind`, `message_to_post`, and confidence. Reflection operations write review candidates only. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. Schedule operations may also include multiple `mention_targets`; confirmations use silent full-name mentions, while the due job post uses normal full-name mentions. TokenZulip validates and persists applied skill/schedule changes, appends deterministic acknowledgements for those changes, and then posts any visible message.
+Forked workers return reflection, skill, and schedule decisions through separate schemas and code paths; the post role then receives validated applied skill/schedule changes and returns only `should_post`, `post_kind`, `messages_to_post`, and confidence. Reflection operations write review candidates only. Schedule operations use a decomposed `schedule_spec`: `once_at` for ISO one-shot times, `once_in` for relative one-shot delays like `30m`, `interval` for recurring durations like `2h`, `cron` for recurring wall-clock schedules like `0 9 * * *`, and `unchanged` for lifecycle operations that do not change timing. Schedule operations may also include multiple `mention_targets`; confirmations use silent full-name mentions, while the due job post uses normal full-name mentions. TokenZulip validates and persists applied skill/schedule changes, appends deterministic acknowledgements for those changes, and then posts any visible message.
 
 When schedules are enabled, the listener also runs a background scheduler. Configure it with `TOKENZULIP_SCHEDULES_ENABLED`, `TOKENZULIP_SCHEDULE_TICK_SECONDS`, `TOKENZULIP_SCHEDULE_TIMEZONE`, `TOKENZULIP_SCHEDULE_DEFAULT_TIME`, and `TOKENZULIP_SCHEDULE_RUN_TIMEOUT_SECONDS`. Scheduled job runs start fresh Codex threads from persisted job data, loaded skills, and current time, so scheduled automation history does not pollute the human Zulip conversation thread.
 

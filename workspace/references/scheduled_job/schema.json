@@ -4,7 +4,7 @@
   "required": [
     "should_post",
     "post_kind",
-    "message_to_post",
+    "messages_to_post",
     "confidence"
   ],
   "properties": {
@@ -21,8 +21,11 @@
         "silent"
       ]
     },
-    "message_to_post": {
-      "type": "string"
+    "messages_to_post": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "confidence": {
       "type": "number",

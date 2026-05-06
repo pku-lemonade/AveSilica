@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from token_zulip.instructions import InstructionLoader
 from token_zulip.models import normalized_topic_hash, private_scope_dir_name, stream_scope_dir_name
 from token_zulip.workspace import initialize_workspace
@@ -148,10 +150,25 @@ def test_shared_instruction_includes_zulip_visible_markdown(tmp_path):
     assert "Zulip visible message Markdown" in system_text
     assert "/poll Question text" in system_text
     assert "/todo List title" in system_text
+    assert "standalone Zulip message" in system_text
     assert "<time:2030-01-02T09:00:00+08:00>" in system_text
     assert "```spoiler Details" in system_text
     assert "/poll Question text" not in post_prompt
     assert "/todo List title" not in scheduled_prompt
+    assert "messages_to_post" in scheduled_prompt
+
+
+def test_post_and_scheduled_job_schemas_support_multi_message_output(tmp_path):
+    initialize_workspace(tmp_path)
+
+    for relative in ("references/post/schema.json", "references/scheduled_job/schema.json"):
+        schema = json.loads((tmp_path / relative).read_text(encoding="utf-8"))
+
+        assert "messages_to_post" in schema["properties"]
+        assert schema["properties"]["messages_to_post"]["items"]["type"] == "string"
+        assert "messages_to_post" in schema["required"]
+        assert "message_to_post" not in schema["properties"]
+        assert "message_to_post" not in schema["required"]
 
 
 def test_scheduled_job_instruction_mentions_persisted_mentions_only(tmp_path):
@@ -166,4 +183,5 @@ def test_scheduled_job_instruction_mentions_persisted_mentions_only(tmp_path):
 
     assert "## Source: references/scheduled_job/system.md" in text
     assert "persisted mention targets" in text
+    assert "messages_to_post" in text
     assert "Never invent person, topic, channel, or all mentions" in text

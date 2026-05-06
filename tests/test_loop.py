@@ -276,7 +276,7 @@ class BlockingCodex(ForkingCodexMixin):
         payload = {
             "should_post": False,
             "post_kind": "silent",
-            "message_to_post": "",
+            "messages_to_post": [],
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
@@ -319,7 +319,7 @@ class ReflectionCheckingCodex(ForkingCodexMixin):
         payload = {
             "should_post": True,
             "post_kind": "chat",
-            "message_to_post": "Recorded.",
+            "messages_to_post": ["Recorded."],
             "confidence": 0.8,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -350,7 +350,7 @@ class SilentReflectionCodex(ForkingCodexMixin):
         payload = {
             "should_post": False,
             "post_kind": "silent",
-            "message_to_post": "",
+            "messages_to_post": [],
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -368,7 +368,7 @@ class SilentCodex(ForkingCodexMixin):
         payload = {
             "should_post": False,
             "post_kind": "silent",
-            "message_to_post": "",
+            "messages_to_post": [],
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -396,7 +396,7 @@ class PromptCapturingCodex(ForkingCodexMixin):
         payload = {
             "should_post": False,
             "post_kind": "silent",
-            "message_to_post": "",
+            "messages_to_post": [],
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id="thread-1")
@@ -424,10 +424,25 @@ class ThreadingCodex(ForkingCodexMixin):
         payload = {
             "should_post": True,
             "post_kind": "chat",
-            "message_to_post": f"Post {self.calls}",
+            "messages_to_post": [f"Post {self.calls}"],
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"thread-{self.calls}")
+
+
+class PayloadPostCodex(ForkingCodexMixin):
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    async def run_decision(
+        self,
+        prompt: str,
+        thread_id: str | None,
+        *,
+        developer_instructions: str | None = None,
+        output_schema_path: Path | None = None,
+    ) -> CodexRunResult:
+        return CodexRunResult(raw_text=json.dumps(self.payload), thread_id=thread_id or "thread-1")
 
 
 class MissingThreadCodex(ForkingCodexMixin):
@@ -481,7 +496,7 @@ class MissingThreadCodex(ForkingCodexMixin):
         payload = {
             "should_post": False,
             "post_kind": "silent",
-            "message_to_post": "",
+            "messages_to_post": [],
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"recovered-thread-{self.calls}")
@@ -528,7 +543,7 @@ class MissingPostThreadCodex(ForkingCodexMixin):
         payload = {
             "should_post": True,
             "post_kind": "chat",
-            "message_to_post": "Recovered post",
+            "messages_to_post": ["Recovered post"],
             "confidence": 0.9,
         }
         return CodexRunResult(raw_text=json.dumps(payload), thread_id=f"recovered-post-{self.calls}")
@@ -615,7 +630,7 @@ class StatsCodex:
         payload = {
             "should_post": True,
             "post_kind": "chat",
-            "message_to_post": "Post with stats.",
+            "messages_to_post": ["Post with stats."],
             "confidence": 0.9,
         }
         resolved_thread_id = thread_id or f"thread-{self.calls}"
@@ -1411,6 +1426,65 @@ def test_posted_bot_update_is_injected_once_on_next_turn(tmp_path):
         assert remaining[0]["content"] == "Post 2"
 
     asyncio.run(scenario())
+
+
+def test_multi_message_poll_and_todo_posts_are_delivered_separately(tmp_path):
+    async def scenario() -> None:
+        for name, widget in {
+            "poll": "/poll Ship this week?\nYes\nNo",
+            "todo": "/todo Release checklist\nBuild: pass tests\nDeploy: restart service",
+        }.items():
+            workspace = tmp_path / name
+            initialize_workspace(workspace)
+            payload = {
+                "should_post": True,
+                "post_kind": "chat",
+                "messages_to_post": ["Opening note.", widget],
+                "confidence": 0.9,
+            }
+            poster = FakePoster()
+            bot = AgentLoop(
+                config=_config(workspace),
+                storage=WorkspaceStorage(workspace),
+                instructions=InstructionLoader(workspace),
+                reflections=ReflectionStore(workspace),
+                codex=PayloadPostCodex(payload),
+                zulip=poster,
+            )
+
+            await bot._handle_message(_message(1, f"make a {name}"))
+
+            assert poster.posts == [
+                {"topic": "Launch", "content": "Opening note."},
+                {"topic": "Launch", "content": widget},
+            ]
+            pending = bot.storage.read_pending_posted_bot_updates(_message(1).session_key)
+            assert pending[0]["content"] == f"Opening note.\n\n{widget}"
+            assert pending[0]["post"]["messages_to_post"] == ["Opening note.", widget]
+
+    asyncio.run(scenario())
+
+
+def test_acknowledgement_is_not_appended_to_slash_widget_message(tmp_path):
+    initialize_workspace(tmp_path)
+    bot = AgentLoop(
+        config=_config(tmp_path),
+        storage=WorkspaceStorage(tmp_path),
+        instructions=InstructionLoader(tmp_path),
+        reflections=ReflectionStore(tmp_path),
+        codex=SilentCodex(),
+        zulip=FakePoster(),
+    )
+
+    widget = "/poll Ship this week?\nYes\nNo"
+
+    assert bot._with_acknowledgement_messages([widget], "Schedule created.") == [
+        widget,
+        "Schedule created.",
+    ]
+    assert bot._with_acknowledgement_messages(["Done."], "Schedule created.") == [
+        "Done.\n\nSchedule created."
+    ]
 
 
 def test_clear_resets_codex_thread_and_starts_fresh_on_next_message(tmp_path):

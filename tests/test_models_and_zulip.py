@@ -491,7 +491,7 @@ def test_agent_decision_parses_fenced_json_and_clamps_confidence():
     payload = {
         "should_post": True,
         "post_kind": "chat",
-        "message_to_post": "Done.",
+        "messages_to_post": ["Done."],
         "confidence": 2,
     }
 
@@ -499,3 +499,32 @@ def test_agent_decision_parses_fenced_json_and_clamps_confidence():
 
     assert decision.should_post is True
     assert decision.confidence == 1.0
+    assert decision.messages_to_post == ("Done.",)
+
+
+def test_agent_decision_parses_multi_message_output_and_silent_clears_it():
+    payload = {
+        "should_post": True,
+        "post_kind": "chat",
+        "messages_to_post": ["Here is the vote.", "/poll Ship it?\nYes\nNo"],
+        "confidence": 0.7,
+    }
+
+    decision = AgentDecision.from_json_text(json.dumps(payload))
+
+    assert decision.messages_to_post == ("Here is the vote.", "/poll Ship it?\nYes\nNo")
+    assert decision.to_record()["messages_to_post"] == ["Here is the vote.", "/poll Ship it?\nYes\nNo"]
+    assert "message_to_post" not in decision.to_record()
+
+    silent = AgentDecision.from_json_text(
+        json.dumps(
+            {
+                **payload,
+                "should_post": True,
+                "post_kind": "silent",
+            }
+        )
+    )
+
+    assert silent.should_post is False
+    assert silent.messages_to_post == ()
