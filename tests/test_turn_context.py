@@ -51,12 +51,11 @@ def test_workflow_deltas_select_concise_role_sections() -> None:
         scheduling_context="time",
         current_schedules="jobs",
         mentionable_participants="people",
-        skill_availability="skills",
         same_turn_skill_changes="skill changes",
         applied_changes="applied",
     )
 
     assert deltas.sections_for_role("reflections") == ["reflection"]
-    assert deltas.sections_for_role("skill") == ["skills"]
-    assert deltas.sections_for_role("schedule") == ["time", "jobs", "people", "skills", "skill changes"]
+    assert deltas.sections_for_role("skill") == []
+    assert deltas.sections_for_role("schedule") == ["time", "jobs", "people", "skill changes"]
     assert deltas.sections_for_role("post") == ["posted", "applied"]

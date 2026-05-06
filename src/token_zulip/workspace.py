@@ -19,7 +19,8 @@ WORKSPACE_DIRS: tuple[str, ...] = (
     f"{REALM_DIRNAME}/runtime/errors",
     f"{REALM_DIRNAME}/runtime/scheduled",
     f"{REALM_DIRNAME}/runtime/codex_stats",
-    "skills",
+    ".codex",
+    ".codex/skills",
     "schedules",
 )
 

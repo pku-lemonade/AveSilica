@@ -47,7 +47,7 @@ from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, nor
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_POST_FALLBACK = "I saw this, but couldn't produce a useful message. Please try again."
-CODEX_INSTRUCTION_MODE = "post-session-v1"
+CODEX_INSTRUCTION_MODE = "post-session-v2"
 
 
 class ZulipPoster(Protocol):
@@ -109,7 +109,7 @@ class AgentLoop:
         self.codex = codex
         self.zulip = zulip
         self.skills = skills or SkillStore(
-            config.workspace_dir / "skills",
+            config.codex_cwd / ".codex" / "skills",
             max_bytes=config.schedule_skill_max_bytes,
             max_count=config.schedule_skill_max_count,
         )
@@ -784,10 +784,7 @@ class AgentLoop:
             template_file=REFLECTIONS_WORKER_USER_PROMPT_FILE,
         )
         skill_prompt = self.prompt_builder.build(
-            TurnContext.from_messages(
-                messages,
-                deltas=WorkflowDeltas(skill_availability=self._skill_inventory_context()),
-            ),
+            TurnContext.from_messages(messages),
             role="skill",
             template_file=SKILL_WORKER_USER_PROMPT_FILE,
         )
@@ -932,7 +929,6 @@ class AgentLoop:
                     scheduling_context=self._schedule_context_for_prompt(),
                     current_schedules=self._current_schedules_context(first),
                     mentionable_participants=self._mentionable_participants_context(key),
-                    skill_availability=self._skill_inventory_context(),
                     same_turn_skill_changes=self._skill_changes_context(skill_applied),
                 ),
             ),
@@ -1413,25 +1409,6 @@ class AgentLoop:
         if kind == "all":
             return "all channel members"
         return ""
-
-    def _skill_inventory_context(self) -> str:
-        sections = [
-            "# Skill Availability",
-        ]
-        summaries = self.skills.list_summaries()
-        if summaries:
-            sections.extend(["", "## Available Skills"])
-            for summary in summaries:
-                name = summary.get("name", "").strip()
-                description = summary.get("description", "").strip()
-                if not name:
-                    continue
-                suffix = f": {description}" if description else ""
-                sections.append(f"- `{name}`{suffix}")
-        else:
-            sections.extend(["", "## Available Skills", "- None"])
-
-        return "\n".join(sections).rstrip()
 
     def _skill_changes_context(self, skill_applied: list[dict[str, Any]]) -> str:
         if not skill_applied:

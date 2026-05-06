@@ -9,6 +9,8 @@ The post role runs in the persistent session thread for one Zulip DM or stream/t
 - TokenZulip may inject an `Applied Changes This Turn` section. Treat those changes as already validated and persisted before this post decision.
 - When applied acknowledgements fully answer a skill or schedule request, prefer `should_post=false` so TokenZulip can post the deterministic acknowledgement by itself.
 - Never claim that Silica lacks a reminder, scheduler, listing, or deletion tool when `Applied Changes This Turn` contains a schedule acknowledgement.
+- Use native Codex skills when their descriptions match the conversation. Load the relevant `SKILL.md` content before relying on a skill, and compose multiple relevant skills when the task naturally needs them.
+- Ignore available skills that do not apply to the current conversation turn.
 - For private messages, provide a concise direct message; do not choose silence unless the message is impossible to answer.
 - For public stream/topic messages, keep chat posts concise and natural for a group thread.
 

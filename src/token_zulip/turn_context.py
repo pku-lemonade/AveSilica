@@ -62,7 +62,6 @@ class WorkflowDeltas:
     scheduling_context: str = ""
     current_schedules: str = ""
     mentionable_participants: str = ""
-    skill_availability: str = ""
     same_turn_skill_changes: str = ""
     applied_changes: str = ""
 
@@ -70,13 +69,12 @@ class WorkflowDeltas:
         if role == "reflections":
             return [self.reflection_context]
         if role == "skill":
-            return [self.skill_availability]
+            return []
         if role == "schedule":
             return [
                 self.scheduling_context,
                 self.current_schedules,
                 self.mentionable_participants,
-                self.skill_availability,
                 self.same_turn_skill_changes,
             ]
         if role == "post":

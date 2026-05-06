@@ -6,7 +6,7 @@
   ],
   "properties": {
     "skill_ops": {
-      "description": "Reusable skill file requests. Use an empty array when skills should not change.",
+      "description": "Codex-native project skill file requests. Use an empty array when skills should not change.",
       "type": "array",
       "items": {
         "type": "object",

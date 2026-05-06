@@ -94,7 +94,7 @@
             ]
           },
           "skills": {
-            "description": "Skill names to attach to a new job. Use [] for prompt-only jobs.",
+            "description": "Project-local Codex skill names to attach to a new job. Use [] for prompt-only jobs.",
             "type": "array",
             "items": {
               "type": "string"

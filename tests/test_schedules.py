@@ -337,7 +337,7 @@ def test_schedule_operation_ignores_unknown_freeform_schedule_input(tmp_path):
 
 def test_schedule_create_validates_referenced_skills(tmp_path):
     initialize_workspace(tmp_path)
-    skills = SkillStore(tmp_path / "skills")
+    skills = SkillStore(tmp_path / ".codex" / "skills")
     skills.write_skill(
         type(
             "Op",
@@ -350,6 +350,18 @@ def test_schedule_create_validates_referenced_skills(tmp_path):
             },
         )()
     )
+    skills.write_skill(
+        type(
+            "Op",
+            (),
+            {
+                "action": "create",
+                "name": "zulip-formatting",
+                "description": "Use for Zulip formatting.",
+                "content": "Format the output for Zulip.",
+            },
+        )()
+    )
     store = ScheduleStore(tmp_path, timezone_name="Asia/Shanghai")
 
     result = store.create_job(
@@ -359,13 +371,13 @@ def test_schedule_create_validates_referenced_skills(tmp_path):
             name="Weekly digest",
             prompt="Prepare a digest.",
             schedule_spec=ScheduleSpec(kind="once_at", run_at="2030-01-02T09:00:00"),
-            skills=("weekly-digest",),
+            skills=("weekly-digest", "zulip-formatting"),
         ),
         skills=skills,
     )
 
     assert result["status"] == "applied"
-    assert store.load_jobs()[0]["skills"] == ["weekly-digest"]
+    assert store.load_jobs()[0]["skills"] == ["weekly-digest", "zulip-formatting"]
 
 
 def test_schedule_origin_preserves_private_recipient_delivery(tmp_path):
@@ -439,7 +451,7 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
 
         await bot._handle_message(_message(1))
 
-        assert (tmp_path / "skills" / "weekly-digest" / "SKILL.md").exists()
+        assert (tmp_path / ".codex" / "skills" / "weekly-digest" / "SKILL.md").exists()
         assert (tmp_path / "schedules" / "jobs.json").exists()
         assert "Skill saved: weekly-digest" in poster.posts[0]["content"]
         assert "**Schedule created**" in poster.posts[0]["content"]
@@ -447,8 +459,6 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert "- Trigger: once at <time:2030-01-02T09:00:00+08:00>" in poster.posts[0]["content"]
         assert "- Next run: <time:2030-01-02T09:00:00+08:00>" in poster.posts[0]["content"]
         schedule_prompt = bot.codex.worker_prompts["schedule"]
-        assert "Skill Availability" in schedule_prompt
-        assert "`weekly-digest`: Use for weekly digests." in schedule_prompt
         assert "Summarize the topic concisely." not in schedule_prompt
         assert "# Skill Changes This Turn" in schedule_prompt
         assert "- applied create `weekly-digest`" in schedule_prompt
@@ -457,7 +467,7 @@ def test_skill_and_schedule_ops_are_acknowledged_after_persistence(tmp_path):
         assert "# Scheduling Context" not in reflections_prompt
         assert "# Skill Availability" not in reflections_prompt
         skill_prompt = bot.codex.worker_prompts["skill"]
-        assert "# Skill Availability" in skill_prompt
+        assert "# Skill Availability" not in skill_prompt
         assert "# Scheduling Context" not in skill_prompt
         assert "# Applied Changes This Turn" not in skill_prompt
         post_prompt = bot.codex.prompts[0]
@@ -508,7 +518,7 @@ def test_schedule_worker_runs_without_skill_output_for_prompt_only_job(tmp_path)
 
         assert "**Schedule created**" in poster.posts[0]["content"]
         assert "- Name: Standalone reminder" in poster.posts[0]["content"]
-        assert "## Available Skills\n- None" in bot.codex.worker_prompts["schedule"]
+        assert "Available Skills" not in bot.codex.worker_prompts["schedule"]
         assert ScheduleStore(tmp_path, timezone_name="Asia/Shanghai").load_jobs()[0]["skills"] == []
 
     asyncio.run(scenario())
@@ -959,7 +969,7 @@ def test_schedule_store_requires_explicit_broadcast_mention_scope(tmp_path):
 def test_due_scheduled_job_loads_skill_in_separate_thread_and_posts(tmp_path):
     async def scenario() -> None:
         initialize_workspace(tmp_path)
-        skills = SkillStore(tmp_path / "skills")
+        skills = SkillStore(tmp_path / ".codex" / "skills")
         skills.write_skill(
             type(
                 "Op",

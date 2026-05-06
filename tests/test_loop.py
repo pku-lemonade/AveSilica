@@ -867,7 +867,7 @@ def test_conversation_turn_writes_prompt_traces(tmp_path):
         post_developer = (trace_dir / "post" / "developer.md").read_text(encoding="utf-8")
         turns = [json.loads(line) for line in storage.session_path(message.session_key, "turns.jsonl").read_text(encoding="utf-8").splitlines()]
 
-        assert "# Skill Availability" in skill_user
+        assert "# Skill Availability" not in skill_user
         assert "- [1] Alice: save this as a reusable workflow" in skill_user
         assert "Skill Worker Policy" in skill_developer
         assert "Codex Thread Contract" in post_developer

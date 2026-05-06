@@ -23,6 +23,11 @@ class SkillStore:
         self.skills_dir = skills_dir.expanduser().resolve()
         self.max_bytes = max_bytes
         self.max_count = max_count
+        self.display_root = (
+            self.skills_dir.parent.parent
+            if self.skills_dir.parent.name == ".codex"
+            else self.skills_dir.parent
+        )
         self.skills_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_ops(self, ops: list[SkillOperation]) -> list[dict[str, Any]]:
@@ -66,7 +71,7 @@ class SkillStore:
             "action": op.action,
             "name": name,
             "status": "applied",
-            "path": str(path.relative_to(self.skills_dir.parent)),
+            "path": self._display_path(path),
         }
 
     def remove_skill(self, name: str) -> dict[str, Any]:
@@ -84,7 +89,7 @@ class SkillStore:
             "action": "remove",
             "name": name,
             "status": "applied",
-            "path": str(path.relative_to(self.skills_dir.parent)),
+            "path": self._display_path(path),
         }
 
     def render_for_prompt(self, skill_names: list[str] | tuple[str, ...]) -> tuple[str, list[str]]:
@@ -117,25 +122,6 @@ class SkillStore:
             blocks.append(f'## Skill: {name}\n\n{text}')
         return "\n\n".join(blocks), errors
 
-    def list_summaries(self) -> list[dict[str, str]]:
-        summaries: list[dict[str, str]] = []
-        for path in sorted(self.skills_dir.glob("*/SKILL.md")):
-            try:
-                name = self.validate_name(path.parent.name)
-            except ValueError:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            summaries.append(
-                {
-                    "name": name,
-                    "description": self._description_from_text(text),
-                }
-            )
-        return summaries
-
     def skill_exists(self, name: str) -> bool:
         try:
             return self.skill_path(name).exists()
@@ -164,18 +150,6 @@ class SkillStore:
             f"{body}\n"
         )
 
-    def _description_from_text(self, text: str) -> str:
-        lines = text.splitlines()
-        if not lines or lines[0].strip() != "---":
-            return ""
-        for line in lines[1:]:
-            stripped = line.strip()
-            if stripped == "---":
-                break
-            if stripped.startswith("description:"):
-                return stripped.removeprefix("description:").strip().strip("\"'")
-        return ""
-
     def _rejected(self, action: str, name: str, reason: str) -> dict[str, Any]:
         return {
             "action": action,
@@ -183,6 +157,12 @@ class SkillStore:
             "status": "rejected",
             "reason": reason,
         }
+
+    def _display_path(self, path: Path) -> str:
+        try:
+            return str(path.relative_to(self.display_root))
+        except ValueError:
+            return str(path)
 
     def _write_text_atomic(self, path: Path, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -163,7 +163,7 @@ def test_trace_sidecars_are_pruneable_without_touching_conversation_history(tmp_
             {
                 "role": "skill",
                 "developer_instructions": "Skill Worker Policy",
-                "prompt": "# Skill Availability\n\n# New Zulip Message(s)\n\n- [1] Alice: message 1",
+                "prompt": "# New Zulip Message(s)\n\n- [1] Alice: message 1",
                 "output_schema_path": tmp_path / "references" / "skill" / "schema.json",
                 "raw_output": '{"skill_ops":[]}',
                 "decision": {"skill_ops": []},
@@ -178,7 +178,7 @@ def test_trace_sidecars_are_pruneable_without_touching_conversation_history(tmp_
     trace_dir = storage.trace_dir(key, "trace-1")
     assert manifest["trace_id"] == "trace-1"
     assert (trace_dir / "skill" / "developer.md").read_text(encoding="utf-8") == "Skill Worker Policy"
-    assert "Skill Availability" in (trace_dir / "skill" / "user.md").read_text(encoding="utf-8")
+    assert "New Zulip Message" in (trace_dir / "skill" / "user.md").read_text(encoding="utf-8")
     assert (trace_dir / "skill" / "schema.json").exists()
     assert storage.list_traces()[0]["trace_id"] == "trace-1"
 

@@ -151,7 +151,7 @@ To test the service without posting, set `TOKENZULIP_POSTING_ENABLED=false` in `
 - `workspace/references/<agent>/user.md`: role-specific user prompt template.
 - `workspace/references/<agent>/system.md`: role-specific system configuration loaded as Codex developer instructions.
 - `workspace/references/<agent>/schema.json`: native Codex structured output schema.
-- `workspace/skills/<name>/SKILL.md`: reusable skill instructions that scheduled jobs may load.
+- `workspace/.codex/skills/<name>/SKILL.md`: Codex-native project skills that Sili can discover, compose, and attach to scheduled jobs. If `TOKENZULIP_CODEX_CWD` points elsewhere, the skill root follows that Codex cwd.
 - `workspace/schedules/jobs.json`: durable scheduled task definitions, including origin Zulip topic/private chat, next run, repeat state, and optional skill names.
 
 ## Instruction Architecture
@@ -174,13 +174,13 @@ Use these ownership boundaries to avoid duplicated or conflicting prompt text:
 - `workspace/realm/stream-*/AGENTS.md` and `workspace/realm/private-recipient-*/AGENTS.md`: human-authored source-specific exceptions or preferences.
 - `workspace/realm/**/REFLECTIONS.md`: non-injected review candidates that may later be promoted manually into instructions, references, skills, or code.
 
-Static model-facing instruction belongs in the Markdown files above. Runtime Python should inject dynamic data sections only, such as current time, mentionable participants, available skill summaries, posted bot updates, and persisted job fields.
+Static model-facing instruction belongs in the Markdown files above. Runtime Python should inject dynamic data sections only, such as current time, mentionable participants, same-turn applied skill changes, posted bot updates, and persisted job fields. Skill inventory and skill composition use Codex's native project-local skill discovery from the Codex cwd's `.codex/skills/` tree.
 
 Reflections are append-only Markdown candidates, not runtime recall. The reflections worker writes `reflection_ops` to global, channel, or private-chat `REFLECTIONS.md` files under `workspace/realm/`. The runtime never injects existing reflections into future prompts and never posts acknowledgement text for reflection-only turns. Raw/session history remains in `workspace/realm/stream-*/topic-*/messages.jsonl` or `workspace/realm/private-recipient-*/messages.jsonl`, and `turns.jsonl` records applied or skipped reflection operations.
 
-Scheduled tasks follow a Hermes-inspired job model. The schedule worker requests changes through `schedule_ops`; the schedule code path validates and persists jobs under `workspace/schedules/jobs.json`, appends an acknowledgement only after persistence succeeds, and runs due jobs from a scheduler ticker inside `token-zulip run`. Jobs post back only to their originating Zulip topic or private chat. Jobs may be prompt-only or skill-backed; skill-backed jobs store skill names and load `workspace/skills/<name>/SKILL.md` only when the job fires. Reminder jobs may also store zero or more Zulip mention targets that are applied when the job runs.
+Scheduled tasks follow a Hermes-inspired job model. The schedule worker requests changes through `schedule_ops`; the schedule code path validates and persists jobs under `workspace/schedules/jobs.json`, appends an acknowledgement only after persistence succeeds, and runs due jobs from a scheduler ticker inside `token-zulip run`. Jobs post back only to their originating Zulip topic or private chat. Jobs may be prompt-only or skill-backed; skill-backed jobs store skill names and load `<codex cwd>/.codex/skills/<name>/SKILL.md` only when the job fires. Reminder jobs may also store zero or more Zulip mention targets that are applied when the job runs.
 
-Skill persistence is owned by the skill worker code path: its forked Codex decision may return `skill_ops` containing a skill name, description, and `SKILL.md` content. TokenZulip validates that request and writes `workspace/skills/<name>/SKILL.md`. Scheduled job threads do not write skills; they only load skill names recorded on the job.
+Skill persistence is owned by the skill worker code path: its forked Codex decision may return `skill_ops` containing a skill name, description, and `SKILL.md` content. TokenZulip validates that request and writes `<codex cwd>/.codex/skills/<name>/SKILL.md`, using the common `name` and `description` frontmatter shape. The persistent post session can use Codex native skill discovery to load and compose relevant skills. Scheduled job threads do not write skills; they only load skill names recorded on the job.
 
 ### Thread Context Model
 
@@ -247,9 +247,9 @@ Zulip event
   -> resume or create persistent Codex session thread for this Zulip topic/private chat
   -> fork op workers from the session thread
        reflections worker -> reflection_ops -> workspace/realm/.../REFLECTIONS.md
-       skill worker  -> skill_ops  -> workspace/skills/<name>/SKILL.md
+       skill worker  -> skill_ops  -> workspace/.codex/skills/<name>/SKILL.md
   -> apply skill results
-  -> fork schedule worker with current skill availability
+  -> fork schedule worker with schedule context and same-turn applied skill changes
        schedule worker -> schedule_ops -> workspace/schedules/jobs.json
   -> run post role in the session thread with applied deterministic changes
        output: message_to_post only
@@ -277,8 +277,8 @@ Creating a skill-backed scheduled job:
 ```text
 Human conversation asks for a reusable workflow
   -> skill worker returns skill_ops.create/update
-  -> skill worker code path writes workspace/skills/<name>/SKILL.md
-  -> schedule worker sees the applied skill summary and may return schedule_ops.create with skills: ["<name>"]
+  -> skill worker code path writes workspace/.codex/skills/<name>/SKILL.md
+  -> schedule worker sees same-turn applied skill changes and may return schedule_ops.create with skills: ["<name>"]
   -> schedule worker code path validates the skill exists and stores only the skill name
   -> Sili posts both "Skill saved: ..." and a Markdown schedule acknowledgement
 ```
