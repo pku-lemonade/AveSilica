@@ -65,13 +65,20 @@ def test_default_instruction_files_keep_style_and_participation_boundaries(tmp_p
     assert "when Silica can materially improve" not in global_text
     assert "```spoiler Details" not in post_system_text
     assert "when Silica can materially improve" in post_system_text
+    assert "## Tool Use" in post_system_text
     assert "downloaded attachment or workspace-local file link" in post_system_text
     assert "inspect the local file with available tools before choosing silence" in post_system_text
     assert "Do not infer attachment contents from the filename alone" in post_system_text
     assert "use available lookup tools" in post_system_text
     assert "web search tools" in post_system_text
+    assert "search, check, verify, look up docs, or browse the web" in post_system_text
     assert "named tools/frameworks" in post_system_text
-    assert "include source links in the visible post" in post_system_text
+    assert "official docs, primary sources" in post_system_text
+    assert "community discussion sources such as Hacker News, Reddit, Linux.do" in post_system_text
+    assert "brainstorming, inspiration, user sentiment, recent discussion" in post_system_text
+    assert "Do not treat community discussion as official evidence" in post_system_text
+    assert "anecdotal, directional, or discussion-based" in post_system_text
+    assert "Include source links in the visible post" in post_system_text
     assert "instead of suggesting search terms" in post_system_text
     assert "lookup/search is unavailable or fails" in post_system_text
     assert "unsupported claims" in reflections_system_text

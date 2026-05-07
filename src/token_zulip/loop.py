@@ -48,7 +48,7 @@ from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, nor
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_POST_FALLBACK = "I saw this, but couldn't produce a useful message. Please try again."
-CODEX_INSTRUCTION_MODE = "post-session-v5"
+CODEX_INSTRUCTION_MODE = "post-session-v6"
 
 
 class ZulipPoster(Protocol):
