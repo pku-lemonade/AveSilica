@@ -32,6 +32,7 @@ from .turn_context import RenderContext, TurnContext, WorkflowDeltas
 from .typing_status import TypingStatusManager
 from .uploads import MessageUploadProcessor
 from .workspace import (
+    POST_CONVERSATION_RECORDS_TEMPLATE_FILE,
     REFLECTIONS_DECISION_SCHEMA_FILE,
     REFLECTIONS_WORKER_USER_PROMPT_FILE,
     POST_DECISION_SCHEMA_FILE,
@@ -47,7 +48,7 @@ from .zulip_io import normalize_zulip_event, normalize_zulip_reaction_event, nor
 
 LOGGER = logging.getLogger(__name__)
 PRIVATE_POST_FALLBACK = "I saw this, but couldn't produce a useful message. Please try again."
-CODEX_INSTRUCTION_MODE = "post-session-v4"
+CODEX_INSTRUCTION_MODE = "post-session-v5"
 
 
 class ZulipPoster(Protocol):
@@ -760,7 +761,7 @@ class AgentLoop:
         )
         instruction_kwargs = self._conversation_instruction_kwargs(first)
         post_developer_instructions = (
-            None if active_thread_id else self.instructions.compose(role="post", **instruction_kwargs)
+            None if active_thread_id else self._post_developer_instructions(key, first, instruction_kwargs)
         )
         pending_posted_bot_updates = self.storage.read_pending_posted_bot_updates(key)
         return TurnPromptState(
@@ -780,6 +781,43 @@ class AgentLoop:
             "stream_id": message.stream_id,
             "conversation_type": message.conversation_type,
             "private_recipient_key": message.private_recipient_key,
+        }
+
+    def _post_developer_instructions(
+        self,
+        key: SessionKey,
+        message: NormalizedMessage,
+        instruction_kwargs: dict[str, Any],
+    ) -> str:
+        return self.prompt_builder.render_sections(
+            [
+                self.instructions.compose(role="post", **instruction_kwargs),
+                self.prompt_builder.render_template(
+                    POST_CONVERSATION_RECORDS_TEMPLATE_FILE,
+                    self._conversation_records_template_values(key, message),
+                ),
+            ]
+        )
+
+    def _conversation_records_template_values(
+        self,
+        key: SessionKey,
+        message: NormalizedMessage,
+    ) -> dict[str, object]:
+        records_dir = self.storage.layout.relative(self.storage.session_dir(key))
+        if key.conversation_type == "private":
+            recipient_key = key.private_recipient_key or message.private_recipient_key or key.topic_hash
+            return {
+                "conversation_type": "private",
+                "conversation_identity": f"private recipient key {recipient_key}",
+                "conversation_display": "private message",
+                "records_dir": records_dir,
+            }
+        return {
+            "conversation_type": "stream/topic",
+            "conversation_identity": f"stream id {message.stream_id}, topic hash {message.topic_hash}",
+            "conversation_display": f"{message.stream} / {message.topic}",
+            "records_dir": records_dir,
         }
 
     def _build_reflections_skill_worker_specs(
@@ -844,9 +882,10 @@ class AgentLoop:
                 },
             )
             self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-            post_developer_instructions = self.instructions.compose(
-                role="post",
-                **prompt_state.instruction_kwargs,
+            post_developer_instructions = self._post_developer_instructions(
+                key,
+                messages[0],
+                prompt_state.instruction_kwargs,
             )
             with telemetry.phase("ensure_session_thread_restarted") as phase:
                 result = await self.codex.ensure_thread(
@@ -1014,7 +1053,11 @@ class AgentLoop:
                 },
             )
             self.storage.set_codex_thread_state(key, thread_id=None, instruction_mode=None)
-            trace_developer_instructions = self.instructions.compose(role="post", **instruction_kwargs)
+            trace_developer_instructions = self._post_developer_instructions(
+                key,
+                messages[0],
+                instruction_kwargs,
+            )
             with telemetry.phase("post_decision_restarted") as phase:
                 result = await self.codex.run_decision(
                     post_prompt,

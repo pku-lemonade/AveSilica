@@ -1100,7 +1100,36 @@ def test_current_message_is_not_duplicated_and_recent_context_is_not_rendered(tm
         assert codex.developer_instructions[0] is None
         assert codex.ensure_developer_instructions[0] is not None
         assert "Codex Thread Contract" in codex.ensure_developer_instructions[0]
+        assert "Conversation Records" in codex.ensure_developer_instructions[0]
+        assert "Records directory: `realm/stream-engineering-10/topic-launch-topic123`" in codex.ensure_developer_instructions[0]
+        assert "Stable identity: stream id 10, topic hash topic123" in codex.ensure_developer_instructions[0]
+        assert "`messages.jsonl`: Zulip message records for this conversation." in codex.ensure_developer_instructions[0]
         assert "references/schedule/system.md" not in codex.ensure_developer_instructions[0]
+
+    asyncio.run(scenario())
+
+
+def test_private_thread_start_receives_conversation_records_pointer(tmp_path):
+    async def scenario() -> None:
+        initialize_workspace(tmp_path)
+        codex = PromptCapturingCodex()
+        bot = AgentLoop(
+            config=_config(tmp_path),
+            storage=WorkspaceStorage(tmp_path),
+            instructions=InstructionLoader(tmp_path),
+            reflections=ReflectionStore(tmp_path),
+            codex=codex,
+            zulip=FakePoster(),
+        )
+
+        await bot._handle_message(_private_message(1, recipient_id=1001))
+
+        instructions = codex.ensure_developer_instructions[0]
+        assert instructions is not None
+        assert "Conversation Records" in instructions
+        assert "Conversation type: private" in instructions
+        assert "Stable identity: private recipient key 1001" in instructions
+        assert "Records directory: `realm/private-recipient-1001`" in instructions
 
     asyncio.run(scenario())
 
@@ -1195,6 +1224,7 @@ def test_resumed_thread_gets_no_recent_context_or_developer_instructions(tmp_pat
         assert codex.developer_instructions == [None, None]
         assert codex.ensure_developer_instructions[0] is not None
         assert codex.ensure_developer_instructions[1] is None
+        assert "Conversation Records" in codex.ensure_developer_instructions[0]
         assert "first context" not in codex.prompts[1]
         assert "second request" in codex.prompts[1]
 
@@ -1317,6 +1347,8 @@ def test_missing_codex_rollout_restarts_marked_session_thread(tmp_path):
         assert codex.thread_ids == ["missing-thread", None]
         assert codex.developer_instructions[0] is None
         assert codex.developer_instructions[1] is not None
+        assert "Conversation Records" in codex.developer_instructions[1]
+        assert "Records directory: `realm/stream-engineering-10/topic-launch-topic123`" in codex.developer_instructions[1]
         assert metadata.codex_thread_id == "recovered-thread-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
         assert metadata.last_processed_message_id == 1
@@ -1353,6 +1385,8 @@ def test_missing_codex_rollout_during_post_restarts_session_thread(tmp_path):
         assert codex.post_thread_ids == ["missing-thread", None]
         assert codex.post_developer_instructions[0] is None
         assert codex.post_developer_instructions[1] is not None
+        assert "Conversation Records" in codex.post_developer_instructions[1]
+        assert "Records directory: `realm/private-recipient-1001`" in codex.post_developer_instructions[1]
         assert poster.posts == [{"topic": "private", "content": "Recovered post"}]
         assert metadata.codex_thread_id == "recovered-post-1"
         assert metadata.codex_instruction_mode == CODEX_INSTRUCTION_MODE
